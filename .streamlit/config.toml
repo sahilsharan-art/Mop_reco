@@ -1,0 +1,19 @@
+# The dashboard's colour palette (2026-09-18 restyle) — kept in sync with the
+# CSS custom properties in app/assets/theme.css by hand: this file is what
+# Streamlit's own chrome (buttons, the dataframe grid's base colours, widget
+# borders) reads; theme.css is what everything else reads. Same five values,
+# two places, because Streamlit's own theme can only be set here — see
+# theme.css's own header comment for why the dataframe grid in particular
+# depends on this file rather than on CSS.
+[theme]
+base = "light"
+primaryColor = "#16A5C4"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F7FB"
+textColor = "#0F2B46"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

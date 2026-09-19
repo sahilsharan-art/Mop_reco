@@ -1,0 +1,63 @@
+# ============================================================================
+# SAFETY FIRST — this repo must never carry store-level financial data.
+# Once a file is committed, it stays in git history permanently even if
+# deleted later, so everything data-shaped is excluded here BEFORE the first
+# commit, both by folder name (the real source layout, CLAUDE.md section 4)
+# and by file-extension pattern as a second line of defence.
+# ============================================================================
+
+# Raw data, database, warehouse and exports — per CLAUDE.md section 4, none
+# of this belongs in version control.
+data/
+db/
+warehouse/
+exports/
+logs/
+
+# The real source folders as handed over (CLAUDE.md section 4) — raw business
+# data for 190 stores, never committed, excluded by exact name.
+1. POS Sales/
+2. Settlement reports/
+3. CMS received/
+4. Petty cash ledger/
+5.CMS DEPOSIT MASTER/
+5a. Pickup location master/
+6.MID WISE STORE CODE MASTER/
+Opening balance at store/
+closing balance at store/
+
+# SQLite database and its write-ahead-log companions — explicit patterns as a
+# second line of defence beyond the db/ folder rule above (a db file could in
+# principle be created elsewhere).
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Every spreadsheet/archive/columnar data format, anywhere in the tree — a
+# second line of defence beyond the named folders above. No legitimate code,
+# test or doc file in this repo uses any of these extensions.
+*.xlsb
+*.xlsx
+*.xls
+*.csv
+*.zip
+*.parquet
+
+# Credentials and secrets — never committed, regardless of location.
+.streamlit/secrets.toml
+*secret*
+*credential*
+*.pem
+*.key
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/

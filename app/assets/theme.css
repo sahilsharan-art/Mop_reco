@@ -1,0 +1,749 @@
+/* ============================================================================
+   MOP Reconciliation — visual theme (2026-09-18, restyle, visual only)
+
+   ONE stylesheet. Every colour, font size and spacing value used across the
+   dashboard lives here, as a CSS custom property or a rule that reads one.
+   To change the accent colour later, edit --accent below — nothing else.
+
+   Scope: this file styles Streamlit's own chrome (titles, buttons, inputs,
+   sidebar, containers) via stable data-testid/class hooks, the same
+   CSS-injection approach already used elsewhere in this app (see
+   dashboard_common.SIDEBAR_CSS). It does NOT and cannot restyle the inside
+   of st.dataframe's grid: that grid is drawn to an HTML canvas
+   (glide-data-grid), not DOM table cells, so no CSS selector can reach a
+   cell, a row stripe or a header inside it. Those elements inherit their
+   colours from Streamlit's own [theme] block in .streamlit/config.toml
+   (backgroundColor/secondaryBackgroundColor/textColor/primaryColor) — this
+   file's palette and that config file's palette are the same, so it reads
+   as one system, but text WITHIN the grid does not pick up Plus Jakarta
+   Sans/Inter or this file's zebra/hover rules. Status "pills" for the grid
+   are done through pandas Styler (background/text colour per cell,
+   dashboard_common.status_styler()) rather than any CSS here, and the
+   underlying cell values stay plain strings — sorting and export both read
+   the untouched value, never the Styler.
+   ============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700&family=Inter:wght@400;500;600&display=swap');
+
+:root {
+  /* ---- palette --------------------------------------------------------- */
+  --bg:            #F4F7FB;
+  --surface:       #FFFFFF;
+  --surface-alt:   #F8FAFC;
+  --border:        #E4EBF3;
+  --ink:           #0F2B46;
+  --ink-soft:      #6B7C93;
+  --accent:        #16A5C4;
+  --accent-deep:   #10375C;
+  --accent-tint:   #E6F6FA;
+  --good:          #15A66B;
+  --warn:          #E8962E;
+  --bad:           #D93A5B;
+  --good-tint:     #E7F6EF;
+  --warn-tint:     #FDF2E3;
+  --bad-tint:      #FCEAEE;
+
+  /* ---- type -------------------------------------------------------------*/
+  --font-heading: "Plus Jakarta Sans", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-body:    "Inter", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono:    ui-monospace, "SF Mono", Consolas, monospace;
+
+  /* ---- motion -------------------------------------------------------------*/
+  --transition-fast: 120ms ease;
+}
+
+/* ============================================================================
+   Base
+   ============================================================================ */
+
+html, body, [class^="st-"], .stApp,
+div[data-testid="stAppViewContainer"],
+div[data-testid="stSidebar"],
+div[data-testid="stMarkdownContainer"],
+button, input, textarea, select {
+  font-family: var(--font-body);
+}
+
+.stApp {
+  background: var(--bg);
+}
+
+/* Streamlit's own default page margin (2026-09-20) — 80px on each side of
+   the main content, regardless of window width. Reclaimed down to 32px:
+   the store cash equation (below) needs 978px to lay out at its specified
+   font sizes and gaps, and the default 80px margin left only 855px of
+   content width at a 1366px window — 123px short, discovered by direct
+   measurement, not assumed. Every page's content gets a little more room
+   from this, not only the equation; nothing else about the layout changes. */
+div[data-testid="stMainBlockContainer"] {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+body, p, li, span, label,
+div[data-testid="stMarkdownContainer"] p {
+  color: var(--ink);
+}
+
+/* Numbers: tabular figures everywhere a rupee amount or count appears, so
+   digits align in a column — non-negotiable per the brief. */
+.mop-tile-figure,
+.mop-num,
+div[data-testid="stMetricValue"] {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* ============================================================================
+   Headings, captions
+   ============================================================================ */
+
+h1, h2, h3, h4, h5, h6,
+div[data-testid="stMarkdownContainer"] h1,
+div[data-testid="stMarkdownContainer"] h2,
+div[data-testid="stMarkdownContainer"] h3,
+div[data-testid="stMarkdownContainer"] h4,
+div[data-testid="stMarkdownContainer"] h5 {
+  font-family: var(--font-heading);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* Page title — st.title() renders an <h1>. */
+div[data-testid="stAppViewContainer"] h1 {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+/* Section headings — this app uses st.markdown("##### Title") throughout,
+   which renders <h5>. */
+div[data-testid="stMarkdownContainer"] h5 {
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+div[data-testid="stCaptionContainer"],
+small, .stCaption {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-soft);
+}
+
+/* ============================================================================
+   Tiles (dashboard_common.tile())
+   ============================================================================ */
+
+.mop-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  height: 100%;
+  min-width: 150px;
+  box-shadow: 0 1px 2px rgba(16, 55, 92, .04), 0 4px 12px rgba(16, 55, 92, .06);
+  transition: box-shadow var(--transition-fast);
+}
+
+.mop-tile:hover {
+  box-shadow: 0 1px 3px rgba(16, 55, 92, .06), 0 8px 20px rgba(16, 55, 92, .10);
+}
+
+/* A 3px left border only for a state that needs attention — never a filled
+   background. Everything else stays borderless (the default .mop-tile). */
+.mop-tile--warn { border-left: 3px solid var(--warn); }
+.mop-tile--bad  { border-left: 3px solid var(--bad); }
+
+/* The ONE feature tile — Total sale — filled --accent-deep, white text.
+   Every other tile stays white; this is intentionally the only exception. */
+.mop-tile--feature {
+  background: var(--accent-deep);
+  border-color: var(--accent-deep);
+}
+.mop-tile--feature .mop-tile-label,
+.mop-tile--feature .mop-tile-figure,
+.mop-tile--feature .mop-tile-sub { color: #FFFFFF; }
+.mop-tile--feature .mop-tile-sub { opacity: .82; }
+
+.mop-tile-label {
+  font-family: var(--font-heading);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink-soft);
+}
+
+.mop-tile-figure {
+  font-family: var(--font-heading);
+  font-size: 30px;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.mop-tile-sub {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-soft);
+  margin-top: 2px;
+}
+
+/* State words still carry colour, but always alongside their own text
+   (never colour alone) — used for the sub-line under a tile in warn/bad
+   state. */
+.mop-tile-sub--warn { color: var(--warn); }
+.mop-tile-sub--bad  { color: var(--bad); }
+.mop-tile-sub--good { color: var(--good); }
+
+/* Ribbons — the tinted panel several pages wrap a row of tiles in
+   (Summary's tile-ribbon, Manual matches' bills/transactions strip, Float's
+   ribbon). One rule, keyed on the same st.container(key=...) hook every
+   page already uses, instead of one ad hoc <style> block per page. */
+.st-key-tile-ribbon,
+.st-key-mm-open-ribbon,
+.st-key-float-ribbon,
+.st-key-cms-reco-ribbon {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px 16px 6px 16px;
+  margin-bottom: 14px;
+}
+
+/* ============================================================================
+   Status text — colour always paired with its own word, per the brief;
+   this is the plain (non-grid) equivalent of a "pill", used in markdown
+   captions and headers outside a dataframe.
+   ============================================================================ */
+
+.mop-status {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 10px;
+  border-radius: 999px;
+}
+.mop-status--good { background: var(--good-tint); color: var(--good); }
+.mop-status--warn { background: var(--warn-tint); color: var(--warn); }
+.mop-status--bad  { background: var(--bad-tint);  color: var(--bad); }
+.mop-status--accent { background: var(--accent-tint); color: var(--accent); }
+
+/* ============================================================================
+   Dataframe container — the OUTER wrapper only (radius, border colour,
+   overflow). The grid's own internal cells are canvas-drawn and out of
+   CSS's reach; see the file header note.
+   ============================================================================ */
+
+div[data-testid="stDataFrame"] {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+/* ============================================================================
+   Buttons, inputs
+   ============================================================================ */
+
+.stButton button, .stDownloadButton button,
+div[data-testid="stFormSubmitButton"] button {
+  border-radius: 10px;
+  font-weight: 600;
+  font-family: var(--font-body);
+  transition: background-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+/* Primary (type="primary") already fills --primaryColor via config.toml =
+   --accent; this only aligns the secondary button's border/text to the
+   palette instead of Streamlit's own default grey. */
+.stButton button[kind="secondary"], .stDownloadButton button[kind="secondary"] {
+  border: 1px solid var(--border);
+  color: var(--ink);
+  background: var(--surface);
+}
+
+div[data-testid="stTextInput"] input,
+div[data-testid="stNumberInput"] input,
+div[data-testid="stDateInput"] input,
+div[data-testid="stTextArea"] textarea,
+div[data-baseweb="select"] > div {
+  border-radius: 10px !important;
+  border-color: var(--border) !important;
+  font-family: var(--font-body);
+}
+
+div[data-testid="stTextInput"] input:focus,
+div[data-testid="stNumberInput"] input:focus,
+div[data-testid="stTextArea"] textarea:focus {
+  box-shadow: 0 0 0 3px rgba(22, 165, 196, .30);
+  border-color: var(--accent) !important;
+}
+
+/* ============================================================================
+   Sidebar
+   ============================================================================ */
+
+section[data-testid="stSidebar"] {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+}
+
+/* The active nav item — Streamlit's own multipage nav link, current page. */
+section[data-testid="stSidebarNav"] a[aria-current="page"] {
+  background: var(--accent-tint) !important;
+  color: var(--accent) !important;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+}
+section[data-testid="stSidebarNav"] a[aria-current="page"] span {
+  color: var(--accent) !important;
+}
+
+/* Expander +/- controls (this app's own custom ones in Summary.py use plain
+   st.button "+"/"−"; Streamlit's native st.expander arrow is targeted too,
+   for the pages that still use it). */
+.stButton button:has(> div > p:only-child) {
+  color: var(--ink-soft);
+}
+details > summary svg, [data-testid="stExpanderToggleIcon"] {
+  color: var(--ink-soft);
+  transition: color var(--transition-fast);
+}
+details:hover > summary svg, [data-testid="stExpander"]:hover [data-testid="stExpanderToggleIcon"] {
+  color: var(--accent);
+}
+
+/* Streamlit's own Material Symbols icon font has no network access to load
+   in this environment (2026-09-22, found live) — every `stIconMaterial`
+   span was rendering its raw ligature NAME as literal text
+   ("keyboard_double_arrow_left" on the sidebar collapse control,
+   "keyboard_arrow_right"/"_down" on every native st.expander) instead of a
+   glyph. Do not restyle the broken text — hide it and paint a plain
+   character instead, scoped to each context so the replacement still means
+   the right thing (a collapse chevron is not an expander triangle). Any
+   FUTURE `:material/...:` icon added to this app needs its own such rule
+   here, or it will render blank (invisible is still better than a raw
+   ligature name, but neither is a real icon) — the one already found this
+   way (`st.page_link`'s `icon=":material/arrow_forward:"` on Run) was
+   simply dropped instead, since a decorative arrow on a nav link isn't
+   worth a third override. */
+[data-testid="stIconMaterial"] { font-size: 0; }
+
+/* The sidebar collapse/expand control — a single plain chevron in a small
+   square hit area, never the wide Streamlit default. Two distinct native
+   controls, each always showing ONE direction (confirmed live: the DOM
+   keeps `stSidebarCollapseButton` for "collapse" and swaps in a separate
+   `stExpandSidebarButton` for "expand" — neither toggles the other's own
+   ligature text), so each gets its own fixed replacement character rather
+   than trying to track open/closed state in CSS. */
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stExpandSidebarButton"] {
+  width: 28px;
+  height: 28px;
+  padding: 0 !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+[data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"]::before,
+[data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"]::before {
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1;
+  color: var(--ink-soft);
+  transition: color var(--transition-fast);
+}
+[data-testid="stSidebarCollapseButton"] [data-testid="stIconMaterial"]::before {
+  content: "\00AB";  /* « — collapse */
+}
+[data-testid="stExpandSidebarButton"] [data-testid="stIconMaterial"]::before {
+  content: "\00BB";  /* » — expand */
+}
+[data-testid="stSidebarCollapseButton"]:hover [data-testid="stIconMaterial"]::before,
+[data-testid="stExpandSidebarButton"]:hover [data-testid="stIconMaterial"]::before {
+  color: var(--accent);
+}
+
+/* st.expander's own native triangle — the SAME broken ligature font, a
+   different glyph. CSS cannot select on a text node's own content
+   ("keyboard_arrow_down" vs "keyboard_arrow_right"), so this reads the
+   `<details open>` attribute instead — confirmed live to be the actual
+   ancestor the icon sits inside (`stExpander` wraps `<details>`, which
+   wraps the icon), and the same signal that decided which ligature name
+   Streamlit chose in the first place. */
+[data-testid="stExpander"] [data-testid="stIconMaterial"]::before {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink-soft);
+  content: "\203A";  /* › — collapsed */
+}
+[data-testid="stExpander"] details[open] [data-testid="stIconMaterial"]::before {
+  content: "\2304";  /* ⌄ — open */
+}
+[data-testid="stExpander"]:hover [data-testid="stIconMaterial"]::before {
+  color: var(--accent);
+}
+
+/* ============================================================================
+   Sidebar stamps, page-title range label (dashboard_common.py)
+   ============================================================================ */
+
+.mop-range-label { text-align: right; padding-top: 26px; }
+.mop-range-label-main {
+  font-family: var(--font-heading);
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.mop-range-label-sub { font-size: 0.78rem; color: var(--ink-soft); }
+
+.mop-sidebar-stamp {
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  padding-top: 6px;
+}
+.mop-sidebar-stamp--build { color: #9AA9BC; font-size: 0.72rem; }
+
+/* Sidebar filters, all shrunk 2026-09-21 — the whole block used to take
+   more vertical space than the data it filters. "Filters" is the sidebar's
+   only true markdown-bold text (st.markdown("**Filters**") -> <p><strong>);
+   every other bold string in the sidebar is raw HTML inside a styled div
+   (the run/build stamps, "Working as: <name>"), so this selector cannot
+   catch those by accident. */
+section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] p strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+section[data-testid="stSidebar"] div[data-testid="stCaptionContainer"] {
+  font-size: 11px;
+}
+section[data-testid="stSidebar"] div[data-testid="stDateInput"] label p {
+  font-size: 11px;
+}
+section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
+  font-size: 12px;
+  min-height: 32px;
+}
+
+/* Year/Month quick pickers (2026-09-21) — scoped to this ONE
+   st.container(key="qp") so the colour overrides never leak onto the
+   app's other primary/secondary buttons elsewhere (e.g. "Build the Excel
+   sheet" keeps the theme's own primaryColor). Selection is derived, never
+   stored (dashboard_common._quick_date_picker) — this CSS only paints
+   whatever `type=`/`disabled=` Python already decided. */
+.st-key-qp .mop-qp-label {
+  font-family: var(--font-heading);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--ink-soft);
+  margin: 8px 0 4px;
+}
+.st-key-qp div[data-testid="column"] { gap: 0; }
+.st-key-qp div[data-testid="stHorizontalBlock"] { gap: 4px; }
+.st-key-qp .stButton { margin-bottom: 4px; }
+.st-key-qp .stButton button {
+  padding: 2px 4px;
+  min-height: 28px;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+/* Selected — --accent fill, white text. */
+.st-key-qp .stButton button[kind="primary"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #FFFFFF;
+}
+.st-key-qp .stButton button[kind="primary"]:hover {
+  background: var(--accent);
+  color: #FFFFFF;
+  opacity: .92;
+}
+/* Unselected — --surface-alt, --ink text (not the app-wide --surface
+   secondary default, so a resting quick-pick button reads distinctly
+   from a resting "Clear filters"/"Refresh" button just below it). */
+.st-key-qp .stButton button[kind="secondary"] {
+  background: var(--surface-alt);
+  border-color: var(--border);
+  color: var(--ink);
+}
+/* Disabled — a year/month with no loaded data AND not the one padding
+   year beyond the range (a genuine gap, e.g. a skipped year in a
+   multi-year load). Dimmed, no pointer. */
+.st-key-qp .stButton button:disabled,
+.st-key-qp .stButton button:disabled:hover {
+  background: var(--surface-alt);
+  border-color: var(--border);
+  color: var(--ink-soft);
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+/* The one padding year ("the next calendar year", offered so it is
+   selectable before its own data arrives, 2026-09-22) and its month grid
+   — ENABLED, unlike the disabled case above, only visibly dimmed. A fixed
+   key (`qp_pad` / `qp_pad_m_<month>`, never the year value itself, and an
+   attribute-substring match for the month so all twelve share one rule),
+   so nothing here ever needs updating as the calendar rolls forward. */
+.st-key-qp_pad .stButton button[kind="secondary"],
+[class*="st-key-qp_pad_m_"] .stButton button[kind="secondary"] {
+  opacity: .5;
+}
+
+.mop-page-info { padding-top: 8px; color: var(--ink); }
+.mop-page-info b { font-variant-numeric: tabular-nums; }
+
+/* The store cash block (Summary.py, Part 2) — rebuilt as TWO PROPER
+   STATEMENT TABLES (2026-09-28), replacing the earlier "equation read
+   left to right" design (Opening + Cash sale − Cash deposit +
+   Expense/income = Closing, five cells strung together with +/-/=
+   glyphs), which read as a calculator tape rather than a statement an
+   accountant would recognise. The header ("Store-wise detail" / row
+   count / its own +/- toggle) and the two tables still share ONE card —
+   `st.container(key="store-cash-card")` wraps both, so there is one
+   border/shadow/padding, never a header sitting on the grey page
+   background above a separate white band. */
+.st-key-store-cash-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 2px rgba(16, 55, 92, .04), 0 4px 12px rgba(16, 55, 92, .06);
+}
+
+/* The hairline between the header row and the statement tables — both are
+   native Streamlit content inside the same card, so this is an explicit
+   divider rather than a border on either side. */
+.mop-cash-hr {
+  border: none !important;
+  border-top: 1px solid var(--border) !important;
+  margin: 8px 0 16px !important;
+}
+
+/* Two statement tables side by side (2026-09-28) — CASH POSITION and CASH
+   WITH AGENCY — replacing the earlier five-cell "equation" row. Equal
+   widths, a fixed gap between them; stacks to one column below ~1000px,
+   same breakpoint the rest of this card's history has used. */
+.mop-stmt-grid {
+  display: flex;
+  gap: 32px;
+  width: 100%;
+}
+.mop-stmt { flex: 1 1 0; min-width: 0; }
+@media (max-width: 1000px) {
+  .mop-stmt-grid { flex-direction: column; gap: 24px; }
+}
+
+.mop-stmt-title {
+  font-family: var(--font-heading);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink-soft);
+}
+.mop-stmt-period {
+  font-family: var(--font-body);
+  font-size: 11px;
+  color: var(--ink-soft);
+  margin-top: 2px;
+  margin-bottom: 10px;
+}
+
+.mop-stmt-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.mop-stmt-table td, .mop-stmt-table th {
+  padding: 0 12px;
+  height: 30px;
+}
+/* 3px base left inset on every row (not 0) so the one row that later
+   swaps this padding for a 3px --warn border lines up with every other
+   row's text start exactly — the same "compensate the border with
+   padding" trick the previous design used to keep a tinted cell's inset
+   equal to a plain cell's. */
+.mop-stmt-table td:first-child, .mop-stmt-table th:first-child { padding-left: 3px; }
+.mop-stmt-table td:last-child, .mop-stmt-table th:last-child { padding-right: 0; }
+
+/* The column header ("Amount (Rs)") gets a HEAVIER rule below it — the
+   "label band" the statement's own header sits in — distinct from the
+   plain hairline between ordinary line items, so the header reads as a
+   band the body sits under, not just one more row. */
+.mop-stmt-headrow th {
+  font-family: var(--font-heading);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--ink-soft);
+  text-align: right;
+  border-bottom: 2px solid var(--ink-soft);
+}
+
+/* Ordinary line items — a hairline divider only, no vertical rules, no
+   box grid (the whole point is that it reads as a statement, not a data
+   table). The hairline between the LAST body row and the total row below
+   is what gives "a single hairline above the total row" — nothing extra
+   is added for that; it falls out of every row already carrying one. */
+.mop-stmt-row td { border-bottom: 1px solid var(--border); }
+.mop-stmt-rowlabel {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink);
+  text-align: left;
+  white-space: nowrap;
+}
+.mop-stmt-figure {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  text-align: right;
+}
+/* A MISMATCH on the total row — colour, never the only signal; no bold
+   beyond the total row's own 600 weight, just the colour and the sign. */
+.mop-stmt-figure--bad { color: var(--bad); font-weight: 600; }
+
+/* The total row — same TYPE SIZE as every other row (a statement's total
+   is not a bigger number, it is a CLOSED one), 600 weight, a
+   --surface-alt band across the full row rather than the earlier design's
+   tinted pill, which is exactly what read as informal rather than as the
+   close of a statement. No border-bottom of its own — it is the last row
+   in the table. */
+.mop-stmt-row.mop-stmt-total td {
+  background: var(--surface-alt);
+  font-weight: 600;
+  border-bottom: none;
+}
+.mop-stmt-row.mop-stmt-total .mop-stmt-rowlabel,
+.mop-stmt-row.mop-stmt-total .mop-stmt-figure { font-weight: 600; }
+
+/* Cash receivable, non-zero — money deposited and not yet credited, an
+   EXPECTED state, never an error — gets a --warn left bar on ITS total
+   row only, distinct from the --bad figure colour a genuine MISMATCH
+   uses. Applied to the first cell only (border-left on a <td> shows on
+   that cell alone, which is what "left bar on the row" means for a
+   full-width background band). */
+.mop-stmt-row.mop-stmt-total.mop-stmt-cell--warn td:first-child {
+  border-left: 3px solid var(--warn);
+  padding-left: 0;
+}
+
+/* ============================================================================
+   The Summary particulars matrix (2026-09-18). The hero band that used to
+   sit above it (Total sale / Collected / Receivable in its own card) is
+   REMOVED (2026-09-22, on instruction) — those three figures are the
+   matrix's own Total sale column, so nothing needed replacing; every
+   .mop-hero-* rule and the composition bar that had briefly sat between
+   them (removed 2026-09-21, its own series colour tokens and .mop-comp-*
+   rules gone the same way) went with it. The card styling below now
+   belongs to the matrix alone.
+   ============================================================================ */
+
+.st-key-matrix-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  margin-bottom: 20px;
+  box-shadow: 0 1px 2px rgba(16, 55, 92, .04), 0 4px 12px rgba(16, 55, 92, .06);
+}
+
+/* --- the matrix: hairlines only, no box grid ------------------------------ */
+/* A narrow window scrolls the table horizontally rather than truncating a
+   column or squeezing every figure unreadable — nothing here is ever
+   invisibly clipped (found live at 1000px: 6 columns of real money don't
+   fit uncompressed under about 1150px). */
+.mop-matrix-scroll { overflow-x: auto; }
+.mop-matrix { width: 100%; min-width: 720px; border-collapse: collapse; }
+.mop-matrix-grouprow th {
+  font-family: var(--font-heading);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--ink-soft);
+  text-align: center;
+  padding: 0 10px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.mop-matrix-headrow th {
+  font-family: var(--font-heading);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--ink-soft);
+  text-align: right;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.mop-matrix-rowlabel-head { text-align: left !important; }
+/* The Total sale column is the anchor — --surface-alt so it reads as the
+   column everything else is measured against. */
+.mop-matrix-colhead--anchor, .mop-matrix-cell--anchor { background: var(--surface-alt); }
+/* Row height ~32px (was ~40px, 2026-09-21) — smaller fonts plus tighter
+   vertical padding, not a fixed height, so a row still grows if a cell
+   ever needs two lines (the "% to total" sub-line). */
+.mop-matrix-cell {
+  padding: 5px 10px;
+  text-align: right;
+  border-bottom: 1px solid var(--border);
+}
+.mop-matrix-rowlabel {
+  padding: 5px 10px;
+  text-align: left;
+  color: var(--ink);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.mop-matrix-figure {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+.mop-matrix-figure--strong { font-weight: 600; }
+/* "% to total" sits tight under Sale's own figure — a supporting sub-line
+   inside the SAME cell, never a full-height row of its own. */
+.mop-matrix-pct { font-size: 11px; color: var(--ink-soft); margin-top: 2px; }
+/* The only tint anywhere in the matrix: a non-zero Receivable. */
+.mop-matrix-cell--warn { background: var(--warn-tint); }
+.mop-matrix-cell--warn .mop-matrix-figure { color: var(--warn); font-weight: 600; }
+.mop-matrix-spacer td { border: none; padding: 8px 0 0; }
+/* Gift Voucher/Credit Note rows are adjustments, not sale columns — a
+   hairline ahead of them (not the plain per-row one) plus extra padding
+   is what reads as "a separate block", never a text-colour change. */
+.mop-matrix-row--first-adjustment td { border-top: 1px solid var(--border); padding-top: 11px; }
+
+/* ============================================================================
+   Dividers
+   ============================================================================ */
+
+hr, div[data-testid="stDivider"] {
+  border-color: var(--border) !important;
+  margin: 20px 0 !important;
+}
+
+/* ============================================================================
+   Identifiers — a monospace treatment wherever a bare id is shown outside a
+   dataframe (the dataframe's own id columns cannot be targeted — see the
+   file header note; those already display in full, unmangled, per the
+   export/text rules in CLAUDE.md, independent of font).
+   ============================================================================ */
+
+.mop-id, code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}

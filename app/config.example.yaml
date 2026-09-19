@@ -1,0 +1,215 @@
+# MOP Reconciliation — configuration TEMPLATE
+#
+# Copy this file to config.yaml (already gitignored) and adjust the paths
+# under `sources:` to match where your own raw data folders actually live —
+# none of that data ships in this repository (see the README).
+#
+# Every rule that could change lives here, not in code (CLAUDE.md section 8).
+# base_dir is resolved relative to the project root (the parent of this app/
+# folder). Source paths below are the REAL folder names this project was
+# originally built against — see CLAUDE.md section 4: the six numbered
+# folders are never renamed or moved, so this map is how the code finds them
+# without restructuring anything. Adjust them to your own layout.
+
+base_dir: "."
+
+sources:
+  # POS. Only the bill-wise dump is actually supplied today; both logical
+  # sources point at the same folder because that's the only POS folder that
+  # exists. See CLAUDE.md section 5 ("POS sale — store wise: not supplied").
+  pos_store_wise: "1. POS Sales"
+  pos_bill_wise: "1. POS Sales"
+
+  # Petty cash / CMS deposit vouchers
+  ptc: "4. Petty cash ledger"
+
+  # Gateway settlement reports
+  paytm_settlement: "2. Settlement reports/Paytm"
+  axis_edc: "2. Settlement reports/Axis"
+  bajaj: "2. Settlement reports/Bajaj Pay"
+
+  # CMS cash pickup/credit report
+  axis_cms: "3. CMS received"
+
+  # Masters
+  pickup_code_master: "5.CMS DEPOSIT MASTER"
+  # Pickup codes the agency shares between more than one store — added
+  # 2026-09-12 after APM's July credits turned out to be posted entirely
+  # under MMR's code (defect A). A NEW top-level folder, not a subfolder of
+  # "5.CMS DEPOSIT MASTER": source discovery is depth-1 from the configured
+  # path and merges root + subfolder files into one list, so nesting this
+  # under the same path would make pickup_code_master's own file discovery
+  # see this file too (and vice versa) — two genuinely separate paths keep
+  # the two masters from ever colliding on "most recently modified".
+  # Deliberately small and hand-maintained: only a pickup code that actually
+  # needs location to disambiguate belongs here (today: AX31918 only) — every
+  # other code keeps resolving on the code alone via pickup_code_master.
+  pickup_location_master: "5a. Pickup location master"
+  mid_master: "6.MID WISE STORE CODE MASTER"
+  # The real store master, supplied 2026-09-10. Replaces the provisional list
+  # that was derived from the POS dump: full site name -> short store code.
+  # Top-level folder renamed from "closing balance at store" to "Opening
+  # balance at store" by the operator on 2026-09-23 (April-August reload) —
+  # updated here to match; the folder is a container only, never interpreted
+  # (CLAUDE.md section 4), so this rename carries no meaning of its own.
+  store_master: "Opening balance at store/Active site vs store code"
+
+  # Opening cash balance — the TRUE input is April's file only (as at
+  # 01-04-2026). May through August each derive their opening from the
+  # previous month's computed closing, per store (operator's ruling,
+  # 2026-09-23) — there will never be a monthly opening file for those four.
+  # Scoped to the "April Opening Balance" subfolder specifically so
+  # `io_.latest_file` cannot pick up the sibling "July opening balance"
+  # file by mistake; that file is read separately, as a CHECK against the
+  # chain's own computed 01-Jul opening, never as an ingest input.
+  opening_cash: "Opening balance at store/April Opening Balance"
+
+  # Not supplied yet (CLAUDE.md open items) — kept as null so the code can
+  # report "not configured" rather than guessing a path that doesn't exist.
+  bank_statement: null
+  holiday_calendar: null
+
+# MOP classification — CLAUDE.md section 6.1. An unknown MOP stops that
+# store-day and is reported; it is never guessed into one of these classes.
+mop_classification:
+  Cash:
+    class: cash
+    reconciled_in: [R3a]
+    bucket: cash
+  # bucket: digital — NOT card/upi (corrected 2026-09-19, see
+  # docs/MOP_PAYMENT_MODE.md). "PAYTM EDC" is one shared terminal that
+  # accepts BOTH card and UPI (Axis TIDs are mapped onto Paytm machines for
+  # card acceptance) — the MOP name cannot tell you which one a given bill
+  # used. The particulars matrix's Card/UPI split now comes from the
+  # matched TRANSACTION's own payment_mode (mop_matrix.classify_digital_
+  # mode()), never from this field, for every MOP below except the two
+  # Bajaj ones — Bajaj's own settlement data cannot reliably tell card from
+  # UPI (CLAUDE.md 6.2), but "Bajajpay Card"/"Bajajpay UPI" are two
+  # distinct, correctly-informative POS MOPs, not a shared terminal, so
+  # that one case reads its answer directly from the bill rather than
+  # inferring it — see classify_digital_mode()'s own docstring.
+  PAYTM EDC:
+    class: digital
+    reconciled_in: [R1, R2]
+    bucket: digital
+  PaytmDQR:
+    class: digital
+    reconciled_in: [R1, R2]
+    bucket: digital
+  PAYTM DQR MOREFUN:
+    class: digital
+    reconciled_in: [R1, R2]
+    bucket: digital
+  EDC OTHER:
+    class: digital_noref
+    reconciled_in: [R1_special, R2]
+    bucket: digital
+  EDC OTHER AXIS:
+    class: digital_noref
+    reconciled_in: [R1_special, R2]
+    bucket: digital
+  Bajajpay UPI:
+    class: digital
+    reconciled_in: [R1, R2]
+    bucket: digital
+  Bajajpay Card:
+    class: digital
+    reconciled_in: [R1, R2]
+    bucket: digital
+  Credit Note Issued:
+    class: non_settling
+    reconciled_in: []
+    bucket: credit_note_issued
+  Credit Note Received:
+    class: non_settling
+    reconciled_in: []
+    bucket: credit_note_received
+  Gift Voucher:
+    class: non_settling
+    reconciled_in: []
+    bucket: gift_voucher
+
+# Settlement cycles — CLAUDE.md section 6.5. Due date = first working day
+# after the transaction/deposit date, skipping weekends and public holidays.
+# Bajaj's cycle is not yet confirmed by any document or sample data — left
+# null rather than assumed, per the "nothing is guessed" rule.
+settlement_cycles:
+  paytm:
+    cycle_days: 1
+    basis: working_day
+  axis:
+    cycle_days: 1
+    basis: working_day
+  bajaj:
+    cycle_days: null    # not confirmed — see CLAUDE.md open items
+    basis: working_day
+  cms:
+    cycle_days: [0, 1]  # T+0 or T+1, per store, from the pickup code master
+    basis: working_day
+    per_store: true
+
+# Nil tolerance — CLAUDE.md non-negotiable rule 1. Never compare floats with
+# ==; compare against this constant.
+tolerance: 0
+
+# Text encoding per source — declared, never guessed (CLAUDE.md section 5).
+# Only text-based formats need one; .xlsx/.xlsb carry their own encoding
+# internally and openpyxl/pyxlsb handle it, so they're omitted here.
+encodings:
+  ptc: cp1252              # confirmed on the 21-Jul-2026 sample; a UTF-8 read throws
+  paytm_settlement: utf-8  # confirmed on the CSV parts inside the zips
+  axis_cms: utf-8          # the July zip's CSV; the daily file is .xlsx and needs none
+
+# Store float — the Float page (2026-09-13, threshold and formula corrected
+# 2026-09-15). "Float" is opening balance LESS the cash deposited that
+# business date — column N on the store sheet (= H + I, I already negative)
+# — NOT the closing balance (column M). This section only says when it
+# counts as too high.
+float_tracker:
+  # Rs 2,00,000 is r3a's own "cash accumulating" threshold above, for a
+  # different question (is R3a's book internally consistent). This is the
+  # OPERATOR'S day-to-day float-management threshold, deliberately separate
+  # and lower — Rs 10,000, per instruction (2026-09-15, corrected from a
+  # much higher original default).
+  float_threshold: 10000
+  # Per-store overrides, empty today. The supplied store master
+  # (`SR.No · CURRENTLY ACTICVE · SITES NAMES · Store Code`, §5) carries no
+  # threshold column of its own, so an override is never guessed from it;
+  # a store only gets a different threshold here by an explicit, named entry
+  # in config — see CLAUDE.md §6.15 for why this stays here rather than in
+  # the store master file.
+  threshold_overrides: {}
+
+# R3a — store cash book
+r3a:
+  # Closing cash above this at a store means cash is accumulating and not
+  # being deposited. Configurable by decision; started at Rs 2,00,000.
+  high_cash_threshold: 200000
+  # A store with cash sales and no deposit voucher for this many consecutive
+  # COLLECTION days is flagged. Days on which the agency collected from nobody
+  # (the July Sundays) are excluded, or every store is flagged every weekend.
+  no_deposit_days: 3
+
+# Manual matching — reason codes an operator must pick from. Held in config,
+# not code, so the list can change without a code change (section 8).
+manual_match:
+  # There USED to be a match_window_days setting here (a ±N-day search
+  # window around the bill's date). Removed 2026-09-13: a window still
+  # missed genuine matches (SA12/045803/0726's transaction was dated 7 days
+  # after the bill), and a gateway reference is globally unique regardless
+  # of which day the gateway posted it — so both Tier 1 (r1_bill_txn) and
+  # manual matching now search the ENTIRE loaded transaction table, no
+  # window or restriction of any kind. Nothing to configure any more.
+  reason_codes:
+    - gateway_confirmed_by_email
+    - gateway_portal_shows_success
+    - late_settlement_file
+    - reference_mistyped_at_pos
+    - store_confirmed_with_customer
+    - duplicate_bill_awaiting_deletion
+    - other_see_note
+    # Recorded automatically on every row applied from the Bill match page's
+    # bulk upload (2026-09-13) — that template carries a free-text remark
+    # instead of a picked reason code, so this one fixed code identifies the
+    # batch's own reason as "see the remark", never invented per row.
+    - bulk_upload

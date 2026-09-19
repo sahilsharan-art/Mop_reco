@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mop_reco_dashboard",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "streamlit", "run", "app/Summary.py",
+                      "--server.port", "8501", "--server.headless", "true"],
+      "port": 8501
+    }
+  ]
+}
