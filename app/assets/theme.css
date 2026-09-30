@@ -687,9 +687,6 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
   border-bottom: 1px solid var(--border);
 }
 .mop-matrix-rowlabel-head { text-align: left !important; }
-/* The Total sale column is the anchor — --surface-alt so it reads as the
-   column everything else is measured against. */
-.mop-matrix-colhead--anchor, .mop-matrix-cell--anchor { background: var(--surface-alt); }
 /* Row height ~32px (was ~40px, 2026-09-21) — smaller fonts plus tighter
    vertical padding, not a fixed height, so a row still grows if a cell
    ever needs two lines (the "% to total" sub-line). */
@@ -721,6 +718,15 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
 /* The only tint anywhere in the matrix: a non-zero Receivable. */
 .mop-matrix-cell--warn { background: var(--warn-tint); }
 .mop-matrix-cell--warn .mop-matrix-figure { color: var(--warn); font-weight: 600; }
+/* Reserved for a future per-cell MISMATCH state — nothing in this table
+   sets `mop-matrix-cell--bad` today (every current control failure here
+   is a page-level red banner above the matrix, never a per-cell tint),
+   but the precedence is fixed now so a future caller never has to
+   re-litigate it: --bad always wins over the warn tint. The single
+   !important is deliberate and scoped to exactly this one rule, the same
+   pragmatic use already made elsewhere in this file. */
+.mop-matrix-cell--bad { background: var(--bad-tint) !important; }
+.mop-matrix-cell--bad .mop-matrix-figure { color: var(--bad); font-weight: 600; }
 .mop-matrix-spacer td { border: none; padding: 8px 0 0; }
 /* Gift Voucher/Credit Note rows are adjustments, not sale columns — a
    hairline ahead of them (not the plain per-row one) plus extra padding

@@ -32,6 +32,16 @@ Four things are deliberate:
   range) so a tab pulled out on its own is still auditable — the operator
   said "so I can use whichever I need", which means any one of the five may
   travel alone.
+
+Report layout, 2026-09-30 — Store/Date/Digital block/spacer/Cash block
+------------------------------------------------------------------------
+This module's own report layout (`COLUMN_ORDER` below) is deliberately
+different from `store_sheet.FIELDS`, the engine's internal A..N column
+order that the on-screen table and every other consumer still use,
+untouched. `_write_row`/`_write_cross_sheet_total_row` already read a
+record by FIELD NAME, never by position, so reordering the columns THIS
+MODULE writes has zero effect on the engine, the dashboard page, or any
+other test of `store_sheet.py` itself.
 """
 
 from __future__ import annotations
@@ -42,7 +52,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from .store_sheet import COLUMNS, FIELDS
+from .formatting import display_date
 from .store_sheet import verify_date_rows_equal_store_sums as _verify_dates
 
 logger = logging.getLogger("mop_reco")
@@ -55,46 +65,138 @@ INDIAN = "#,##,##0.00"
 
 DETAIL_SHEET = "By store and date"
 
-# field name -> its Excel column letter. A..N is the operator's contract, and
-# the fields are written in exactly that order, so position gives the letter.
-LETTER = {name: chr(ord("A") + i) for i, name in enumerate(FIELDS)}
+# ---------------------------------------------------------------------------
+# The export's own column order — Store first, Date second, the digital
+# block grouped together (Total sale/Digital sale/Digital received/Digital
+# receivable), a blank spacer, then the cash block with Cash sale moved to
+# sit right after Opening balance. `None` marks the spacer: no field, no
+# header text, just a fill running the height of the sheet. Float amount is
+# last and detail-sheet-only (2c) — dropped from `_columns(False)`.
+# ---------------------------------------------------------------------------
+COLUMN_ORDER = [
+    "store", "date", "total_sale", "digital_sale", "digital_received",
+    "digital_receivable", None, "opening_balance", "cash_sale",
+    "cash_deposit", "cash_received", "cash_receivable",
+    "cash_expense_income", "closing_balance", "float_amount",
+]
 
-# The derived columns, as Excel formulas. The column letters are written
-# literally because A..N IS the format — a formula reading "=D5+E5" is what
-# the operator expects to see when they click the cell, and indirection
-# through field names would only obscure it.
-FORMULAS = {
-    "total_sale": "=D{r}+E{r}",
-    "digital_receivable": "=D{r}-F{r}",
-    "cash_receivable": "=I{r}-J{r}",
-    "closing_balance": "=H{r}+E{r}-I{r}+L{r}",
-    "float_amount": "=H{r}-I{r}",
+LABELS = {
+    "store": "Store", "date": "Date", "total_sale": "Total sale",
+    "digital_sale": "Digital sale", "digital_received": "Digital received",
+    "digital_receivable": "Digital receivable",
+    "opening_balance": "Opening balance", "cash_sale": "Cash sale",
+    "cash_deposit": "Cash deposit", "cash_received": "Cash received",
+    "cash_receivable": "Cash receivable",
+    "cash_expense_income": "Cash expense/income",
+    "closing_balance": "Closing balance", "float_amount": "Float amount",
 }
 
+# Letters as they land AFTER the reorder — computed from POSITION, never
+# hand-typed, so a future reorder can't leave a formula pointing at a stale
+# letter (exactly the failure mode the operator flagged: "this is where a
+# reorder usually breaks a workbook"). The spacer still consumes a letter
+# slot (G) even though it never gets a dict entry, so H onward land right.
+LETTER = {name: chr(ord("A") + i) for i, name in enumerate(COLUMN_ORDER) if name}
+
+# The two group-header spans (2e) — "Digital Reco" over the digital block,
+# "Cash Reco" over the cash block. Float amount sits after Closing balance
+# on the detail sheet, deliberately OUTSIDE both groups — it's a Float-page
+# concept riding along on the detail tab, not part of either reconciliation.
+DIGITAL_GROUP = ("total_sale", "digital_sale", "digital_received", "digital_receivable")
+CASH_GROUP = ("opening_balance", "cash_sale", "cash_deposit", "cash_received",
+             "cash_receivable", "cash_expense_income", "closing_balance")
+
+# DERIVED formulas, written in terms of the OTHER field's own letter via
+# `LETTER` — never a hand-typed literal letter — so this is safe against a
+# future reorder by construction, not by careful proofreading.
+FORMULAS = {
+    "total_sale": lambda r: f"={LETTER['digital_sale']}{r}+{LETTER['cash_sale']}{r}",
+    "digital_receivable": lambda r: (
+        f"={LETTER['digital_sale']}{r}-{LETTER['digital_received']}{r}"),
+    "cash_receivable": lambda r: (
+        f"={LETTER['cash_deposit']}{r}-{LETTER['cash_received']}{r}"),
+    "closing_balance": lambda r: (
+        f"={LETTER['opening_balance']}{r}+{LETTER['cash_sale']}{r}"
+        f"-{LETTER['cash_deposit']}{r}+{LETTER['cash_expense_income']}{r}"),
+    "float_amount": lambda r: (
+        f"={LETTER['opening_balance']}{r}-{LETTER['cash_deposit']}{r}"),
+}
+
+# Which columns carry their own permanent data-row fill (2f) — everything
+# else has none. Digital sale and Cash sale share the identical hex value,
+# so they share one format family ("dsale") internally; Total sale is its
+# own, darker tint ("tsale").
+TINT_FAMILY = {"total_sale": "tsale", "digital_sale": "dsale", "cash_sale": "dsale"}
+TINT_HEX = {"tsale": "#D9D9D9", "dsale": "#E7E6E6"}
+
+
 def _formula(name: str, row: int) -> str:
-    return FORMULAS[name].format(r=row)
+    return FORMULAS[name](row)
+
+
+def _columns(include_float: bool) -> list:
+    return COLUMN_ORDER if include_float else COLUMN_ORDER[:-1]
 
 
 def _formats(book):
-    return {
+    HEADER_FILL = "#EAEDED"
+    SPACER_FILL = "#EDEDED"
+    TOTAL_FILL = "#D6EAF8"
+
+    def money(fill=None, total=False):
+        opts = {"num_format": INDIAN}
+        if fill:
+            opts["bg_color"] = fill
+        if total:
+            opts.update(bold=True, top=2, bottom=2)
+        return book.add_format(opts)
+
+    def text(fill=None, total=False):
+        opts = {}
+        if fill:
+            opts["bg_color"] = fill
+        if total:
+            opts.update(bold=True, top=2, bottom=2)
+        return book.add_format(opts)
+
+    fmt = {
         "title": book.add_format({"bold": True, "font_size": 13}),
         "label": book.add_format({"font_color": "#5d6d7e"}),
-        "head": book.add_format({"bold": True, "bg_color": "#eaeded",
-                                 "border": 1, "align": "center",
-                                 "text_wrap": True, "valign": "vcenter"}),
-        "block": book.add_format({"bold": True, "font_size": 11,
-                                  "font_color": "#1c2833"}),
-        "money": book.add_format({"num_format": INDIAN}),
-        "money_total": book.add_format({"num_format": INDIAN, "bold": True,
-                                        "bg_color": "#d6eaf8", "top": 2,
-                                        "bottom": 2}),
-        "text": book.add_format({}),
-        "text_total": book.add_format({"bold": True, "bg_color": "#d6eaf8",
-                                       "top": 2, "bottom": 2}),
         "note": book.add_format({"font_color": "#5d6d7e", "italic": True}),
         "green": book.add_format({"bold": True, "font_color": "#1e8449"}),
         "red": book.add_format({"bold": True, "font_color": "#c0392b"}),
+        # Group headers (2e) — bold, no fill, left-aligned over their block.
+        "group": book.add_format({"bold": True, "align": "left"}),
+        # The plain column-header row (2f) — every cell #EAEDED, except the
+        # spacer's own #EDEDED (2d).
+        "head": book.add_format({"bold": True, "bg_color": HEADER_FILL,
+                                 "border": 1, "align": "center",
+                                 "text_wrap": True, "valign": "vcenter"}),
+        "head_spacer": book.add_format({"bold": True, "bg_color": SPACER_FILL,
+                                        "border": 1}),
+        # The spacer's own data-row fill (2d) — no number format, it never
+        # carries a value.
+        "spacer": book.add_format({"bg_color": SPACER_FILL}),
+        # Section headings on the Excluded types tab — unrelated to this
+        # rework, kept as it always was.
+        "block": book.add_format({"bold": True, "font_size": 11,
+                                  "font_color": "#1c2833"}),
+        "money": money(),
+        "money_total": money(fill=TOTAL_FILL, total=True),
+        "text": text(),
+        "text_total": text(fill=TOTAL_FILL, total=True),
     }
+    for family, hexval in TINT_HEX.items():
+        fmt[f"money_{family}"] = money(fill=hexval)
+        fmt[f"money_{family}_total"] = money(fill=hexval, total=True)
+    return fmt
+
+
+def _money_format(fmt, name: str, is_total: bool):
+    family = TINT_FAMILY.get(name)
+    if family is None:
+        return fmt["money_total"] if is_total else fmt["money"]
+    return fmt[f"money_{family}_total"] if is_total else fmt[f"money_{family}"]
 
 
 def _provenance(ws, formats, tab_purpose: str, run_id, run_timestamp,
@@ -120,65 +222,103 @@ def _provenance(ws, formats, tab_purpose: str, run_id, run_timestamp,
     return row + 1
 
 
-def _header_row(ws, row, formats) -> int:
-    for index, (letter, _name, text_label) in enumerate(COLUMNS):
-        ws.write(row, index, f"{letter}  {text_label}", formats["head"])
-    return row + 1
+def _span(names) -> tuple:
+    cols = COLUMN_ORDER  # group spans are defined against the full order —
+                        # both groups sit before Float amount, so this is
+                        # identical whether or not the sheet carries it.
+    return cols.index(names[0]), cols.index(names[-1])
 
 
-def _column_widths(ws):
-    ws.set_column(0, 0, 24)
-    ws.set_column(1, 1, 16)
-    ws.set_column(2, len(FIELDS) - 1, 17)
+def _write_headers(ws, row: int, formats, include_float: bool) -> int:
+    """Two header rows (2e): group headers, then the plain column-header
+    row (2a — no letter prefixes). Returns the first data row."""
+    cols = _columns(include_float)
+    group_row, head_row = row, row + 1
+
+    d_first, d_last = _span(DIGITAL_GROUP)
+    c_first, c_last = _span(CASH_GROUP)
+    ws.merge_range(group_row, d_first, group_row, d_last,
+                   "Digital Reco", formats["group"])
+    ws.merge_range(group_row, c_first, group_row, c_last,
+                   "Cash Reco", formats["group"])
+
+    for index, name in enumerate(cols):
+        if name is None:
+            ws.write_blank(head_row, index, None, formats["head_spacer"])
+        else:
+            ws.write(head_row, index, LABELS[name], formats["head"])
+    return head_row + 1
 
 
-def _write_row(ws, row: int, record, money_format, text_format):
+def _column_widths(ws, include_float: bool):
+    for index, name in enumerate(_columns(include_float)):
+        if name is None:
+            ws.set_column(index, index, 1.63)
+        elif name == "store":
+            ws.set_column(index, index, 16)
+        elif name == "date":
+            ws.set_column(index, index, 14)
+        else:
+            ws.set_column(index, index, 17)
+
+
+def _cell_text(record, name: str) -> str:
+    return display_date(record[name]) if name == "date" else str(record[name])
+
+
+def _write_row(ws, row: int, record, formats, include_float: bool):
     """One data row. Derived columns go in as formulas, with the computed
     value cached so a reader that does not evaluate formulas still sees the
-    number."""
+    number. The spacer column gets its own fill and nothing else (2d)."""
     excel_row = row + 1
-    ws.write(row, 0, str(record["date"]), text_format)
-    ws.write(row, 1, str(record["store"]), text_format)
-    for index, name in enumerate(FIELDS):
-        if index < 2:
+    for index, name in enumerate(_columns(include_float)):
+        if name is None:
+            ws.write_blank(row, index, None, formats["spacer"])
+            continue
+        if name in ("store", "date"):
+            ws.write(row, index, _cell_text(record, name), formats["text"])
             continue
         value = float(record[name])
+        fmt = _money_format(formats, name, is_total=False)
         if name in FORMULAS:
-            ws.write_formula(row, index, _formula(name, excel_row),
-                             money_format, value)
+            ws.write_formula(row, index, _formula(name, excel_row), fmt, value)
         else:
-            ws.write_number(row, index, value, money_format)
+            ws.write_number(row, index, value, fmt)
 
 
 def _write_cross_sheet_total_row(ws, row: int, record, detail_first: int,
-                                 detail_last: int, money_format, text_format):
+                                 detail_last: int, formats, include_float: bool):
     """A TOTAL / grand-total row whose SUM formulas point at the DETAIL rows
     on the "By store and date" tab — never at another summary tab — so
-    tracing it never depends on trusting a block in between."""
+    tracing it never depends on trusting a block in between. Columns with
+    their own permanent tint (2f) keep that tint here too, bold and
+    bordered, rather than the plain blue total-row fill."""
     excel_row = row + 1
-    ws.write(row, 0, str(record["date"]), text_format)
-    ws.write(row, 1, str(record["store"]), text_format)
-    for index, name in enumerate(FIELDS):
-        if index < 2:
+    for index, name in enumerate(_columns(include_float)):
+        if name is None:
+            ws.write_blank(row, index, None, formats["spacer"])
+            continue
+        if name in ("store", "date"):
+            ws.write(row, index, _cell_text(record, name), formats["text_total"])
             continue
         value = float(record[name])
         letter = LETTER[name]
+        fmt = _money_format(formats, name, is_total=True)
         if name in FORMULAS:
-            ws.write_formula(row, index, _formula(name, excel_row),
-                             money_format, value)
+            ws.write_formula(row, index, _formula(name, excel_row), fmt, value)
         elif name == "opening_balance":
             # The whole range's opening is the FIRST detail row's opening —
             # never a sum, which would double-count the carry-forward across
             # every day in the range.
             ws.write_formula(
                 row, index, f"='{DETAIL_SHEET}'!{letter}{detail_first}",
-                money_format, value)
+                fmt, value)
         else:
             ws.write_formula(
                 row, index,
                 f"=SUM('{DETAIL_SHEET}'!{letter}{detail_first}:"
                 f"{letter}{detail_last})",
-                money_format, value)
+                fmt, value)
 
 
 def build_workbook(sheet: pd.DataFrame, summary: pd.DataFrame,
@@ -205,6 +345,9 @@ def build_workbook(sheet: pd.DataFrame, summary: pd.DataFrame,
     if other_types is None:
         other_types = pd.DataFrame(columns=["type", "rows", "value", "feeds_J"])
 
+    n_cols_full = len(_columns(True))
+    n_cols_plain = len(_columns(False))
+
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         book = writer.book
@@ -230,17 +373,17 @@ def build_workbook(sheet: pd.DataFrame, summary: pd.DataFrame,
         row = _provenance(ws_detail, fmt, "One row per store per business "
                                           "date — the full detail.",
                           run_id, run_timestamp, date_from, date_to)
-        row = _header_row(ws_detail, row, fmt)
+        row = _write_headers(ws_detail, row, fmt, include_float=True)
         detail_header = row - 1
         detail_first = row + 1
         for _, record in sheet.iterrows():
-            _write_row(ws_detail, row, record, fmt["money"], fmt["text"])
+            _write_row(ws_detail, row, record, fmt, include_float=True)
             row += 1
         detail_last = row
         ws_detail.freeze_panes(detail_header + 1, 2)
         ws_detail.autofilter(detail_header, 0, max(detail_last - 1, detail_header),
-                             len(FIELDS) - 1)
-        _column_widths(ws_detail)
+                             n_cols_full - 1)
+        _column_widths(ws_detail, include_float=True)
 
         # =====================================================================
         # Tab 1 — By date, all stores consolidated, plus TOTAL
@@ -249,23 +392,23 @@ def build_workbook(sheet: pd.DataFrame, summary: pd.DataFrame,
                                            "stores consolidated, plus a "
                                            "TOTAL row.",
                           run_id, run_timestamp, date_from, date_to)
-        row = _header_row(ws_by_date, row, fmt)
+        row = _write_headers(ws_by_date, row, fmt, include_float=False)
         by_date_header = row - 1
         per_date = summary[summary["date"] != "TOTAL"]
         for _, record in per_date.iterrows():
-            _write_row(ws_by_date, row, record, fmt["money"], fmt["text"])
+            _write_row(ws_by_date, row, record, fmt, include_float=False)
             row += 1
         by_date_last = row
         total_row = summary[summary["date"] == "TOTAL"]
         if not total_row.empty:
             _write_cross_sheet_total_row(
                 ws_by_date, row, total_row.iloc[0], detail_first, detail_last,
-                fmt["money_total"], fmt["text_total"])
+                fmt, include_float=False)
             row += 1
         ws_by_date.freeze_panes(by_date_header + 1, 2)
         ws_by_date.autofilter(by_date_header, 0, max(by_date_last - 1, by_date_header),
-                              len(FIELDS) - 1)
-        _column_widths(ws_by_date)
+                              n_cols_plain - 1)
+        _column_widths(ws_by_date, include_float=False)
 
         # A consistency check finer than any lettered control: every
         # consolidated date row must equal the sum of that date's own store
@@ -290,16 +433,16 @@ def build_workbook(sheet: pd.DataFrame, summary: pd.DataFrame,
         row = _provenance(ws_by_store, fmt, "One row per store for the whole "
                                             "range, plus a grand total.",
                           run_id, run_timestamp, date_from, date_to)
-        row = _header_row(ws_by_store, row, fmt)
+        row = _write_headers(ws_by_store, row, fmt, include_float=False)
         by_store_header = row - 1
         for _, record in summary_by_store.iterrows():
-            _write_row(ws_by_store, row, record, fmt["money"], fmt["text"])
+            _write_row(ws_by_store, row, record, fmt, include_float=False)
             row += 1
         by_store_last = row
         if not grand_total.empty:
             _write_cross_sheet_total_row(
                 ws_by_store, row, grand_total.iloc[0], detail_first, detail_last,
-                fmt["money_total"], fmt["text_total"])
+                fmt, include_float=False)
             row += 1
         ws_by_store.write(
             row + 1, 0, "Opening is that store's FIRST date's opening and "
@@ -309,8 +452,8 @@ def build_workbook(sheet: pd.DataFrame, summary: pd.DataFrame,
         ws_by_store.freeze_panes(by_store_header + 1, 2)
         ws_by_store.autofilter(by_store_header, 0,
                                max(by_store_last - 1, by_store_header),
-                               len(FIELDS) - 1)
-        _column_widths(ws_by_store)
+                               n_cols_plain - 1)
+        _column_widths(ws_by_store, include_float=False)
 
         # =====================================================================
         # Tab 4 — Excluded types

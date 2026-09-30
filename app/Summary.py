@@ -259,7 +259,7 @@ def _adjustment_row(label: str, value: float, first: bool = False, colour: str =
     return (
         f"<tr class='{cls}'>"
         f"<td class='mop-matrix-rowlabel'>{label}</td>"
-        f"<td class='mop-matrix-cell mop-matrix-cell--anchor'>"
+        f"<td class='mop-matrix-cell'>"
         f"<div class='mop-matrix-figure'{style}>{money_cr(value)}</div></td>"
         f"<td colspan='4'></td></tr>"
     )
@@ -269,17 +269,16 @@ _row_sale = "<tr class='mop-matrix-row mop-matrix-row--sale'><td class='mop-matr
 _row_collected = "<tr class='mop-matrix-row'><td class='mop-matrix-rowlabel'>Collected</td>"
 _row_receivable = "<tr class='mop-matrix-row'><td class='mop-matrix-rowlabel'>Receivable</td>"
 for i, col in enumerate(_matrix_cols):
-    anchor = " mop-matrix-cell--anchor" if i == 0 else ""
     pct_html = (f"<div class='mop-matrix-pct'>{col.pct:.1f}%</div>"
                if col.pct is not None else "")
-    _row_sale += (f"<td class='mop-matrix-cell{anchor}'>"
+    _row_sale += (f"<td class='mop-matrix-cell'>"
                  f"<div class='mop-matrix-figure mop-matrix-figure--strong'>"
                  f"{money_cr(col.sale)}</div>{pct_html}</td>")
-    _row_collected += (f"<td class='mop-matrix-cell{anchor}'>"
+    _row_collected += (f"<td class='mop-matrix-cell'>"
                        f"<div class='mop-matrix-figure'>{money_cr(col.collected)}</div></td>")
     warn = abs(col.receivable) > 0.005
     warn_cls = " mop-matrix-cell--warn" if warn else ""
-    _row_receivable += (f"<td class='mop-matrix-cell{anchor}{warn_cls}'>"
+    _row_receivable += (f"<td class='mop-matrix-cell{warn_cls}'>"
                         f"<div class='mop-matrix-figure'>{money_cr(col.receivable)}</div></td>")
 _row_sale += "</tr>"
 _row_collected += "</tr>"
@@ -296,7 +295,7 @@ matrix_html = f"""
     </tr>
     <tr class='mop-matrix-headrow'>
       <th class='mop-matrix-rowlabel-head'></th>
-      <th class='mop-matrix-colhead mop-matrix-colhead--anchor'>Total sale</th>
+      <th class='mop-matrix-colhead'>Total sale</th>
       <th class='mop-matrix-colhead'>UPI</th>
       <th class='mop-matrix-colhead'>Card</th>
       <th class='mop-matrix-colhead'>Total digital</th>

@@ -635,14 +635,21 @@ def test_the_derived_columns_are_written_as_excel_formulas_on_the_detail_tab(two
     book = openpyxl.load_workbook(io.BytesIO(data))
     ws = book["By store and date"]
 
+    # No letter prefixes any more (2026-09-30) — the column-header row (the
+    # SECOND header row, below the group-header row) is found by its plain
+    # "Store" label, Store now being column A.
     header = next(r for r in range(1, 20)
-                  if str(ws.cell(r, 1).value or "") == "A  Date")
+                  if str(ws.cell(r, 1).value or "") == "Store")
     row = header + 1                          # the first data row
-    assert ws.cell(row, 3).value == f"=D{row}+E{row}"           # C
-    assert ws.cell(row, 7).value == f"=D{row}-F{row}"           # G
-    assert ws.cell(row, 11).value == f"=I{row}-J{row}"          # K
-    assert ws.cell(row, 13).value == f"=H{row}+E{row}-I{row}+L{row}"   # M
-    assert ws.cell(row, 14).value == f"=H{row}-I{row}"          # N
+    # New column order: A Store, B Date, C Total sale, D Digital sale,
+    # E Digital received, F Digital receivable, G spacer, H Opening balance,
+    # I Cash sale, J Cash deposit, K Cash received, L Cash receivable,
+    # M Cash expense/income, N Closing balance, O Float amount.
+    assert ws.cell(row, 3).value == f"=D{row}+I{row}"           # C total_sale
+    assert ws.cell(row, 6).value == f"=D{row}-E{row}"           # F digital_receivable
+    assert ws.cell(row, 12).value == f"=J{row}-K{row}"          # L cash_receivable
+    assert ws.cell(row, 14).value == f"=H{row}+I{row}-J{row}+M{row}"   # N closing_balance
+    assert ws.cell(row, 15).value == f"=H{row}-J{row}"          # O float_amount
     # The source columns stay values, Indian-formatted.
     assert isinstance(ws.cell(row, 4).value, (int, float))
     assert ws.cell(row, 4).number_format == "#,##,##0.00"
@@ -793,17 +800,22 @@ def test_each_tabs_last_row_is_a_total_and_they_agree_with_the_detail(two_days):
     by_store_ws = book["By store"]
     detail_ws = book["By store and date"]
 
+    # No letter prefixes (2026-09-30); Store is column A now, so the header
+    # row is found by "Store".
     detail_header = next(r for r in range(1, 20)
-                         if detail_ws.cell(r, 1).value == "A  Date")
+                         if detail_ws.cell(r, 1).value == "Store")
     detail_rows = range(detail_header + 1, detail_ws.max_row + 1)
     detail_total_D = sum(float(detail_ws.cell(r, 4).value or 0) for r in detail_rows)
 
+    # "TOTAL" now lives in column B (Date) — Store/Date swapped, and the
+    # TOTAL row's own Store cell carries the date span instead (§ store_sheet
+    # summarise_by_date's own convention, unchanged).
     by_date_total_row = next(
         r for r in range(1, by_date_ws.max_row + 1)
-        if str(by_date_ws.cell(r, 1).value or "") == "TOTAL")
+        if str(by_date_ws.cell(r, 2).value or "") == "TOTAL")
     by_store_total_row = next(
         r for r in range(1, by_store_ws.max_row + 1)
-        if str(by_store_ws.cell(r, 1).value or "") == "TOTAL")
+        if str(by_store_ws.cell(r, 2).value or "") == "TOTAL")
 
     assert abs(by_date_ws.cell(by_date_total_row, 4).value - detail_total_D) < 0.01
     assert abs(by_store_ws.cell(by_store_total_row, 4).value - detail_total_D) < 0.01
@@ -829,13 +841,15 @@ def test_the_total_rows_formulas_point_at_the_detail_tab_not_a_summary(two_days)
 
     for tab in ("By date", "By store"):
         ws = book[tab]
-        # Both the TOTAL row (tab 1) and the grand-total row (tab 3) carry
-        # "TOTAL" in column A — the provenance block's "Business date range"
-        # line also mentions the range in column B, so anchor on column A.
+        # Store/Date swapped (2026-09-30) — "TOTAL" now carries in column B
+        # (Date), with column A (Store) holding the date span instead; no
+        # provenance line's own value is literally "TOTAL", so this is
+        # unambiguous.
         total_row = next(
             r for r in range(1, ws.max_row + 1)
-            if str(ws.cell(r, 1).value or "") == "TOTAL")
-        d_formula = ws.cell(total_row, 4).value    # column D
+            if str(ws.cell(r, 2).value or "") == "TOTAL")
+        d_formula = ws.cell(total_row, 4).value    # column D — digital_sale,
+                                                    # unchanged position
         assert d_formula.startswith("=SUM('By store and date'!D")
 
 
