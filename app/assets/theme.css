@@ -555,6 +555,14 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
   margin-top: 2px;
   margin-bottom: 10px;
 }
+/* "All figures in Rs Cr" — shown only when a statement table opts into
+   Cr display (stmt_table's own `use_cr`, 2026-09-30). */
+.mop-stmt-note {
+  font-family: var(--font-body);
+  font-size: 10px;
+  color: var(--ink-soft);
+  margin-top: 8px;
+}
 
 .mop-stmt-table {
   width: 100%;

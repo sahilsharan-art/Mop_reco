@@ -855,6 +855,27 @@ def latest_remarks(session, exception_keys) -> dict:
     return latest
 
 
+def latest_remarks_full(session, exception_keys) -> dict:
+    """Like `latest_remarks()`, but also carries the timestamp —
+    {exception_key: (remark_text, created_by, created_at)}. A separate
+    function rather than changing `latest_remarks()`'s own return shape,
+    since Manual matches already depends on that 2-tuple (2026-09-30, added
+    for Summary's own editable remark columns, which need remark_at shown
+    alongside remark_by)."""
+    keys = [k for k in set(exception_keys) if k]
+    if not keys:
+        return {}
+    rows = (session.query(Exception_.exception_key, Remark.created_by,
+                          Remark.remark_text, Remark.created_at)
+           .join(Remark, Remark.exception_id == Exception_.id)
+           .filter(Exception_.exception_key.in_(keys))
+           .order_by(Remark.created_at.asc()).all())
+    latest = {}
+    for exception_key, created_by, remark_text, created_at in rows:
+        latest[exception_key] = (remark_text, created_by, created_at)
+    return latest
+
+
 # ---------------------------------------------------------------------------
 # Transactions
 # ---------------------------------------------------------------------------

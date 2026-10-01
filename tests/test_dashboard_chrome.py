@@ -554,13 +554,28 @@ def test_the_ribbon_tint_rule_still_lives_in_theme_css_only():
     assert "var(--surface-alt)" in css
 
 
-def test_all_controls_holding_shows_nothing_not_a_success_banner():
+def test_controls_never_banner_on_the_page_face_any_more():
     """The old page said "All 8 controls hold" every single time — noise,
-    since that is the normal case. Now: nothing at all when clean, and a red
-    banner is the ONLY thing shown when a control fails."""
+    since that is the normal case — and later grew a red top-of-page banner
+    for a failure instead. Both are gone (2026-09-30, on instruction: "move
+    it, do not delete it") — a failing control is a real finding (292
+    negative-closing store-days) but it now only shows inside the Data
+    notes expander, never as a banner across the page on load."""
     source = (APP / "Summary.py").read_text(encoding="utf-8")
     assert "All {len(controls)} controls hold" not in source
-    assert 'st.error(f"**{len(failed)} control(s) do not hold.**' in source
+    assert 'st.error(f"**{len(failed)} control(s) do not hold.**' not in source
+    assert 'st.error(f"**{len(_matrix_failed)}' in source  # the matrix's own
+                                                           # separate banner
+                                                           # is untouched
+
+
+def test_the_data_notes_expander_header_shows_a_failing_count():
+    """Moved out of a banner, the failing-count must still be visible at a
+    glance without opening the expander (2026-09-30)."""
+    source = (APP / "Summary.py").read_text(encoding="utf-8")
+    assert '_controls_failed = [c for c in controls if not c.holds]' in source
+    assert 'with st.expander(_notes_label):' in source
+    assert 'f"Data notes — {len(_controls_failed)} control' in source
 
 
 # ---------------------------------------------------------------------------
@@ -616,11 +631,15 @@ def test_exceptions_section_has_a_bottom_expander_for_closed_and_auto_resolved()
 
 def test_the_controls_table_and_notes_moved_into_a_bottom_expander():
     source = (APP / "Summary.py").read_text(encoding="utf-8")
-    assert 'with st.expander("Data notes")' in source
-    head, tail = source.split('with st.expander("Data notes")', 1)
+    assert 'with st.expander(_notes_label):' in source
+    head, tail = source.split('with st.expander(_notes_label):', 1)
     # "controls in full" only appears inside the bottom expander, not above it.
     assert "controls in full" not in head
     assert "controls in full" in tail
+    # A failing control's own offending rows get their own count/value and
+    # CSV export inside the same expander (2026-09-30).
+    assert "_control_value" in tail
+    assert 'noun=f"control ({c.key}) rows"' in tail
     # Notes come from a freshly-computed CMS breakdown now (2026-09-24), not
     # a static per-run snapshot read once at persist time — the underlying
     # bug this rework fixed (a stale run's controls/notes echoing back

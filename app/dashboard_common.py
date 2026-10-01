@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mop_reco.db import Exception_, R1BillLine, Run, get_session, init_db
 from mop_reco.export import XLSX_ROW_LIMIT, ExportMeta, build_export
 from mop_reco.formatting import count as fmt_count
-from mop_reco.formatting import money_short, money_table
+from mop_reco.formatting import money_cr, money_short, money_table
 
 # --- session keys ----------------------------------------------------------
 K_OPERATOR = "operator"
@@ -276,7 +276,7 @@ section[data-testid="stSidebar"] .op-footer { margin-top: auto; }
 # it verbatim ("same statement-style formatting as the cash block" — the
 # operator's own instruction) rather than a second, subtly different copy.
 
-def stmt_row(label, value) -> str:
+def stmt_row(label, value, use_cr: bool = False) -> str:
     """One line of a statement table — label left, figure right, always
     shown POSITIVE: the operation is carried by the row's own label text
     ("Add:"/"Less:"), never by a minus sign, which is the whole point of a
@@ -284,21 +284,31 @@ def stmt_row(label, value) -> str:
     non-negative (a deposit, a sale total) uses a FIXED label regardless of
     sign; only a figure that can genuinely be either (net expense/income)
     needs the CALLER to choose the label from its own sign before calling
-    this — see Summary.py's `_store_cash_card()` for that one case."""
+    this — see Summary.py's `_store_cash_card()` for that one case.
+
+    `use_cr` (2026-09-30) switches the figure to `money_cr()` — always
+    crores, two decimals, never rounds the stored value or sums already-
+    rounded parts — for callers that want one consistent unit across a
+    whole table (Summary's Cash Position/Cash With Agency). Defaults to
+    the original full-rupee `money_table()` so every other caller (CMS
+    Reco's own statement table) is unaffected."""
+    figure = money_cr(abs(value)) if use_cr else money_table(abs(value))
     return (f"<tr class='mop-stmt-row'>"
             f"<td class='mop-stmt-rowlabel'>{label}</td>"
-            f"<td class='mop-stmt-figure'>{money_table(abs(value))}</td></tr>")
+            f"<td class='mop-stmt-figure'>{figure}</td></tr>")
 
 
 def stmt_table(title, period, rows_html, result_label, result_value,
-               result_bad=False, result_warn=False) -> str:
+               result_bad=False, result_warn=False, use_cr: bool = False) -> str:
     warn_cls = " mop-stmt-cell--warn" if result_warn else ""
     bad_cls = " mop-stmt-figure--bad" if result_bad else ""
+    result_figure = money_cr(abs(result_value)) if use_cr else money_table(abs(result_value))
     total_row = (
         f"<tr class='mop-stmt-row mop-stmt-total{warn_cls}'>"
         f"<td class='mop-stmt-rowlabel'>{result_label}</td>"
-        f"<td class='mop-stmt-figure{bad_cls}'>{money_table(abs(result_value))}</td></tr>"
+        f"<td class='mop-stmt-figure{bad_cls}'>{result_figure}</td></tr>"
     )
+    note_html = "<div class='mop-stmt-note'>All figures in Rs Cr</div>" if use_cr else ""
     return f"""
 <div class='mop-stmt'>
   <div class='mop-stmt-title'>{title}</div>
@@ -310,6 +320,7 @@ def stmt_table(title, period, rows_html, result_label, result_value,
       {total_row}
     </tbody>
   </table>
+  {note_html}
 </div>"""
 
 

@@ -37,6 +37,7 @@ from dashboard_common import (
     latest_run,
     no_run_yet,
     page,
+    require_operator,
     sidebar,
     status_styler,
     stmt_row,
@@ -44,6 +45,8 @@ from dashboard_common import (
     stop_if_no_dates,
     tile,
 )
+from mop_reco import exception_remarks as er
+from mop_reco import exceptions as exc_mod
 from mop_reco import queries as q
 from mop_reco import store_sheet as ss
 from mop_reco import store_sheet_source as src
@@ -128,9 +131,9 @@ if shown.empty:
 # whatever sheet is already in memory (no query, no file read) — the export
 # button below already recomputed it live for exactly this reason; the
 # on-screen banner just never matched it. Recomputed the same way here now.
-controls = [(c.key, c.what, c.holds, c.detail) for c in ss.run_controls(
+controls = ss.run_controls(
     shown, summary_by_date_shown, None,
-    dashboard_digital=float(shown["digital_sale"].sum())).controls]
+    dashboard_digital=float(shown["digital_sale"].sum())).controls
 
 
 def _cms_breakdown():
@@ -161,20 +164,16 @@ def _cms_breakdown():
         "unresolved_pickups": unresolved,
     }
 
-# --- the controls — quiet when clean, loud when not (2026-09-12) ---------
+# --- the controls — reported, never shouted (revised 2026-09-30) ----------
 #
-# All 8 holding is the normal case and was noise as a banner every time; a
-# failure must never be quiet, so that alone gets a red banner naming which
-# control failed and by how much. The full controls table and the run's data
-# notes (opening date, unmapped cost centres, grand total check) move to a
-# collapsed "Data notes" expander at the BOTTOM of the page — findable, not
-# in the way.
-failed = [c for c in controls if not c[2]]
-if failed:
-    st.error(f"**{len(failed)} control(s) do not hold.** The figures below "
-             "cannot be relied on until this is explained.")
-    for key, what, _, detail in failed:
-        st.markdown(f"- **({key})** {what} — {detail}")
+# Both the top-of-page red banner AND the per-control bullet list used to
+# live here. Moved into the "Data notes" expander at the bottom, on
+# instruction — a failure is still a real finding (292 negative-closing
+# store-days, on the data this file already records, is not nothing), it
+# just no longer greets every page load. The expander's own header carries
+# a failing-count so it is still visible at a glance without opening it —
+# see "Data notes" below for the full table, per-failure count/value and a
+# CSV export of the offending rows.
 
 # --- whole-range totals (2026-09-18) ---------------------------------------
 #
@@ -427,11 +426,45 @@ if st.session_state.get("_store_sheet_xlsx"):
 st.divider()
 
 
-def display(frame: pd.DataFrame) -> pd.DataFrame:
-    out = pd.DataFrame({"A Date": frame["date"].map(display_date),
-                        "B Store": frame["store"]})
-    for letter, name, label in ss.COLUMNS[2:]:
-        if name == "cash_receivable":
+# The on-screen grid's own column order (2026-09-30) — identical to the
+# Excel export's layout (`store_sheet_export.COLUMN_ORDER`), minus its blank
+# spacer column: a canvas-drawn `st.dataframe` grid has no concept of an
+# unheaded filler column the way a real spreadsheet does, so the same
+# digital/cash separation is conveyed with a words-only caption above the
+# grid instead (a judgment call, stated here rather than silently guessed —
+# the grid genuinely cannot merge/span a header cell across columns either,
+# the same constraint already documented for the particulars matrix, §8.1).
+# No letter prefixes any more (2026-09-30) — they were internal references
+# and do not belong in a report, on the same instruction that removed them
+# from the Excel export.
+DISPLAY_COLUMNS = [
+    ("store", "Store"), ("date", "Date"), ("total_sale", "Total sale"),
+    ("digital_sale", "Digital sale"), ("digital_received", "Digital received"),
+    ("digital_receivable", "Digital receivable"),
+    ("opening_balance", "Opening balance"), ("cash_sale", "Cash sale"),
+    ("cash_deposit", "Cash deposit"), ("cash_received", "Cash received"),
+    ("cash_receivable", "Cash receivable"),
+    ("cash_expense_income", "Cash expense/income"),
+    ("closing_balance", "Closing balance"),
+]
+DIGITAL_RECO_GROUP = "Total sale, Digital sale, Digital received, Digital receivable"
+CASH_RECO_GROUP = ("Opening balance, Cash sale, Cash deposit, Cash received, "
+                   "Cash receivable, Cash expense/income, Closing balance")
+
+
+def display(frame: pd.DataFrame, include_float: bool = False) -> pd.DataFrame:
+    """`include_float` adds Float amount as the last column — present only
+    on the expanded per-store-per-day rows, never on the consolidated
+    ALL-STORES parent rows, exactly as the workbook carries it on "By store
+    and date" only (2c)."""
+    cols = DISPLAY_COLUMNS + ([("float_amount", "Float amount")] if include_float else [])
+    out = {}
+    for name, label in cols:
+        if name == "date":
+            out[label] = frame[name].map(display_date)
+        elif name == "store":
+            out[label] = frame[name]
+        elif name == "cash_receivable":
             # Never shown negative anywhere on this page (2026-09-13; K's
             # polarity swapped 2026-09-17 along with column I's sign). A
             # negative K (credit exceeds deposit, at whatever grain this row
@@ -439,11 +472,10 @@ def display(frame: pd.DataFrame) -> pd.DataFrame:
             # or the grand total) is a Defect B data artefact, not a
             # negative receivable — it floors to zero here and is named in
             # the Data quality expander instead, never displayed raw.
-            out[f"{letter} {label}"] = frame[name].map(
-                lambda k: money_table(max(0.0, float(k))))
+            out[label] = frame[name].map(lambda k: money_table(max(0.0, float(k))))
         else:
-            out[f"{letter} {label}"] = frame[name].map(money_table)
-    return out
+            out[label] = frame[name].map(money_table)
+    return pd.DataFrame(out)
 
 
 # ===========================================================================
@@ -500,28 +532,35 @@ def _store_cash_card():
     expense_label = ("Less: Net cash expense" if expense_income < 0
                      else "Add: Net cash income")
 
+    # Rs Cr throughout both tables (2026-09-30, on instruction) — 2 decimals,
+    # one consistent unit per table, never mixed with Lakh. Display only:
+    # `use_cr` formats each figure via `money_cr()` straight from the same
+    # unrounded float `store_cash_summary()` already computed; nothing here
+    # sums already-rounded Cr strings into a total.
     left_rows = (
-        _stmt_row("Opening balance", cash["opening_balance"])
-        + _stmt_row("Add: Cash sale", cash["cash_sale"])
-        + _stmt_row("Less: Cash deposit", cash["cash_deposit"])
-        + _stmt_row(expense_label, expense_income)
+        _stmt_row("Opening balance", cash["opening_balance"], use_cr=True)
+        + _stmt_row("Add: Cash sale", cash["cash_sale"], use_cr=True)
+        + _stmt_row("Less: Cash deposit", cash["cash_deposit"], use_cr=True)
+        + _stmt_row(expense_label, expense_income, use_cr=True)
     )
     result_bad = mismatch or cash["closing_at_store"] < 0
     left_html = _stmt_table(
         "CASH POSITION", period, left_rows,
         "Closing balance at store", cash["closing_at_store"], result_bad=result_bad,
+        use_cr=True,
     )
 
     receivable_mismatch = not cash["matches_receivable"]
     receivable_nonzero = abs(cash["cash_receivable_net"]) > 0.005
     right_rows = (
-        _stmt_row("Cash deposited", cash["cash_deposit"])
-        + _stmt_row("Less: Cash credited by bank", cash["cash_received"])
+        _stmt_row("Cash deposited", cash["cash_deposit"], use_cr=True)
+        + _stmt_row("Less: Cash credited by bank", cash["cash_received"], use_cr=True)
     )
     right_html = _stmt_table(
         "CASH WITH AGENCY", period, right_rows,
         "Cash receivable", cash["cash_receivable_net"],
         result_bad=receivable_mismatch, result_warn=receivable_nonzero,
+        use_cr=True,
     )
 
     st.markdown(
@@ -572,8 +611,16 @@ if store_detail_open:
 
     open_dates = st.session_state[OPEN_DATES_KEY]
 
+    # Group headers, in words (2026-09-30) — st.dataframe's canvas-drawn
+    # grid cannot merge/span a header cell across columns the way the Excel
+    # export's own "Digital Reco"/"Cash Reco" band can, so the same grouping
+    # is stated here instead, directly above the grid it describes.
+    st.caption(f"**Digital Reco**: {DIGITAL_RECO_GROUP} &nbsp;·&nbsp; "
+              f"**Cash Reco**: {CASH_RECO_GROUP}")
+
     # Parent (ALL STORES) rows only — build_grouped_table with an empty
-    # expansion list never splices any store row into this table.
+    # expansion list never splices any store row into this table. No Float
+    # amount here (2c) — it is a per-store-per-day figure, detail-only.
     parent_only = ss.build_grouped_table(
         shown, summary_by_date_shown, []).reset_index(drop=True)
     event = st.dataframe(
@@ -661,7 +708,7 @@ if store_detail_open:
         with st.expander(f"{display_date(d)} — {fmt_count(len(block))} store(s)", expanded=True):
             block_key = f"sm_store_rows_{d}"
             block_event = st.dataframe(
-                display(block), hide_index=True, width="stretch",
+                display(block, include_float=True), hide_index=True, width="stretch",
                 on_select="rerun", selection_mode="single-row", key=block_key,
             )
             block_picked = (list(block_event.selection.rows)
@@ -673,15 +720,15 @@ if store_detail_open:
 
                 a, b = st.columns(2)
                 with a:
-                    st.markdown(f"**D Digital sale** {money_table(row['digital_sale'])} · "
-                                f"**F received** {money_table(row['digital_received'])} · "
-                                f"**G receivable** {money_table(row['digital_receivable'])}")
+                    st.markdown(f"**Digital sale** {money_table(row['digital_sale'])} · "
+                                f"**Digital received** {money_table(row['digital_received'])} · "
+                                f"**Digital receivable** {money_table(row['digital_receivable'])}")
                     if records.digital_bills is not None and not records.digital_bills.empty:
                         st.dataframe(records.digital_bills, hide_index=True, width="stretch")
                     else:
                         st.caption("No digital bills that day.")
 
-                    st.markdown(f"**E Cash sale** {money_table(row['cash_sale'])}")
+                    st.markdown(f"**Cash sale** {money_table(row['cash_sale'])}")
                     if records.cash_bills is not None and not records.cash_bills.empty:
                         st.caption(f"{fmt_count(len(records.cash_bills))} cash bills — "
                                    "a row with no bill number is excluded, it is not a sale.")
@@ -691,8 +738,8 @@ if store_detail_open:
                         st.caption("No cash bills that day.")
 
                 with b:
-                    st.markdown(f"**I Cash deposit** {money_table(row['cash_deposit'])} · "
-                                f"**L expense/income** {money_table(row['cash_expense_income'])}")
+                    st.markdown(f"**Cash deposit** {money_table(row['cash_deposit'])} · "
+                                f"**Expense/income** {money_table(row['cash_expense_income'])}")
                     if records.ptc_rows is not None and not records.ptc_rows.empty:
                         st.dataframe(records.ptc_rows, hide_index=True, width="stretch")
                     else:
@@ -704,8 +751,8 @@ if store_detail_open:
                     # day — a Defect B artefact, not a receivable — and
                     # floors to zero here too.
                     row_receivable = max(0.0, float(row["cash_receivable"]))
-                    st.markdown(f"**J Cash received** {money_table(row['cash_received'])} · "
-                                f"**K receivable** {money_table(row_receivable)}")
+                    st.markdown(f"**Cash received** {money_table(row['cash_received'])} · "
+                                f"**Cash receivable** {money_table(row_receivable)}")
                     if records.cms_credits is not None and not records.cms_credits.empty:
                         st.dataframe(records.cms_credits, hide_index=True, width="stretch")
                         if row["cash_receivable"] < -0.005:
@@ -757,11 +804,11 @@ with bcol:
     st.markdown("**BILLS**")
     st.dataframe(pd.DataFrame([
         {"": "Closed (matched)", "Count": fmt_count(bills_closed_n),
-         "Value (Rs)": f"Rs {money_table(bills_closed_v)}"},
+         "Value (Rs Cr)": money_cr(bills_closed_v)},
         {"": "Open (unmatched)", "Count": fmt_count(bills_open_n),
-         "Value (Rs)": f"Rs {money_table(bills_open_v)}"},
+         "Value (Rs Cr)": money_cr(bills_open_v)},
         {"": "Total", "Count": fmt_count(bills_sum_n),
-         "Value (Rs)": f"Rs {money_table(bills_sum_v)}"},
+         "Value (Rs Cr)": money_cr(bills_sum_v)},
     ]), hide_index=True, width="stretch")
     if not bills_ok:
         st.error(
@@ -774,22 +821,19 @@ with tcol:
     st.markdown("**TRANSACTIONS**")
     st.dataframe(pd.DataFrame([
         {"": "Mapped to bill", "Count": fmt_count(txn_summary.mapped_n),
-         "Value (Rs)": f"Rs {money_table(txn_summary.mapped_v)}"},
+         "Value (Rs Cr)": money_cr(txn_summary.mapped_v)},
         {"": "Refunded to customer", "Count": fmt_count(txn_summary.refunded_n),
-         "Value (Rs)": f"Rs {money_table(txn_summary.refunded_v)}"},
+         "Value (Rs Cr)": money_cr(txn_summary.refunded_v)},
         {"": "Unmapped (open)", "Count": fmt_count(txn_summary.unmapped_n),
-         "Value (Rs)": f"Rs {money_table(txn_summary.unmapped_v)}"},
+         "Value (Rs Cr)": money_cr(txn_summary.unmapped_v)},
         {"": "Total", "Count": fmt_count(txn_summary.total_n),
-         "Value (Rs)": f"Rs {money_table(txn_summary.mapped_v + txn_summary.refunded_v + txn_summary.unmapped_v)}"},
+         "Value (Rs Cr)": money_cr(txn_summary.mapped_v + txn_summary.refunded_v + txn_summary.unmapped_v)},
     ]), hide_index=True, width="stretch")
-    st.caption(
-        f"Of the refunded total: pending {fmt_count(txn_summary.refund_pending_n)} "
-        f"({money_short(txn_summary.refund_pending_v)}) · released "
-        f"{fmt_count(txn_summary.refund_released_n)} "
-        f"({money_short(txn_summary.refund_released_v)}) — never merged. "
-        "A refund is never a bill match and never counted as revenue; see "
-        "Manual matches → By transaction → Refund upload."
-    )
+    # The footnote sentence is removed (2026-09-30, on instruction) — the
+    # RULE it described is untouched: refunds still sit on their own
+    # "Refunded to customer" line above, never folded into Mapped or
+    # counted as revenue. pending/released stay available to anyone who
+    # needs them via Manual matches → By transaction → Refund upload.
     if not txn_summary.ok:
         st.error(
             f"**MISMATCH** — mapped + refunded + unmapped differs from the "
@@ -892,9 +936,10 @@ BILL_EXCEPTION_TYPES = q.NOT_RECEIVED_TYPES
 TXN_EXCEPTION_TYPES = q.RECEIVED_NOT_BILLED_TYPES + ("original_txn_not_found", "store_ambiguous")
 
 BILL_EXC_COLUMNS = ["date", "time", "store", "bill_no", "mop", "amount",
-                    "created_by", "status", "remark", "remark_by"]
+                    "created_by", "status", "remark", "remark_by", "remark_at"]
 TXN_EXC_COLUMNS = ["gateway", "transaction_id", "date", "time", "store",
-                   "amount", "payment_mode", "status", "remark", "remark_by"]
+                   "amount", "payment_mode", "status", "remark", "remark_by",
+                   "remark_at"]
 
 # Narrower id/remark columns (2026-09-29) — with bill_time/created_by/
 # transaction_time added, 10 columns no longer fit this grid's own
@@ -902,36 +947,42 @@ TXN_EXC_COLUMNS = ["gateway", "transaction_id", "date", "time", "store",
 # appearing. Rather than drop a column, the two free-text columns that
 # never need much width to stay readable (bill_no/transaction_id are
 # short codes, remark/remark_by are usually empty or a short phrase) give
-# theirs back — every column stays, none gets dropped.
+# theirs back — every column stays, none gets dropped. remark_at
+# (2026-09-30) gets the same treatment.
 BILL_EXC_COLUMN_CONFIG = {
     "bill_no": st.column_config.TextColumn(width="small"),
-    "remark": st.column_config.TextColumn(width="small"),
+    "remark": st.column_config.TextColumn(width="small", help="Click to edit — saves on Enter."),
     "remark_by": st.column_config.TextColumn(width="small"),
+    "remark_at": st.column_config.TextColumn(width="small"),
 }
 TXN_EXC_COLUMN_CONFIG = {
     "transaction_id": st.column_config.TextColumn(width="small"),
-    "remark": st.column_config.TextColumn(width="small"),
+    "remark": st.column_config.TextColumn(width="small", help="Click to edit — saves on Enter."),
     "remark_by": st.column_config.TextColumn(width="small"),
+    "remark_at": st.column_config.TextColumn(width="small"),
 }
 
 
 def _with_remarks(session, df, key_col="exception_key"):
     if df.empty:
         return df
-    remarks = q.latest_remarks(session, df[key_col].tolist())
+    remarks = q.latest_remarks_full(session, df[key_col].tolist())
     df = df.copy()
-    df["remark"] = df[key_col].map(lambda k: remarks.get(k, ("", ""))[0])
-    df["remark_by"] = df[key_col].map(lambda k: remarks.get(k, ("", ""))[1] or "")
+    df["remark"] = df[key_col].map(lambda k: remarks.get(k, ("", "", None))[0])
+    df["remark_by"] = df[key_col].map(lambda k: remarks.get(k, ("", "", None))[1] or "")
+    df["remark_at"] = df[key_col].map(
+        lambda k: remarks.get(k, ("", "", None))[2].strftime("%d/%m/%Y %H:%M")
+        if remarks.get(k, ("", "", None))[2] else "")
     return df
 
 
 def _bill_exception_frame(all_df, statuses):
     if all_df.empty:
-        return pd.DataFrame(columns=BILL_EXC_COLUMNS)
+        return pd.DataFrame(columns=BILL_EXC_COLUMNS + ["exception_key"])
     df = all_df[all_df["type"].isin(BILL_EXCEPTION_TYPES)
                & all_df["status"].isin(statuses)].copy()
     if df.empty:
-        return pd.DataFrame(columns=BILL_EXC_COLUMNS)
+        return pd.DataFrame(columns=BILL_EXC_COLUMNS + ["exception_key"])
     df = _with_remarks(session, df)
     df["bill_no"] = df["detail"].map(lambda d: d.get("bill_no") or "—")
     df["mop"] = df["detail"].map(lambda d: d.get("mop") or "—")
@@ -948,16 +999,17 @@ def _bill_exception_frame(all_df, statuses):
         axis=1)
     df["time"] = facts.map(lambda f: blank(f[0]) if f else "")
     df["created_by"] = facts.map(lambda f: blank(f[1]) if f else "")
-    return df[BILL_EXC_COLUMNS].sort_values("amount", ascending=False).reset_index(drop=True)
+    return (df[BILL_EXC_COLUMNS + ["exception_key"]]
+           .sort_values("amount", ascending=False).reset_index(drop=True))
 
 
 def _txn_exception_frame(all_df, statuses):
     if all_df.empty:
-        return pd.DataFrame(columns=TXN_EXC_COLUMNS)
+        return pd.DataFrame(columns=TXN_EXC_COLUMNS + ["exception_key"])
     df = all_df[all_df["type"].isin(TXN_EXCEPTION_TYPES)
                & all_df["status"].isin(statuses)].copy()
     if df.empty:
-        return pd.DataFrame(columns=TXN_EXC_COLUMNS)
+        return pd.DataFrame(columns=TXN_EXC_COLUMNS + ["exception_key"])
     df = _with_remarks(session, df)
     df["gateway"] = df["detail"].map(lambda d: (d.get("gateway") or "—"))
     df["transaction_id"] = df["detail"].map(
@@ -969,23 +1021,137 @@ def _txn_exception_frame(all_df, statuses):
     # r1_bill_txn.build_gateway_pool) and for any row whose time failed to
     # parse. Never "nan"/"None".
     df["time"] = df["transaction_time"].map(blank)
-    return df[TXN_EXC_COLUMNS].sort_values("amount", ascending=False).reset_index(drop=True)
+    return (df[TXN_EXC_COLUMNS + ["exception_key"]]
+           .sort_values("amount", ascending=False).reset_index(drop=True))
 
 
 EXCEPTION_STATUS_TINT = {"open": "warn", "under_investigation": "accent",
                          "closed": "good", "auto_resolved": "good"}
 
 
-def _display_exceptions(df):
+def _format_exceptions(df):
+    """The plain (unstyled) display frame — amount/date formatted, nothing
+    else. Used directly by the editable grid (2026-09-30), since
+    `st.data_editor` cannot render a pandas Styler the way `st.dataframe`
+    can (no equivalent hook — the same canvas-grid constraint already
+    documented for the particulars matrix, §8.1)."""
     if df.empty:
         return df
     out = df.copy()
     out["amount"] = out["amount"].map(money_table)
     if "date" in out.columns:
         out["date"] = out["date"].map(display_date)
-    if "status" in out.columns:
+    return out
+
+
+def _display_exceptions(df):
+    """The READ-ONLY, tinted display — used only by the "Closed and
+    auto-resolved" register at the bottom, which stays st.dataframe."""
+    out = _format_exceptions(df)
+    if not out.empty and "status" in out.columns:
         return status_styler(out, {"status": EXCEPTION_STATUS_TINT})
     return out
+
+
+def _editable_exceptions(df, column_list, column_config, table_key, id_col, label_prefix):
+    """Inline-editable remark column (2026-09-30) — every OTHER column is
+    `disabled=True`; a remark never changes a figure, a status or a match
+    (rule 4). The operator's name is asked inline, at the point of the
+    action (never up front), via the same `require_operator()` pattern
+    every other write in this app already uses. A detected change writes
+    through `exceptions.add_remark()` — append-only, a brand new `Remark`
+    row every time, never an overwrite — the instant the name is known;
+    until then the typed text stays in the widget with a caption saying it
+    is not yet saved.
+
+    History: `st.data_editor`'s canvas grid has no per-row expander or
+    tooltip hook (the same constraint already documented for the
+    particulars matrix, §8.1), so "prior versions in a tooltip or a small
+    expander on the row" becomes the practical equivalent here — a picker
+    naming every row that carries a remark, showing that one row's full
+    history, oldest first, the instant it's picked."""
+    if df.empty:
+        st.caption("Nothing in this view.")
+        return
+    shown = _format_exceptions(df).reset_index(drop=True)
+    baseline = shown["remark"].fillna("").copy()
+
+    edited = st.data_editor(
+        shown, hide_index=True, width="stretch", key=table_key,
+        column_order=column_list,
+        disabled=[c for c in shown.columns if c != "remark"],
+        column_config=column_config,
+    )
+
+    changed = edited.index[edited["remark"].fillna("") != baseline]
+    if len(changed):
+        # Asked only now — at the point of the action, never up front —
+        # the same `require_operator()` pattern used everywhere else in
+        # this app. The typed remark stays in the widget (Streamlit keeps
+        # it keyed to `table_key`) until a name is given, then saves on
+        # the very next rerun.
+        operator = require_operator("adding a remark", key=f"{table_key}_op")
+        if not operator:
+            st.warning(f"{len(changed)} remark(s) typed but not yet saved — "
+                       "give your name above to save them.")
+        else:
+            for idx in changed:
+                text = str(edited.loc[idx, "remark"]).strip()
+                if text:
+                    exc_mod.add_remark(session, shown.loc[idx, "exception_key"], text, operator)
+            st.session_state.pop(table_key, None)
+            st.rerun()
+
+    have_remark = shown[shown["remark"].astype(str).str.strip() != ""]
+    if not have_remark.empty:
+        options = ["—"] + [f"{label_prefix} {v}" for v in have_remark[id_col]]
+        picked = st.selectbox("View remark history for", options,
+                              key=f"{table_key}_history_pick")
+        if picked != "—":
+            picked_id = picked[len(label_prefix) + 1:]
+            hist_row = have_remark[have_remark[id_col].astype(str) == picked_id].iloc[0]
+            history = exc_mod.remarks_for(session, hist_row["exception_key"])
+            st.dataframe(pd.DataFrame([
+                {"When": r.created_at.strftime("%d/%m/%Y %H:%M"),
+                 "Who": r.created_by or "", "Remark": r.remark_text}
+                for r in history
+            ]), hide_index=True, width="stretch")
+
+
+def _bulk_remark_upload(label, validate_fn, template_bytes, key_prefix):
+    """Validate-then-preview-then-confirm, all-or-nothing on apply — the
+    same shape `manual_match.py`'s and `refunds.py`'s own bulk uploads
+    already use. Nothing is written until the operator explicitly clicks
+    Apply, after seeing exactly which rows were accepted and why any
+    others were not."""
+    with st.expander(f"Bulk upload remarks — {label}"):
+        st.download_button(
+            "Download template", template_bytes,
+            file_name=f"{key_prefix}_remarks_template.csv", mime="text/csv",
+            key=f"{key_prefix}_template_dl")
+        uploaded = st.file_uploader(
+            "Upload a filled template (.csv or .xlsx)",
+            type=["csv", "xlsx"], key=f"{key_prefix}_upload")
+        if uploaded is None:
+            return
+        raw_df = er.read_upload(uploaded.getvalue(), uploaded.name)
+        results = validate_fn(session, raw_df)
+        preview = er.preview_frame(results)
+        accepted_n = sum(1 for r in results if r.ok)
+        rejected_n = len(results) - accepted_n
+        st.markdown(f"**{fmt_count(accepted_n)} accepted, {fmt_count(rejected_n)} rejected**")
+        st.dataframe(preview, hide_index=True, width="stretch")
+        if accepted_n == 0:
+            st.caption("Nothing to apply.")
+            return
+        operator = require_operator("applying this bulk upload", key=f"{key_prefix}_bulk_op")
+        if st.button(f"Apply {accepted_n} accepted remark(s)", key=f"{key_prefix}_bulk_apply",
+                    disabled=not operator):
+            accepted_rows = [r for r in results if r.ok]
+            n = er.apply_bulk_remarks(session, accepted_rows, operator)
+            st.success(f"Applied {n} remark(s).")
+            st.session_state.pop(f"{key_prefix}_upload", None)
+            st.rerun()
 
 
 # The header count uses a cheap COUNT+SUM aggregate (2026-09-19), never the
@@ -1014,41 +1180,41 @@ if exceptions_open:
 
     st.markdown(f"**Exception bills** {fmt_count(len(bill_exc))} bills · "
                f"{money_short(float(bill_exc['amount'].sum()) if not bill_exc.empty else 0.0)}")
-    st.caption("Bills with no matching transaction.")
-    if bill_exc.empty:
-        st.caption("Nothing in this view.")
-    else:
-        st.dataframe(_display_exceptions(bill_exc), hide_index=True, width="stretch",
-                    column_config=BILL_EXC_COLUMN_CONFIG)
+    st.caption("Bills with no matching transaction. The remark cell is editable — "
+              "click it, type, Enter or click away to save.")
+    _editable_exceptions(bill_exc, BILL_EXC_COLUMNS, BILL_EXC_COLUMN_CONFIG,
+                        "sm_exc_bills_editor", "bill_no", "Bill")
     frame_export_button(
-        bill_exc,
+        bill_exc[BILL_EXC_COLUMNS] if not bill_exc.empty else bill_exc,
         ExportMeta(run_id=run.id, run_timestamp=run.started_at,
                   date_from=date_from, date_to=date_to,
                   filters={"store": store, "show": scope}, value_column="amount",
                   title="Exception bills"),
         key="dl_exc_bills", noun="exception bills",
     )
+    _bulk_remark_upload("Exception bills", er.validate_bill_remarks,
+                       er.bill_template_csv(), "sm_exc_bills_bulk")
 
     st.divider()
 
     st.markdown(f"**Exception transactions** {fmt_count(len(txn_exc))} txns · "
                f"{money_short(float(txn_exc['amount'].sum()) if not txn_exc.empty else 0.0)}")
-    st.caption("Transactions with no matching bill.")
-    if txn_exc.empty:
-        st.caption("Nothing in this view.")
-    else:
-        st.dataframe(_display_exceptions(txn_exc), hide_index=True, width="stretch",
-                    column_config=TXN_EXC_COLUMN_CONFIG)
+    st.caption("Transactions with no matching bill. The remark cell is editable — "
+              "click it, type, Enter or click away to save.")
+    _editable_exceptions(txn_exc, TXN_EXC_COLUMNS, TXN_EXC_COLUMN_CONFIG,
+                        "sm_exc_txns_editor", "transaction_id", "Txn")
     if not txn_exc.empty and (txn_exc["gateway"] == "axis").any():
         st.caption("Axis does not supply a transaction time.")
     frame_export_button(
-        txn_exc,
+        txn_exc[TXN_EXC_COLUMNS] if not txn_exc.empty else txn_exc,
         ExportMeta(run_id=run.id, run_timestamp=run.started_at,
                   date_from=date_from, date_to=date_to,
                   filters={"store": store, "show": scope}, value_column="amount",
                   title="Exception transactions"),
         key="dl_exc_txns", noun="exception transactions",
     )
+    _bulk_remark_upload("Exception transactions", er.validate_txn_remarks,
+                       er.txn_template_csv(), "sm_exc_txns_bulk")
 
     # --- closed and auto-resolved — never made unreachable ------------------
     closed_statuses = ("closed", "auto_resolved")
@@ -1065,7 +1231,7 @@ if exceptions_open:
             st.dataframe(_display_exceptions(closed_bills), hide_index=True, width="stretch",
                         column_config=BILL_EXC_COLUMN_CONFIG)
         frame_export_button(
-            closed_bills,
+            closed_bills[BILL_EXC_COLUMNS] if not closed_bills.empty else closed_bills,
             ExportMeta(run_id=run.id, run_timestamp=run.started_at,
                       date_from=date_from, date_to=date_to,
                       filters={"store": store}, value_column="amount",
@@ -1081,7 +1247,7 @@ if exceptions_open:
             st.dataframe(_display_exceptions(closed_txns), hide_index=True, width="stretch",
                         column_config=TXN_EXC_COLUMN_CONFIG)
         frame_export_button(
-            closed_txns,
+            closed_txns[TXN_EXC_COLUMNS] if not closed_txns.empty else closed_txns,
             ExportMeta(run_id=run.id, run_timestamp=run.started_at,
                       date_from=date_from, date_to=date_to,
                       filters={"store": store}, value_column="amount",
@@ -1089,25 +1255,70 @@ if exceptions_open:
             key="dl_exc_txns_closed", noun="closed exception transactions",
         )
 
-# --- data notes, collapsed, at the bottom (2026-09-12) --------------------
+# --- data notes, collapsed, at the bottom (2026-09-12, controls moved in
+# here entirely 2026-09-30) --------------------------------------------
 #
 # Everything here used to sit at the TOP unconditionally — the controls
 # table and every run note, whether or not anything needed attention. A
-# failing control now gets its own loud banner above; this is for when
-# someone asks "where did H come from" or "which cost centres didn't map",
-# findable but out of the way otherwise. The pickup-code-resolution warning
-# (moved here 2026-09-17, alongside the Column J / ZPO tables it used to sit
-# next to being removed as part of the same page consolidation) stays
-# visible rather than being dropped, per rule 5.
-with st.expander("Data notes"):
+# failing control used to get its own loud banner above the page; it no
+# longer does (on instruction — "do not delete it, move it") — the finding
+# itself is unchanged and just as real (292 negative-closing store-days is
+# still 292 negative-closing store-days), it just does not shout on every
+# load. The expander's own header carries a failing-count so it is still
+# visible at a glance without opening it. This is for when someone asks
+# "where did H come from", "which cost centres didn't map" or "which
+# control is broken and by how much" — findable, not in the way.
+_controls_failed = [c for c in controls if not c.holds]
+_notes_label = ("Data notes" if not _controls_failed
+               else f"Data notes — {len(_controls_failed)} control"
+                    f"{'s' if len(_controls_failed) != 1 else ''} failing")
+
+
+def _control_value(rows: pd.DataFrame):
+    """The one obviously-monetary column on a control's own offending-rows
+    frame, summed — or None when no such column exists (an aggregate-only
+    control like (e)/(f)/(g)/(h) carries no `rows` at all). Never invented:
+    a control whose failure has no natural single "value" just shows its
+    count and the full row export instead."""
+    if rows is None or rows.empty:
+        return None
+    for column in ("closing_balance", "difference"):
+        if column in rows.columns:
+            return float(rows[column].sum())
+    return None
+
+
+with st.expander(_notes_label):
     _cms = _cms_breakdown()
     unresolved = _cms["unresolved_pickups"]
     st.markdown(f"**The {len(controls)} controls in full**")
     st.dataframe(pd.DataFrame([
-        {"": key, "Control": what, "Result": "HOLDS" if holds else "FAILS",
-         "Detail": detail} for key, what, holds, detail in controls
+        {"": c.key, "Control": c.what, "Result": "HOLDS" if c.holds else "FAILS",
+         "Detail": c.detail} for c in controls
     ]), hide_index=True, width="stretch",
         column_config={"Detail": st.column_config.TextColumn(width="large")})
+
+    # A failing control's own offending rows — count, value where one
+    # column obviously carries it, and a CSV export of every row, never
+    # just a preview (rule 4: nothing here is ever silently dropped).
+    for c in _controls_failed:
+        if c.rows is None or c.rows.empty:
+            continue
+        value = _control_value(c.rows)
+        value_text = f" · {money_table(value)}" if value is not None else ""
+        st.markdown(f"**({c.key}) {c.what} — {fmt_count(len(c.rows))} row(s){value_text}**")
+        st.dataframe(c.rows, hide_index=True, width="stretch")
+        frame_export_button(
+            c.rows,
+            ExportMeta(run_id=run.id, run_timestamp=run.started_at,
+                      date_from=date_from, date_to=date_to,
+                      filters={"store": store}, value_column=(
+                          "closing_balance" if "closing_balance" in c.rows.columns
+                          else None),
+                      title=f"Control ({c.key}) offending rows"),
+            key=f"dl_control_{c.key}", noun=f"control ({c.key}) rows",
+        )
+
     for note in _cms["notes"]:
         st.caption(note)
 
