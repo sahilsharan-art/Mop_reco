@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from sqlalchemy import func
 
@@ -584,28 +585,69 @@ def persist_digital_mode_agg(session, run_id: int, bill_lines: pd.DataFrame) -> 
     separately in the returned report so a material amount of it is
     visible rather than silently absorbed (rule 5).
     """
-    session.query(DigitalModeAgg).filter(DigitalModeAgg.run_id == run_id).delete()
+    digital_mode_begin(session, run_id)
     if bill_lines.empty:
         session.commit()
         return {"rows": 0, "other_matched_count": 0, "other_matched_value": 0.0}
+    rows, other_count, other_value = digital_mode_add_day(session, run_id, bill_lines)
+    session.commit()
 
-    modes = []
+    if other_count:
+        logger.warning(
+            f"run {run_id}: {other_count} matched digital bill line(s) worth "
+            f"{other_value:,.2f} carried a gateway/payment_mode combination "
+            "this app does not recognise and were folded into Unclassified, "
+            "never guessed into Card or UPI — see docs/MOP_PAYMENT_MODE.md"
+        )
+    return {"rows": rows, "other_matched_count": other_count,
+           "other_matched_value": round(other_value, 2)}
+
+
+def digital_mode_begin(session, run_id: int) -> None:
+    """Clear this run's digital-mode rows. The per-date writer (`digital_mode_add_day`)
+    appends one date at a time after this, so the run never holds the whole
+    range's bill lines to build the aggregate (CLAUDE.md 6.14, 2026-10-13)."""
+    session.query(DigitalModeAgg).filter(DigitalModeAgg.run_id == run_id).delete()
+
+
+def digital_mode_add_day(session, run_id: int, bill_lines: pd.DataFrame):
+    """Classify and aggregate ONE chunk of bill lines (a business date, or the
+    whole range) and insert its rows. Returns (rows, other_count, other_value).
+    Does not commit - the caller's own per-date commit makes it durable.
+
+    `mm.classify_digital_mode` is called once per distinct (gateway,
+    payment_mode, MOP) combination, not once per line: it is a pure function
+    of those three values, so the result is identical and the per-line Python
+    loop that used to dominate this stage disappears."""
+    if bill_lines.empty:
+        return 0, 0, 0.0
+
+    def clean(series):
+        return series.astype(object).where(series.notna(), None).to_numpy()
+
+    matched = bill_lines["matched"].to_numpy(dtype=bool)
+    gateway = clean(bill_lines["matched_gateway"]) if "matched_gateway" in bill_lines else         np.full(len(bill_lines), None, dtype=object)
+    pmode = clean(bill_lines["matched_payment_mode"]) if "matched_payment_mode" in bill_lines else         np.full(len(bill_lines), None, dtype=object)
+    mops = clean(bill_lines["mop"])
+    amounts = bill_lines["amount"].to_numpy(dtype="float64")
+
+    cache: dict = {}
+    modes = np.empty(len(bill_lines), dtype=object)
     other_count = 0
     other_value = 0.0
-    for row in bill_lines.itertuples(index=False):
-        if bool(row.matched):
-            mode = mm.classify_digital_mode(
-                getattr(row, "matched_gateway", None),
-                getattr(row, "matched_payment_mode", None),
-                row.mop,
-            )
-            if mode == "other":
-                other_count += 1
-                other_value += float(row.amount)
-                mode = "unclassified"
-        else:
+    for i in range(len(bill_lines)):
+        if not matched[i]:
+            modes[i] = "unclassified"
+            continue
+        key = (gateway[i], pmode[i], mops[i])
+        mode = cache.get(key)
+        if mode is None:
+            mode = cache[key] = mm.classify_digital_mode(*key)
+        if mode == "other":
+            other_count += 1
+            other_value += float(amounts[i])
             mode = "unclassified"
-        modes.append(mode)
+        modes[i] = mode
 
     df = bill_lines[["business_date", "store", "amount"]].copy()
     df["mode"] = modes
@@ -617,17 +659,7 @@ def persist_digital_mode_agg(session, run_id: int, bill_lines: pd.DataFrame) -> 
     } for r in grouped.itertuples(index=False)]
     for i in range(0, len(records), 5000):
         session.bulk_insert_mappings(DigitalModeAgg, records[i:i + 5000])
-    session.commit()
-
-    if other_count:
-        logger.warning(
-            f"run {run_id}: {other_count} matched digital bill line(s) worth "
-            f"{other_value:,.2f} carried a gateway/payment_mode combination "
-            "this app does not recognise and were folded into Unclassified, "
-            "never guessed into Card or UPI — see docs/MOP_PAYMENT_MODE.md"
-        )
-    return {"rows": len(records), "other_matched_count": other_count,
-           "other_matched_value": round(other_value, 2)}
+    return len(records), other_count, other_value
 
 
 def _digital_mode_sales(session, run_id: int, date_from: date, date_to: date,

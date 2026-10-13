@@ -22,7 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
@@ -191,6 +191,186 @@ def _read_master_rows(config: Config, master_name: str):
 
     mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
     return rows, file_path, mtime
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight — the schema guard for the MASTERS (2026-10-13)
+#
+# A monthly source already fails loudly on a missing column, because its loader
+# raises while the run reads it. A master did not get that treatment in time: a
+# master is read only when something first needs it, and the pickup-location
+# master is first needed by the CMS stage - which runs AFTER R1 has matched and
+# persisted. On 2026-10-08 that file lost its LOCATION column (it was overwritten
+# with a copy of the pickup-code list); nothing noticed until the test suite
+# failed days later. LOCATION is what splits pickup code AX31918 between APM and
+# MMR, so the failure was one step from silently putting APM's credits on MMR.
+#
+# `preflight_masters` therefore runs FIRST in every run, before any source is
+# read, and is read-only (it never snapshots a version). It checks every master
+# in MASTER_SPECS - file found, sheet found, every required column present under
+# some alias, at least one data row - and reports ALL problems at once, not just
+# the first. A problem of that kind fails the run. Softer observations
+# (rows added or removed since the stored version, Excel error values such as
+# #REF! in a required field, an identifier mapped to two stores) are returned as
+# warnings and recorded on the run, never silently absorbed.
+# ---------------------------------------------------------------------------
+
+class MasterPreflightError(MasterLoadError):
+    """One or more masters cannot be used. The message names every master, file
+    and missing field - raised before the run reads anything else."""
+
+    def __init__(self, problems: list, checks: list):
+        self.problems = problems
+        self.checks = checks
+        super().__init__(
+            "Master data pre-flight FAILED - nothing was run. "
+            + " | ".join(problems)
+        )
+
+
+@dataclass
+class MasterCheck:
+    master: str
+    file: str = None
+    modified: str = None
+    sheet: str = None
+    columns_found: list = field(default_factory=list)
+    columns_required: dict = field(default_factory=dict)
+    missing: list = field(default_factory=list)
+    rows: int = 0
+    stored_rows: int = None
+    added: int = None
+    removed: int = None
+    remapped: int = None
+    warnings: list = field(default_factory=list)
+    problems: list = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+
+_EXCEL_ERRORS = ("#REF!", "#N/A", "#VALUE!", "#NAME?", "#DIV/0!", "#NULL!", "#NUM!")
+
+
+def preflight_master(config: Config, master_name: str, stored_rows: list = None) -> MasterCheck:
+    """Read-only check of one master file. `stored_rows` (the rows of the version
+    currently stored for this master) lets it report what changed."""
+    spec = MASTER_SPECS[master_name]
+    check = MasterCheck(master=master_name,
+                        columns_required={f: a for f, a in spec["aliases"].items()})
+    try:
+        file_path = _most_recent_file(config, spec["source"])
+    except MasterLoadError as exc:
+        check.problems.append(f"{master_name}: {exc}")
+        return check
+    check.file = str(file_path)
+    check.modified = datetime.fromtimestamp(file_path.stat().st_mtime).isoformat(sep=" ", timespec="seconds")
+
+    try:
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+    except Exception as exc:                                   # unreadable / not a workbook
+        check.problems.append(f"{master_name}: {file_path.name} cannot be opened ({type(exc).__name__}: {exc})")
+        return check
+    try:
+        sheet_name = spec["sheet"] or wb.sheetnames[0]
+        check.sheet = sheet_name
+        if sheet_name not in wb.sheetnames:
+            check.problems.append(
+                f"{master_name}: {file_path.name} has no sheet '{sheet_name}' (sheets present: {wb.sheetnames})")
+            return check
+        it = wb[sheet_name].iter_rows(values_only=True)
+        header = list(next(it, []) or [])
+        check.columns_found = [h for h in header if h is not None]
+        index = {}
+        for logical, aliases in spec["aliases"].items():
+            hit = next((a for a in aliases if a in header), None)
+            if hit is None:
+                check.missing.append(logical)
+                check.problems.append(
+                    f"{master_name}: {file_path.name} [{sheet_name}] has lost required column "
+                    f"{aliases} (field '{logical}'); header seen: {check.columns_found}")
+            else:
+                index[logical] = header.index(hit)
+        if check.missing:
+            return check
+
+        rows = []
+        for raw in it:
+            if raw is None or all(v is None for v in raw):
+                continue
+            row = {f: raw[i] for f, i in index.items()}
+            if any(v is None for v in row.values()):
+                continue
+            rows.append(row)
+        check.rows = len(rows)
+        if not rows:
+            check.problems.append(f"{master_name}: {file_path.name} [{sheet_name}] has no data rows")
+            return check
+    finally:
+        wb.close()
+
+    # --- softer observations ------------------------------------------------
+    errors = sorted({str(v) for r in rows for v in r.values() if str(v).strip() in _EXCEL_ERRORS})
+    if errors:
+        n = sum(1 for r in rows if any(str(v).strip() in _EXCEL_ERRORS for v in r.values()))
+        check.warnings.append(f"{master_name}: {n} row(s) carry an Excel error value {errors} in a required field")
+
+    key_field = next(iter(spec["aliases"]))
+    if master_name == "pickup_location":
+        keyf = lambda r: (str(r["pickup_code"]).strip(), normalise_name(r["location"]))
+    else:
+        norm = (master_name, key_field) in NORMALISED_KEYS
+        keyf = lambda r: normalise_name(r[key_field]) if norm else str(r[key_field]).strip()
+    mapped: dict = {}
+    for r in rows:
+        mapped.setdefault(keyf(r), set()).add(str(r["store"]).strip())
+    clash = {k: sorted(v) for k, v in mapped.items() if len(v) > 1}
+    if clash:
+        check.warnings.append(
+            f"{master_name}: {len(clash)} identifier(s) map to more than one store and will be "
+            f"reported as ambiguous, never guessed: {dict(list(clash.items())[:5])}")
+
+    if stored_rows is not None:
+        check.stored_rows = len(stored_rows)
+        old: dict = {}
+        for r in stored_rows:
+            old.setdefault(keyf(r), set()).add(str(r["store"]).strip())
+        check.added = len(set(mapped) - set(old))
+        check.removed = len(set(old) - set(mapped))
+        check.remapped = sum(1 for k in set(mapped) & set(old) if mapped[k] != old[k])
+        if check.added or check.removed or check.remapped:
+            check.warnings.append(
+                f"{master_name}: differs from the stored version - {check.added} added, "
+                f"{check.removed} removed, {check.remapped} re-mapped identifier(s)")
+    return check
+
+
+def preflight_masters(config: Config, session=None, raise_on_failure: bool = True) -> list:
+    """Check every master. Returns the list of MasterCheck; raises
+    MasterPreflightError (naming every problem) unless raise_on_failure=False."""
+    checks = []
+    for name in MASTER_SPECS:
+        stored = None
+        if session is not None:
+            version = (session.query(MasterVersion)
+                       .filter_by(master_name=name, is_current=True).first())
+            if version is not None:
+                stored = [json.loads(r.row_json) for r in
+                          session.query(MasterRow).filter_by(master_version_id=version.id).all()]
+        checks.append(preflight_master(config, name, stored))
+    problems = [p for c in checks for p in c.problems]
+    if problems and raise_on_failure:
+        raise MasterPreflightError(problems, checks)
+    return checks
+
+
+def preflight_summary(checks: list) -> dict:
+    """A JSON-safe summary for Run.notes."""
+    return {c.master: {"file": c.file, "modified": c.modified, "sheet": c.sheet, "rows": c.rows,
+                       "stored_rows": c.stored_rows, "added": c.added, "removed": c.removed,
+                       "remapped": c.remapped, "warnings": c.warnings, "problems": c.problems}
+            for c in checks}
 
 
 # ---------------------------------------------------------------------------

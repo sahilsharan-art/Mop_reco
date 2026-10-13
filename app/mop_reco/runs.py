@@ -9,12 +9,14 @@ No Streamlit imports here: this is callable from a page, a script or a test.
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import time
 from contextlib import contextmanager
 from datetime import date, datetime
 
+import numpy as np
 import pandas as pd
 
 from . import ingest as ingest_mod
@@ -22,8 +24,9 @@ from . import store_sheet_source
 from .config import Config
 from .db import R1BillLine, ReconciliationResult, Run, RunFile
 from . import manual_match
+from . import masters as masters_mod
 from .exceptions import build_r1_exceptions, sync_exceptions
-from .r1_bill_txn import run_r1
+from .r1_chunked import run_r1_chunked
 
 logger = logging.getLogger("mop_reco")
 
@@ -169,6 +172,17 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         heartbeat(session, run, detail=detail)
 
     try:
+        # The masters' schema guard (2026-10-13): every master file must still be
+        # present with every column the code reads, BEFORE any source is read.
+        # A master losing a column used to surface only when the CMS stage first
+        # loaded it - after R1 had run - or in the test suite days later.
+        with _stage(session, run, timings, "masters_preflight"):
+            master_checks = masters_mod.preflight_masters(config, session)
+        master_preflight = masters_mod.preflight_summary(master_checks)
+        for check in master_checks:
+            for warning in check.warnings:
+                logger.warning(f"run {run.id}: master pre-flight: {warning}")
+
         with _stage(session, run, timings, "ingest_pos_bill_wise"):
             bills, bills_report = ingest_mod.ingest_pos_bill_wise(
                 config, session, file_path=source_file_paths.get("pos_bill_wise"),
@@ -196,27 +210,97 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
 
         session.commit()
 
+        # R1 reads the warehouse one business date at a time (2026-10-13), so
+        # the ingest frames are no longer needed: release them before matching
+        # starts. What R1 needs is already on disk - ingest wrote one Parquet
+        # per business date per source and named them in its report.
+        bill_files = dict(bills_report.warehouse_paths)
+        pool_files = {"paytm": dict(paytm_report.warehouse_paths),
+                      "axis": dict(axis_report.warehouse_paths),
+                      "bajaj": dict(bajaj_report.warehouse_paths) if len(bajaj) else {}}
+        undated = {name: rep.rows_without_date for name, rep in
+                   (("pos_bill_wise", bills_report), ("paytm_settlement", paytm_report),
+                    ("axis_edc", axis_report), ("bajaj", bajaj_report)) if rep.rows_without_date}
+        if undated:
+            # Never silent: a row with no business date has no per-date Parquet
+            # to be matched from.
+            logger.warning(f"run {run.id}: rows with NO business date are not matched "
+                           f"(no per-date file exists for them): {undated}")
+        del bills, paytm, axis, bajaj
+        gc.collect()
+
+        def _as_date(value):
+            if value is None:
+                return None
+            return value if isinstance(value, date) else date.fromisoformat(str(value))
+
+        d_from, d_to = _as_date(date_from), _as_date(date_to)
+        persist_secs = 0.0
+        mode_secs = 0.0
+        unmatched_in_range = []
+        dates_in_range = []
+        mode_rows = mode_other_count = 0
+        mode_other_value = 0.0
+        persisted_rows = 0
+        persisted_at = datetime.now()
+        store_sheet_source.digital_mode_begin(session, run.id)
+        session.commit()
+
+        def _on_day(day_str, day_frame):
+            """Called by the chunked matcher, oldest date first, with ONE date's
+            final lines: persist and commit that date, keep only what the
+            run-level stages still need (the unmatched lines), free the rest."""
+            nonlocal persist_secs, mode_secs, mode_rows, mode_other_count
+            nonlocal mode_other_value, persisted_rows
+            bd = date.fromisoformat(day_str)
+            if (d_from is not None and bd < d_from) or (d_to is not None and bd > d_to):
+                return      # took part in matching, outside the requested range
+            t0 = time.perf_counter()
+            persisted_rows += _persist_day(session, run.id, day_str, day_frame, persisted_at)
+            t1 = time.perf_counter()
+            rows, oc, ov = store_sheet_source.digital_mode_add_day(session, run.id, day_frame)
+            mode_rows += rows
+            mode_other_count += oc
+            mode_other_value += ov
+            session.commit()      # durable and visible on Summary the moment this returns
+            t2 = time.perf_counter()
+            persist_secs += t1 - t0
+            mode_secs += t2 - t1
+            unmatched_in_range.append(day_frame.loc[~day_frame["matched"]])
+            dates_in_range.append(day_str)
+
         with _stage(session, run, timings, "r1_match"):
-            result = run_r1(bills, paytm, axis, bajaj if len(bajaj) else None,
-                            on_progress=_progress)
+            result = run_r1_chunked(bill_files, pool_files, on_day=_on_day,
+                                    on_progress=_progress)
+        # Persistence happens inside the matcher's per-date loop; report it as
+        # its own stage so the stage table stays comparable with earlier runs.
+        timings["r1_match"] = round(timings["r1_match"] - persist_secs - mode_secs, 2)
+        timings["persist_results"] = round(persist_secs, 2)
+        timings["persist_digital_mode_agg"] = round(mode_secs, 2)
 
-        bill_lines = result.bill_lines
-        if date_from is not None:
-            bill_lines = bill_lines[bill_lines["business_date"] >= date_from]
-        if date_to is not None:
-            bill_lines = bill_lines[bill_lines["business_date"] <= date_to]
+        if mode_other_count:
+            logger.warning(
+                f"run {run.id}: {mode_other_count} matched digital bill line(s) worth "
+                f"{mode_other_value:,.2f} carried a gateway/payment_mode combination "
+                "this app does not recognise and were folded into Unclassified, "
+                "never guessed into Card or UPI - see docs/MOP_PAYMENT_MODE.md")
+        digital_mode_report = {"rows": mode_rows, "other_matched_count": mode_other_count,
+                               "other_matched_value": round(mode_other_value, 2)}
+        logger.info(f"run {run.id}: persisted {len(dates_in_range)} date(s), "
+                    f"{persisted_rows} R1 bill-line detail rows, committed per date")
 
-        with _stage(session, run, timings, "persist_results"):
-            _persist_r1(session, run.id, bill_lines, result, on_progress=_progress)
+        bill_lines = (pd.concat(unmatched_in_range, ignore_index=True)
+                      if unmatched_in_range else pd.DataFrame({"matched": pd.Series(dtype=bool)}))
+        has_lines = bool(dates_in_range)
 
         # Every date in the REQUESTED range that produced zero bills is
-        # named explicitly (2026-09-24) — "nothing there" and "not loaded"
+        # named explicitly (2026-09-24) - "nothing there" and "not loaded"
         # look identical otherwise, which is exactly the confusion that
         # led to a whole diagnostic round-trip over April-August showing
         # zero. A gap here is not necessarily wrong (a store network can
         # genuinely have no digital bills some day), but it must never be
         # silent.
-        dates_with_bills = set(str(d) for d in bill_lines["business_date"].dropna().unique())
+        dates_with_bills = set(dates_in_range)
         no_data_dates = []
         if date_from is not None and date_to is not None:
             no_data_dates = sorted(
@@ -225,7 +309,7 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
             if no_data_dates:
                 logger.warning(
                     f"run {run.id}: {len(no_data_dates)} date(s) in the requested "
-                    f"range produced ZERO digital bill lines — not an error by "
+                    f"range produced ZERO digital bill lines - not an error by "
                     f"itself, but reported rather than silently absorbed: "
                     f"{no_data_dates[:10]}{'...' if len(no_data_dates) > 10 else ''}")
 
@@ -235,18 +319,11 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         # the whole cash-book sheet from PTC/CMS/opening-balance/POS on
         # every page load. Resolved to concrete dates from the bill lines
         # themselves when the run itself carried no explicit range (rule 8
-        # — never a hardcoded fallback date).
-        def _as_date(value):
-            if value is None:
-                return None
-            return value if isinstance(value, date) else date.fromisoformat(str(value))
-
+        # - never a hardcoded fallback date).
         with _stage(session, run, timings, "persist_store_day_agg"):
-            if not bill_lines.empty:
-                agg_from = _as_date(date_from) or date.fromisoformat(
-                    str(bill_lines["business_date"].min()))
-                agg_to = _as_date(date_to) or date.fromisoformat(
-                    str(bill_lines["business_date"].max()))
+            if has_lines:
+                agg_from = d_from or date.fromisoformat(min(dates_in_range))
+                agg_to = d_to or date.fromisoformat(max(dates_in_range))
                 agg_report = store_sheet_source.persist_aggregates(
                     session, run.id, agg_from, agg_to)
             else:
@@ -259,19 +336,15 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         # column's plain cash-only split. Same range as the store-day agg,
         # so the two can never disagree about what period they cover.
         with _stage(session, run, timings, "persist_mop_day_agg"):
-            if not bill_lines.empty:
+            if has_lines:
                 mop_agg_report = store_sheet_source.persist_mop_day_agg(
                     session, run.id, agg_from, agg_to)
             else:
                 mop_agg_report = {"rows": 0, "elapsed": 0.0}
 
-        # The Card/UPI correctness fix (2026-09-19, docs/MOP_PAYMENT_MODE.md):
-        # built from the run's OWN `bill_lines` frame directly, in memory,
-        # because payment_mode only exists after R1 matching — it cannot be
-        # rebuilt from raw POS the way persist_mop_day_agg() is.
-        with _stage(session, run, timings, "persist_digital_mode_agg"):
-            digital_mode_report = store_sheet_source.persist_digital_mode_agg(
-                session, run.id, bill_lines)
+        # The Card/UPI aggregate (2026-09-19, docs/MOP_PAYMENT_MODE.md) is
+        # written date by date inside the matcher's loop above - payment_mode
+        # only exists after matching, so it cannot be rebuilt later from raw POS.
 
         with _stage(session, run, timings, "exception_register"):
             exceptions = build_r1_exceptions(bill_lines, result)
@@ -307,6 +380,7 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
             "mop_day_agg": mop_agg_report,
             "digital_mode_agg": digital_mode_report,
             "timings": timings,
+            "masters_preflight": master_preflight,
             "load": {k: {"rows_read": v.rows_read, "status": v.status,
                          "control_total": v.control_total, "notes": v.notes}
                     for k, v in load_reports.items()},
@@ -393,61 +467,128 @@ def _bill_line_record(run_id: int, row) -> dict:
     }
 
 
+def _text_column(series: pd.Series) -> pd.Series:
+    """`_s()` over a whole column: None for a missing value, str(value)
+    otherwise - without a Python call per cell when the column is already text."""
+    if pd.api.types.is_string_dtype(series.dtype) and not pd.api.types.is_object_dtype(series.dtype):
+        return series.astype(object).where(series.notna(), None)
+    return series.map(_s).astype(object)
+
+
+def _bill_line_records(run_id: int, day: pd.DataFrame) -> list:
+    """The list `[_bill_line_record(run_id, row) for row in day.itertuples()]`,
+    built column-wise. `tests/test_runs_persist.py` asserts the two are
+    identical row for row; `_bill_line_record` stays as the specification."""
+    n = len(day)
+
+    def col(name, default=None):
+        return day[name] if name in day.columns else pd.Series([default] * n, index=day.index)
+
+    line_seq = pd.to_numeric(col("line_seq", 1), errors="coerce").fillna(1)
+    line_seq = line_seq.where(line_seq != 0, 1).astype("int64")
+    diff = pd.to_numeric(col("date_diff_days", 0), errors="coerce").fillna(0).astype("int64")
+    out = pd.DataFrame({
+        "run_id": run_id,
+        "business_date": day["business_date"].map(str),
+        "store": _text_column(day["store"]),
+        "bill_no": _text_column(day["bill_no"]),
+        "line_seq": line_seq,
+        "mop": _text_column(day["mop"]),
+        "mop_class": _text_column(day["mop_class"]),
+        "amount": day["amount"].astype("float64"),
+        "paytm_ref": _text_column(day["paytm_ref"]),
+        "axis_ref": _text_column(day["axis_ref"]),
+        "bajaj_ref": _text_column(day["bajaj_ref"]),
+        "matched": day["matched"].astype(bool),
+        "match_tier": _text_column(day["match_tier"]),
+        "matched_gateway": _text_column(day["matched_gateway"]),
+        "matched_txn_ref": _text_column(day["matched_txn_ref"]),
+        "payment_mode": _text_column(col("matched_payment_mode")),
+        "status": _text_column(day["status"]),
+        "date_diff_days": diff,
+        "match_note": _text_column(col("match_note")),
+        "bill_time": _text_column(col("bill_time")),
+        "created_by": _text_column(col("created_by")),
+    })
+    # Column by column, straight to Python scalars: `DataFrame.to_dict("records")`
+    # over an all-object frame was ~30% of a day's persistence.
+    cols = list(out.columns)
+    lists = []
+    for c in cols:
+        column = out[c]
+        if column.isna().any():
+            column = column.astype(object).where(column.notna(), None)
+        lists.append(column.tolist())
+    return [dict(zip(cols, row)) for row in zip(*lists)]
+
+
+def _store_payloads(day: pd.DataFrame):
+    """[(store, payload dict)] for one date, oldest-key-first exactly like
+    `day.groupby("store", dropna=False)`: the per-store counts and sums the
+    reconciliation_results rows carry. Each store's amounts are summed with the
+    same numpy routine `Series.sum` uses (np.nansum over that store's own
+    contiguous values), so every figure is bit-identical to the per-group loop
+    this replaces (`tests/test_runs_persist.py` holds that loop as the spec)."""
+    amount = day["amount"].to_numpy(dtype="float64")
+    matched = day["matched"].to_numpy(dtype=bool)
+    tier = day["match_tier"]
+    is_t1 = (tier == "Tier 1").fillna(False).to_numpy(dtype=bool)
+    is_t2 = (tier == "Matched (EDC OTHER)").fillna(False).to_numpy(dtype=bool)
+    is_amb = (tier == "Ambiguous").fillna(False).to_numpy(dtype=bool)
+    groups = day.groupby("store", dropna=False).indices
+    out = []
+    for store in sorted(groups, key=lambda k: (pd.isna(k), "" if pd.isna(k) else k)):
+        idx = groups[store]
+        a, m = amount[idx], matched[idx]
+        out.append((store, {
+            "digital_bill_lines": int(len(idx)),
+            "matched": int(m.sum()),
+            "unmatched": int((~m).sum()),
+            "tier1": int(is_t1[idx].sum()),
+            "tier2": int(is_t2[idx].sum()),
+            "ambiguous": int(is_amb[idx].sum()),
+            "digital_value": float(np.nansum(a)),
+            "matched_value": float(np.nansum(a[m])),
+            "unmatched_value": float(np.nansum(a[~m])),
+        }))
+    return out
+
+
+def _persist_day(session, run_id: int, business_date, day: pd.DataFrame, now) -> int:
+    """One business date: its per-store result rows and its bill-line detail.
+    Added to the session only - the caller commits (once per date)."""
+    for store, payload in _store_payloads(day):
+        session.add(ReconciliationResult(
+            run_id=run_id, reconciliation="R1",
+            business_date=str(business_date), store=str(store),
+            payload=json.dumps(payload), created_at=now,
+        ))
+    records = _bill_line_records(run_id, day)
+    if records:
+        # Core executemany: ~30% cheaper than the ORM's bulk_insert_mappings for the
+        # same rows (the detail table is the largest thing a run writes).
+        session.execute(R1BillLine.__table__.insert(), records)
+    return len(records)
+
+
 def _persist_r1(session, run_id: int, bill_lines: pd.DataFrame, result, on_progress=None):
     """One results row per store x business_date, plus the per-line detail the
     transaction view pages through — committed ONE BUSINESS DATE AT A TIME
     (2026-09-24), not once for the whole range.
 
-    Before this, both the store-day summary and the bill-line detail were
-    built entirely in memory across the WHOLE requested range and committed
-    in exactly two `session.commit()` calls total, right at the end. That
-    meant Summary showed nothing — not even the first day — until every
-    date in the run had been matched AND persisted, made an hour of
-    genuine work vanish on any late failure, and left no way to tell a
-    slow run from a hung one. R1 MATCHING itself still has to see the
-    whole loaded range at once (a gateway reference is deliberately
-    date-agnostic — CLAUDE.md's own R1 design), so that part is unchanged;
-    this only changes when the ALREADY-MATCHED result for one date becomes
-    visible. `bill_lines` is grouped by date, oldest first, and each
-    date's rows are added and committed before the next date starts — a
-    business date is visible on Summary the moment its own commit lands,
-    and a mid-run failure only loses whatever date was mid-flight, not the
-    whole run."""
+    Kept for callers that already hold a whole range of matched lines; the
+    run itself now persists each date as the chunked matcher yields it
+    (`run_reconciliation`, 2026-10-13) through the same `_persist_day`."""
     now = datetime.now()
     dates = sorted(bill_lines["business_date"].dropna().unique())
     total_rows_written = 0
 
     for i, business_date in enumerate(dates, 1):
         day = bill_lines[bill_lines["business_date"] == business_date]
-
-        for store, g in day.groupby("store", dropna=False):
-            payload = {
-                "digital_bill_lines": int(len(g)),
-                "matched": int(g["matched"].sum()),
-                "unmatched": int((~g["matched"]).sum()),
-                "tier1": int((g["match_tier"] == "Tier 1").sum()),
-                "tier2": int((g["match_tier"] == "Matched (EDC OTHER)").sum()),
-                "ambiguous": int((g["match_tier"] == "Ambiguous").sum()),
-                "digital_value": float(g["amount"].sum()),
-                "matched_value": float(g.loc[g["matched"], "amount"].sum()),
-                "unmatched_value": float(g.loc[~g["matched"], "amount"].sum()),
-            }
-            session.add(ReconciliationResult(
-                run_id=run_id, reconciliation="R1",
-                business_date=str(business_date), store=str(store),
-                payload=json.dumps(payload), created_at=now,
-            ))
-
-        records = [_bill_line_record(run_id, row) for row in day.itertuples(index=False)]
-        if records:
-            session.bulk_insert_mappings(R1BillLine, records)
-
-        # Committed HERE, per date — this is the actual fix. Everything
-        # above this line for `business_date` is now durable and visible
-        # to any other reader (the Summary page, mid-run) the instant this
-        # returns; a crash on the NEXT date loses only that next date.
+        total_rows_written += _persist_day(session, run_id, business_date, day, now)
+        # Committed HERE, per date: durable and visible to any other reader
+        # the instant this returns; a crash on the NEXT date loses only it.
         session.commit()
-        total_rows_written += len(records)
         if on_progress:
             on_progress(f"persisted {i:,} of {len(dates):,} dates "
                        f"({business_date}, {total_rows_written:,} rows so far)")

@@ -15,6 +15,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import date
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger("mop_reco")
@@ -205,6 +206,20 @@ def _date_diff_days(txn_date, bill_date) -> int:
     return (txn_d - bill_d).days
 
 
+def _round2(values) -> np.ndarray:
+    """Python's own `round(float(x), 2)` over an array — NOT `np.round`.
+
+    The matcher's amount key must be bit-for-bit the key the per-row engine
+    used (Run #11). `np.round` is `rint(x*100)/100`, which is the same for any
+    value already at two decimals but is a different algorithm from CPython's
+    correctly-rounded `round`, and "the same for the values we expect" is not
+    the bar here. One pass of the builtin costs well under a microsecond a
+    value — noise next to the join it feeds.
+    """
+    arr = np.asarray(values, dtype="float64")
+    return np.fromiter((round(float(v), 2) for v in arr), dtype="float64", count=len(arr))
+
+
 def match_tier1(bills: pd.DataFrame, pool: pd.DataFrame, on_progress=None):
     """Reference match across all three gateways.
 
@@ -223,6 +238,21 @@ def match_tier1(bills: pd.DataFrame, pool: pd.DataFrame, on_progress=None):
     match again. A bill is matched as soon as ONE of its references resolves —
     the remaining references are recorded for traceability but their failure is
     not an exception (§6.3).
+
+    **Vectorized (2026-10-13).** This used to be a per-row `.at[]` loop
+    (~1,250 bills/second; Run #11's r1_match took 56,050 s). It is now a join,
+    and it is exactly the same rule, because the loop's behaviour reduces to
+    ranking: within one gateway, the k-th bill (in frame order) carrying a
+    given (reference, amount) takes the k-th transaction (in pool order)
+    carrying that (reference, amount) — each earlier bill with that key
+    consumed exactly one, and a transaction can only be consumed by a bill
+    with its own key. So: number the bills and the transactions within each
+    key, then join on (reference, amount, number). A bill with no transaction
+    of that number stays open, which is the loop's "no unconsumed candidate".
+    Gateways are still applied in order (paytm, axis, bajaj) and a bill
+    matched by an earlier gateway never competes in a later one.
+    `tests/test_r1_equivalence.py` proves it against the frozen per-row
+    engine (`tests/reference_matcher.py`) on every output column.
 
     Returns (bills_out, consumed_txn_index) where bills_out gains:
       matched, match_tier, matched_gateway, matched_txn_ref,
@@ -256,7 +286,19 @@ def match_tier1(bills: pd.DataFrame, pool: pd.DataFrame, on_progress=None):
     if pool.empty:
         return bills, set()
 
+    n = len(bills)
+    matched = np.zeros(n, dtype=bool)
+    tier = np.full(n, pd.NA, dtype=object)
+    gateway_col = np.full(n, pd.NA, dtype=object)
+    txn_ref_col = np.full(n, pd.NA, dtype=object)
+    mode_col = np.full(n, pd.NA, dtype=object)
+    diff_col = np.zeros(n, dtype="int64")
+    note_col = np.full(n, pd.NA, dtype=object)
+    resolved = np.zeros(n, dtype="int64")
     consumed: set = set()
+
+    bill_amounts = bills["amount"].to_numpy(dtype="float64")
+    bill_dates = bills["business_date"]
 
     for gateway, ref_col in REF_COLUMN_BY_GATEWAY.items():
         if ref_col not in bills.columns:
@@ -265,55 +307,82 @@ def match_tier1(bills: pd.DataFrame, pool: pd.DataFrame, on_progress=None):
         if gw_pool.empty:
             continue
 
-        # Candidate transactions keyed on (ref, amount) ONLY — no date in the
-        # key. Amount is still compared exactly: money is never compared with
-        # a tolerance here, TOLERANCE is 0. If the same ref+amount somehow
-        # appears more than once in the pool (never expected — Paytm/Axis/
-        # Bajaj ingest each dedupe on their own reference, §5), every
-        # candidate is kept and the first unconsumed one is taken, same as
-        # before; nothing here silently prefers one over another by date.
-        gw_index = {}
-        for idx, ref, amt in zip(gw_pool.index, gw_pool["txn_ref"], gw_pool["amount"]):
-            if ref is pd.NA or ref is None:
-                continue
-            gw_index.setdefault((str(ref), round(float(amt), 2)), []).append(idx)
-
-        has_ref = bills[ref_col].notna()
-        candidate_positions = bills.index[has_ref & ~bills["matched"]]
-        total_for_gateway = len(candidate_positions)
+        # Pool side: (ref, amount) with NO date in the key. Amount compared
+        # exactly (TOLERANCE is 0). A null reference or a NaN amount can never
+        # match anything, as before.
+        # Bill side: carries this reference and is not already matched.
+        cand = bills[ref_col].notna().to_numpy() & ~matched & ~np.isnan(bill_amounts)
+        cpos = np.flatnonzero(cand)
+        total_for_gateway = len(cpos)
         if on_progress:
             on_progress(f"Tier 1 matching against {gateway}: 0 of {total_for_gateway:,} bills")
+        if total_for_gateway == 0:
+            continue
+        bdf = pd.DataFrame({
+            "ref": bills[ref_col].iloc[cpos].astype(str).to_numpy(),
+            "amt": _round2(bill_amounts[cpos]),
+            "bpos": cpos,
+        })
 
-        for n, pos in enumerate(candidate_positions, 1):
-            if on_progress and n % 5000 == 0:
-                on_progress(f"Tier 1 matching against {gateway}: {n:,} of {total_for_gateway:,} bills")
-            key = (str(bills.at[pos, ref_col]),
-                   round(float(bills.at[pos, "amount"]), 2))
-            candidates = gw_index.get(key)
-            if not candidates:
-                continue
-            available = next((c for c in candidates if c not in consumed), None)
-            if available is None:
-                continue
-            consumed.add(available)
-            bills.at[pos, "matched"] = True
-            bills.at[pos, "match_tier"] = "Tier 1"
-            bills.at[pos, "matched_gateway"] = gateway
-            bills.at[pos, "matched_txn_ref"] = str(bills.at[pos, ref_col])
-            bills.at[pos, "matched_payment_mode"] = pool.at[available, "payment_mode"]
-            bills.at[pos, "refs_resolved"] = bills.at[pos, "refs_resolved"] + 1
+        # Pool side. The pool is the whole loaded history (the search is
+        # date-agnostic) but only transactions whose reference some candidate
+        # bill carries can possibly match, so everything else is dropped
+        # BEFORE the expensive keying. This cannot change a result: ranks are
+        # numbered within a (reference, amount) key and the key contains the
+        # reference, so removing other references renumbers nothing.
+        p_ref_series = gw_pool["txn_ref"]
+        p_amt_all = gw_pool["amount"].to_numpy(dtype="float64")
+        p_ok = (p_ref_series.notna().to_numpy() & ~np.isnan(p_amt_all)
+                & p_ref_series.isin(bdf["ref"].unique()).to_numpy())
+        pdf = pd.DataFrame({
+            "ref": p_ref_series[p_ok].astype(str).to_numpy(),
+            "amt": _round2(p_amt_all[p_ok]),
+            "label": gw_pool.index.to_numpy()[p_ok],
+        })
+        if pdf.empty:
+            continue
 
-            # Never hidden: a reference match on a different date is recorded,
-            # not silently accepted as if the dates always agreed.
-            txn_date = pool.at[available, "business_date"]
-            diff = _date_diff_days(txn_date, bills.at[pos, "business_date"])
-            bills.at[pos, "date_diff_days"] = diff
-            if diff != 0:
-                direction = "after" if diff > 0 else "before"
-                bills.at[pos, "match_note"] = (
-                    f"reference matched, txn dated {abs(diff)} day(s) "
-                    f"{direction} bill"
-                )
+        keys = ["ref", "amt"]
+        bdf["rank"] = bdf.groupby(keys, sort=False).cumcount()
+        pdf["rank"] = pdf.groupby(keys, sort=False).cumcount()
+        hit = bdf.merge(pdf, on=keys + ["rank"], how="inner")
+        if hit.empty:
+            continue
+
+        bp = hit["bpos"].to_numpy()
+        labels = hit["label"].to_numpy()
+        consumed.update(labels.tolist())
+        matched[bp] = True
+        tier[bp] = "Tier 1"
+        gateway_col[bp] = gateway
+        txn_ref_col[bp] = hit["ref"].to_numpy(dtype=object)
+        mode_col[bp] = pool["payment_mode"].loc[labels].to_numpy(dtype=object)
+        resolved[bp] += 1
+
+        # Never hidden: a reference match on a different date is recorded,
+        # not silently accepted as if the dates always agreed.
+        txn_dates = pd.to_datetime(pool["business_date"].loc[labels].to_numpy())
+        bill_d = pd.to_datetime(bill_dates.iloc[bp].to_numpy())
+        diff = np.asarray((txn_dates - bill_d).days, dtype="int64")
+        diff_col[bp] = diff
+        for j in np.flatnonzero(diff != 0):
+            d = int(diff[j])
+            direction = "after" if d > 0 else "before"
+            note_col[bp[j]] = (f"reference matched, txn dated {abs(d)} day(s) "
+                               f"{direction} bill")
+
+        if on_progress:
+            on_progress(f"Tier 1 matching against {gateway}: "
+                        f"{total_for_gateway:,} of {total_for_gateway:,} bills")
+
+    bills["matched"] = matched
+    bills["match_tier"] = tier
+    bills["matched_gateway"] = gateway_col
+    bills["matched_txn_ref"] = txn_ref_col
+    bills["matched_payment_mode"] = mode_col
+    bills["date_diff_days"] = diff_col
+    bills["match_note"] = note_col
+    bills["refs_resolved"] = resolved
 
     logger.info(f"R1 Tier 1: {int(bills['matched'].sum())} of {len(bills)} digital bill lines matched")
     return bills, consumed
@@ -331,6 +400,15 @@ def match_tier2_edc_other(bills: pd.DataFrame, pool: pd.DataFrame, consumed: set
 
     Restricting to the residual is what removes the ambiguity: on 20-Jul it
     turns 1,664 colliding store+date+amount groups into 0 ambiguous cases.
+
+    Vectorized (2026-10-13), same rule as the per-row engine. The key
+    (store, date, amount) fixes the candidate set, and nothing outside a key
+    can consume one of its candidates, so per key:
+      0 candidates -> every bill with the key stays open
+      1 candidate  -> the first bill (frame order) takes it; the rest find it
+                      consumed and stay open
+      2+ candidates-> every bill with the key is Ambiguous, candidates listed
+                      in pool order; nothing is consumed
     """
     bills = bills.copy()
     if "ambiguous_candidates" not in bills.columns:
@@ -338,7 +416,7 @@ def match_tier2_edc_other(bills: pd.DataFrame, pool: pd.DataFrame, consumed: set
     if "matched_payment_mode" not in bills.columns:
         bills["matched_payment_mode"] = pd.NA
 
-    eligible = bills["mop"].isin(EDC_OTHER_MOPS) & ~bills["matched"]
+    eligible = (bills["mop"].isin(EDC_OTHER_MOPS) & ~bills["matched"]).to_numpy()
     if not eligible.any() or pool.empty:
         return bills, consumed
 
@@ -346,31 +424,84 @@ def match_tier2_edc_other(bills: pd.DataFrame, pool: pd.DataFrame, consumed: set
     if residual.empty:
         return bills, consumed
 
-    residual_index = {}
-    for idx, store, bdate, amt in zip(residual.index, residual["store"],
-                                      residual["business_date"], residual["amount"]):
-        residual_index.setdefault((store, bdate, round(float(amt), 2)), []).append(idx)
+    keys = ["store", "bdate", "amt"]
+    epos = np.flatnonzero(eligible)
+    bdf = pd.DataFrame({
+        "bpos": epos,
+        "store": bills["store"].iloc[epos].to_numpy(dtype=object),
+        "bdate": bills["business_date"].iloc[epos].to_numpy(dtype=object),
+        "amt": _round2(bills["amount"].iloc[epos].to_numpy(dtype="float64")),
+    })
+    # Only residual transactions on a date an eligible bill carries, and within
+    # a cent of an amount it carries, can share a key with one. A coarse,
+    # strictly-superset pre-filter (whole-rupee neighbourhood of the bill
+    # amounts), so the exact 2-decimal keying below runs on thousands of rows,
+    # not the whole pool. Exactness is untouched: it only drops rows that could
+    # never have matched.
+    bill_amt_raw = bills["amount"].iloc[epos].to_numpy(dtype="float64")
+    bill_amt_raw = bill_amt_raw[~np.isnan(bill_amt_raw)]
+    whole = np.unique(np.concatenate([np.floor(bill_amt_raw) + k for k in (-1, 0, 1)]))         if len(bill_amt_raw) else np.array([])
+    res_amt = residual["amount"].to_numpy(dtype="float64")
+    keep = np.isin(np.floor(res_amt), whole)
+    keep &= residual["business_date"].isin(bdf["bdate"].unique()).to_numpy()
+    residual = residual.loc[keep]
+    if residual.empty:
+        return bills, consumed
+    rdf = pd.DataFrame({
+        "label": residual.index.to_numpy(),
+        "store": residual["store"].to_numpy(dtype=object),
+        "bdate": residual["business_date"].to_numpy(dtype=object),
+        "amt": _round2(residual["amount"].to_numpy(dtype="float64")),
+    })
+    bdf = bdf[~np.isnan(bdf["amt"].to_numpy())].copy()
+    rdf = rdf[~np.isnan(rdf["amt"].to_numpy())].copy()
+    if bdf.empty or rdf.empty:
+        return bills, consumed
 
-    for pos in bills.index[eligible]:
-        key = (bills.at[pos, "store"],
-               bills.at[pos, "business_date"],
-               round(float(bills.at[pos, "amount"]), 2))
-        candidates = [c for c in residual_index.get(key, []) if c not in consumed]
-        if not candidates:
-            continue
-        if len(candidates) == 1:
-            chosen = candidates[0]
-            consumed.add(chosen)
-            bills.at[pos, "matched"] = True
-            bills.at[pos, "match_tier"] = "Matched (EDC OTHER)"
-            bills.at[pos, "matched_gateway"] = pool.at[chosen, "gateway"]
-            bills.at[pos, "matched_txn_ref"] = pool.at[chosen, "txn_ref"]
-            bills.at[pos, "matched_payment_mode"] = pool.at[chosen, "payment_mode"]
-        else:
-            bills.at[pos, "match_tier"] = "Ambiguous"
-            bills.at[pos, "ambiguous_candidates"] = ", ".join(
-                str(pool.at[c, "txn_ref"]) for c in candidates
-            )
+    rdf["n"] = rdf.groupby(keys, sort=False, dropna=False)["label"].transform("size")
+    bdf["rank"] = bdf.groupby(keys, sort=False, dropna=False).cumcount()
+
+    matched = bills["matched"].to_numpy(copy=True)
+    tier = bills["match_tier"].to_numpy(dtype=object, copy=True)
+    gateway_col = bills["matched_gateway"].to_numpy(dtype=object, copy=True)
+    txn_ref_col = bills["matched_txn_ref"].to_numpy(dtype=object, copy=True)
+    mode_col = bills["matched_payment_mode"].to_numpy(dtype=object, copy=True)
+    amb_col = bills["ambiguous_candidates"].to_numpy(dtype=object, copy=True)
+
+    # Exactly one candidate: the first bill of the key takes it.
+    single = bdf[bdf["rank"] == 0].merge(rdf[rdf["n"] == 1], on=keys, how="inner")
+    if not single.empty:
+        bp = single["bpos"].to_numpy()
+        lab = single["label"].to_numpy()
+        consumed.update(lab.tolist())
+        matched[bp] = True
+        tier[bp] = "Matched (EDC OTHER)"
+        gateway_col[bp] = pool["gateway"].loc[lab].to_numpy(dtype=object)
+        txn_ref_col[bp] = pool["txn_ref"].loc[lab].to_numpy(dtype=object)
+        mode_col[bp] = pool["payment_mode"].loc[lab].to_numpy(dtype=object)
+
+    # Two or more: every bill of the key is Ambiguous; nothing consumed.
+    many = rdf[rdf["n"] >= 2]
+    if not many.empty:
+        # Python's own str(), element by element: a null reference lists as
+        # "<NA>", exactly as the per-row engine printed it.
+        refs = np.array([str(v) for v in pool["txn_ref"].loc[many["label"].to_numpy()]],
+                        dtype=object)
+        listed = (many.assign(ref=refs)
+                  .groupby(keys, sort=False, dropna=False)["ref"]
+                  .agg(", ".join).rename("cands").reset_index())
+        amb = bdf.merge(listed, on=keys, how="inner")
+        if not amb.empty:
+            bp = amb["bpos"].to_numpy()
+            tier[bp] = "Ambiguous"
+            amb_col[bp] = amb["cands"].to_numpy(dtype=object)
+
+    bills["matched"] = matched
+    bills["match_tier"] = tier
+    bills["matched_gateway"] = gateway_col
+    bills["matched_txn_ref"] = txn_ref_col
+    bills["matched_payment_mode"] = mode_col
+    bills["ambiguous_candidates"] = amb_col
 
     logger.info(
         f"R1 Tier 2 (EDC OTHER): {int((bills['match_tier'] == 'Matched (EDC OTHER)').sum())} matched, "

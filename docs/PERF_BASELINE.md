@@ -73,3 +73,78 @@ Given the size of "handle a full financial year" as a single request, this pass 
 - The OLD path's cost scaled with the requested date RANGE (more Parquet files, a longer carry-forward walk, and — this matters — a CMS raw-file re-ingest whose cost is proportional to how many months of CMS source files exist under the configured folder, not to the view's own filter). Given 12 months instead of 1, the OLD path's `pos_bill_wise`/`ptc` reads and the CMS re-ingest would scale roughly linearly with it — this is real, not a guess, since those stages are literally "read N files" and N grows with the range.
 - The NEW path's cost is an indexed SELECT filtered by `run_id` + `business_date` + `store` — its cost scales with the size of the FILTERED result (how many store-days are actually being displayed), not with how many months are loaded in total. This is the architectural property the request asked for, and it holds by construction (an index scan against a WHERE clause), not because it was measured at scale.
 - What is **not** verified: the actual wall-clock numbers at 3x or 12x the current row count, and whether `run_reconciliation()`'s own cost (ingest + R1 matching + now this aggregate persist) stays inside a sane run-time budget at full-year volume. That needs either a real multi-month data drop or a synthetic one built for the purpose — neither exists on this machine today. Recommend loading a second and third month of real data (or a synthetic replay of July x3) and re-running this script before treating full-year performance as closed.
+
+
+---
+
+# Performance rewrite, Steps 1-2 - measured 2026-10-13
+
+Truth: `docs/BASELINE_APR_AUG.md` (Run #11, 3,704,070 digital bill lines, Apr-Aug 2026). It stays the
+reference until September is reconciled; it is then extended to APR_SEP with Apr-Aug unchanged.
+Every figure below was produced by comparing against Run #11's persisted rows; none is estimated.
+
+## Step 1 - vectorized matcher (`r1_bill_txn.match_tier1` / `match_tier2_edc_other`)
+
+| | Per-row `.at[]` loop | Joins |
+|---|---|---|
+| July, 660,150 bills, whole 3.7M-transaction pool | 280-365 s (1,807-2,357 bills/s) | 12-15 s (44,000-54,000 bills/s) |
+| Apr-Aug, 3,704,070 bills | Run #11 `r1_match`: 56,050 s | 56-121 s (30,000-66,000 bills/s) |
+
+Proof of identity: `tests/test_r1_equivalence.py` (250 random worlds vs the frozen per-row engine in
+`tests/reference_matcher.py`, every output column + the consumed set); `scripts/r1_equivalence.py` on the
+real warehouse: July old-vs-new 0 differing cells, consumed sets identical; Apr-Aug vs Run #11:
+0 differing cells on matched / tier / gateway / txn ref / date difference / match note / payment mode over
+all 3,704,070 lines; unmapped transactions 6,731 = 6,731 (same ids); `original_txn_not_found` 4 = 4.
+(The baseline table's "matched 3,699,264" is the engine's 3,699,262 plus the 2 active manual matches.)
+
+## Step 2 - chunked matching (`r1_chunked.py`, `runs.run_reconciliation`)
+
+R1 reads the per-date warehouse Parquet, matches a CHUNK of consecutive dates, persists and commits each
+DATE as it is yielded, and frees the chunk. The pool is built once into an on-disk SQLite index
+(gateway + reference); a Tier-1 reference is still found across ALL loaded dates; consumption is a `used`
+flag on the pool row; Tier 2 runs in a second pass (a later-dated bill can consume an earlier date's
+transaction) and only on the ~2,000 unmatched EDC OTHER lines a month. Chunk size and commit granularity
+are separate: commits stay per date.
+
+### Chunk size - back to back on the real Apr-Aug warehouse (warm cache), every size reproduces Run #11
+
+| Lines per chunk | Chunks | Time | Peak memory |
+|---|---|---|---|
+| ~47,000 (one date) | 155 | 149 s | 666 MB |
+| **100,000 (default)** | **46** | **99 s** | **770 MB** |
+| 300,000 | 17 | 100 s | 1,011 MB |
+| 600,000 | 12 | 100 s | 1,346 MB |
+| 838,614 (a calendar month) | 7 | 104 s | 1,756 MB |
+
+One chunk per date pays a fixed cost 155 times (+50% time). From ~100k lines up, time is flat (about 100 s
+for 3.7M lines = 37,000 bills/s, against 56 s for the whole-frame engine) and only memory grows - so a month
+costs 2.3x the memory of a 100k chunk for the same speed. The default is therefore `DEFAULT_CHUNK_ROWS = 100,000`,
+lowered further if the RAM available at run time could not hold it (`_adaptive_chunk_rows`, measured
+~1.5 KB per digital line in flight). `chunk_rows=0` gives calendar months. (An earlier, cold-cache sweep read
+149/213/284 s for 100k/300k/month, and one run stalled for 2.6 hours on this shared machine - single timings
+here are noisy; this table is the back-to-back one.)
+
+What made the chunked engine fast (each change re-proved identical): consumption as a row flag instead of
+counts; references to SQLite as one JSON array instead of a row-by-row insert; no `astype(str)` on text that is
+already text; one groupby instead of 31 whole-chunk date conversions per month (29 s); the Tier-1 lookup
+returns only the 6 columns it matches on; Tier 2 on the eligible subset, never a copy of the month; unused
+pool rows filtered in the index (a few thousand of 3.7M survive Tier 1).
+
+| Peak working set, matching only | 1 month (July) | 5 months (Apr-Aug) |
+|---|---|---|
+| Whole-frame engine | 3,330 MB | 5,026 MB |
+| Chunked, 100k default | ~460 MB | 770 MB |
+
+Not flat (the peak still creeps up with the number of files in the pool index), but bounded and ~6.5x below
+the whole-frame engine. A 6-month run cannot be measured here: only 5 months are in the warehouse. The ingest
+stage is outside this loop and unchanged until Step 3.
+
+### End to end (real `run_reconciliation`, scratch database, ingest stubbed to the warehouse), Apr-Aug vs Run #11
+
+`r1_bill_lines` 3,704,070 / `digital_mode_agg` 55,917 / `reconciliation_results` 28,064 / exception register
+11,506 / R1 summary: all IDENTICAL by SQL `EXCEPT` both ways. 756 s total, peak 863 MB, of which `r1_match`
+179 s and persistence 540 s. Persistence was then made 3.6x faster (a day: 2.44 s -> 0.68 s) with Core
+`executemany`, column-wise record building, and per-store sums over index groups using the same numpy
+summation as `Series.sum` (asserted bit-identical to the old per-group loop in `tests/test_runs_persist.py`).
+
+Run #11 was 58,818 s.

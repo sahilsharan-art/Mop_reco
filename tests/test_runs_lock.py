@@ -109,6 +109,11 @@ def test_no_blocking_run_once_the_stale_one_is_marked_failed(config, session, mo
         raise _PastTheLock("lock check passed; ingestion stubbed out")
 
     monkeypatch.setattr(runs_module.ingest_mod, "ingest_pos_bill_wise", _stub)
+    # The masters pre-flight (tests/test_masters_preflight.py) is the first stage after the
+    # lock; this test is about the lock only, so it must not depend on whatever master
+    # files happen to be on disk today.
+    monkeypatch.setattr(runs_module.masters_mod, "preflight_masters",
+                        lambda config, session=None, raise_on_failure=True: [])
 
     with pytest.raises(_PastTheLock):
         run_reconciliation(config, session, triggered_by="second_attempt")
