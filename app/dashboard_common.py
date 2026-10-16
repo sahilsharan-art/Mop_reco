@@ -6,9 +6,12 @@ file or runs a reconciliation.
 
 from __future__ import annotations
 
+import base64
 import calendar
+import html
 import io
 import json
+import logging
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -23,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mop_reco.db import Exception_, R1BillLine, Run, get_session, init_db
 from mop_reco.export import XLSX_ROW_LIMIT, ExportMeta, build_export
 from mop_reco.formatting import count as fmt_count
-from mop_reco.formatting import money_cr, money_short, money_table
+from mop_reco.formatting import display_date, money_cr, money_short, money_table
 
 # --- session keys ----------------------------------------------------------
 K_OPERATOR = "operator"
@@ -58,7 +61,7 @@ def inject_theme():
     st.markdown(f"<style>{_theme_css()}</style>", unsafe_allow_html=True)
 
 
-def page(title: str, purpose: str = "", icon: str = None):
+def page(title: str, purpose: str = "", icon: str = None, nav: bool = True):
     """Standard page opening: a title and, when given, ONE line saying what
     it is for — written for the person using it, never a build-stage label.
 
@@ -85,34 +88,130 @@ def page(title: str, purpose: str = "", icon: str = None):
         st.stop()
 
     heading, slot = st.columns([3, 2])
-    heading.title(title)
+    heading.markdown(_title_html(title), unsafe_allow_html=True)
     st.session_state["_range_slot"] = slot
     if purpose:
         st.caption(purpose)
+    # The status pill sits directly under the title on every page; sidebar() fills it.
+    st.session_state["_pill_slot"] = st.empty()
+    # The navigation bar. Summary places it itself, BELOW its summary matrix
+    # (`nav=False` here, then `top_nav()` after the matrix); every other page has no
+    # matrix, so the bar goes straight under the heading - the same place relative to the
+    # page's own opening block, so the layout does not jump when switching pages.
+    if nav:
+        top_nav(NAV_LABEL_BY_TITLE.get(title))
+
+
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "citykart-logo.png"
+LOGO_HEIGHT_PX = 32
+
+
+@st.cache_data(show_spinner=False)
+def _logo_data_uri(mtime: float):
+    """The logo as a data: URI (read once per file version), or None when the file is
+    missing or unreadable - never a broken image."""
+    try:
+        raw = LOGO_PATH.read_bytes()
+    except OSError:
+        return None
+    if raw[:4] != bytes([137]) + b"PNG":
+        return None
+    return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+
+
+def logo_missing() -> bool:
+    return not LOGO_PATH.is_file()
+
+
+def _title_html(title: str) -> str:
+    """Logo (32px high, aspect ratio kept) at the top left, the title to its right. With
+    no logo file the title stands alone and a warning is logged once - no broken-image icon."""
+    uri = _logo_data_uri(LOGO_PATH.stat().st_mtime if LOGO_PATH.is_file() else 0.0)
+    if uri is None:
+        if not st.session_state.get("_logo_warned"):
+            st.session_state["_logo_warned"] = True
+            logging.getLogger(__name__).warning(
+                "Logo file missing or not a PNG: %s - showing the title alone", LOGO_PATH)
+        return f"<div class='mop-titlebar'><h1>{html.escape(title)}</h1></div>"
+    return (f"<div class='mop-titlebar'><img class='mop-logo' src='{uri}' alt='Citykart' "
+            f"style='height:{LOGO_HEIGHT_PX}px;width:auto'><h1>{html.escape(title)}</h1></div>")
+
+
+# The pages, left to right (2026-10-13). The bar is `st.page_link`s - the separate page
+# files stay separate pages, and Streamlit still runs ONLY the page that is opened. It is
+# deliberately NOT `st.tabs`: that renders every tab's content on every run, hidden ones
+# included, which would undo the lazy page loading (CLAUDE.md 6.14) and make the dashboard
+# slower. The native sidebar list is hidden (theme.css + .streamlit/config.toml).
+NAV_PAGES = [
+    ("Summary.py", "Summary"),
+    ("pages/8_Exceptions.py", "Exceptions"),
+    ("pages/2_CMS_Reco.py", "CMS Reco"),
+    ("pages/1_Float.py", "Float"),
+    ("pages/7_Store_Task.py", "Store Task"),
+    ("pages/6_Upload.py", "Upload"),
+    ("pages/5_Masters.py", "Masters"),
+]
+
+
+# Page title -> nav item, so the bar can mark the open page (Streamlit 1.57 sets no
+# aria-current on a page_link; the active link differs only by a generated class name,
+# which must not be styled against).
+NAV_LABEL_BY_TITLE = {
+    APP_NAME: "Summary", "MOP RECO_Store Wise": "Summary", "Exceptions": "Exceptions", "CMS Reco": "CMS Reco",
+    "Float": "Float", "Store Task": "Store Task", "Upload": "Upload", "Master data": "Masters",
+}
+
+
+def top_nav(active: str = None):
+    """The horizontal navigation bar across the top of every page, and - under it - the
+    status pill's slot, which `sidebar()` fills once it knows the run and the filters.
+    The open page (`active`) is drawn as a plain label with the accent underline; every
+    other page is a link."""
+    with st.container(key="topnav"):
+        cols = st.columns([len(label) + 3 for _, label in NAV_PAGES] + [14], gap="small")
+        for col, (path, label) in zip(cols, NAV_PAGES):
+            if label == active:
+                col.markdown(f"<div class='mop-nav-active'>{label}</div>", unsafe_allow_html=True)
+            else:
+                col.page_link(path, label=label)
+
+
+def build_stamp() -> str:
+    """When THIS PROCESS loaded its code - the answer to "which build am I on" (CLAUDE.md 9a)."""
+    boot = getattr(sys, "_mop_reco_started_at", None)
+    return datetime.fromtimestamp(boot).strftime("%d %b %Y, %H:%M:%S") if boot else "unknown"
+
+
+def _write_status_pill(run, date_from, date_to, store=None):
+    """"Live . run #11 . 01/04/2026 to 31/08/2026 . all stores" - which run is on screen and
+    what filter is active, directly under the navigation bar on every page. Called from
+    `sidebar()` once the range is settled."""
+    slot = st.session_state.pop("_pill_slot", None)
+    if slot is None or run is None:
+        return
+    label = range_label_ddmmyyyy(date_from, date_to)
+    store_words = f"{store} only" if store else "all stores"
+    slot.markdown(
+        f"<div class='mop-pill' title='Build: code loaded {build_stamp()}'><span class='mop-pill-dot'></span>"
+        f"<span class='mop-pill-live'>Live</span>"
+        f"<span class='mop-pill-sep'>&middot;</span>run #{run.id}"
+        f"<span class='mop-pill-sep'>&middot;</span>{label}"
+        f"<span class='mop-pill-sep'>&middot;</span>{store_words}</div>",
+        unsafe_allow_html=True)
+
+
+def range_label_ddmmyyyy(date_from, date_to) -> str:
+    """"01/04/2026 to 30/09/2026" - the pill always spells the range out as dates, never
+    the prose of `range_label`."""
+    if date_from is None or date_to is None:
+        return "all loaded dates"
+    return f"{display_date(date_from)} to {display_date(date_to)}"
 
 
 def _write_range_label(date_from, date_to, store=None):
-    """Put the active range beside the page title, so what is on screen is
-    never a guess — e.g. "1-31 July 2026, all stores". Called from sidebar()
-    once the range is settled.
-
-    With no default date any more, this is the ONLY place that says what
-    "empty" resolved to — every loaded date, one store or all of them.
-    """
-    slot = st.session_state.pop("_range_slot", None)
-    if slot is None:
-        return
-    label = range_label(date_from, date_to)
-    if not label:
-        return
-    store_words = f"{store} only" if store else "all stores"
-    with slot:
-        st.markdown(
-            f"<div class='mop-range-label'>"
-            f"<span class='mop-range-label-main'>{label}</span><br>"
-            f"<span class='mop-range-label-sub'>{store_words}</span></div>",
-            unsafe_allow_html=True,
-        )
+    """The period is no longer written beside the title (2026-10-14): the Live pill under it
+    already shows the range and the store. The slot is still consumed so nothing leaks."""
+    st.session_state.pop("_range_slot", None)
 
 
 @st.cache_resource
@@ -308,7 +407,7 @@ def stmt_table(title, period, rows_html, result_label, result_value,
         f"<td class='mop-stmt-rowlabel'>{result_label}</td>"
         f"<td class='mop-stmt-figure{bad_cls}'>{result_figure}</td></tr>"
     )
-    note_html = "<div class='mop-stmt-note'>All figures in Rs Cr</div>" if use_cr else ""
+    note_html = ""
     return f"""
 <div class='mop-stmt'>
   <div class='mop-stmt-title'>{title}</div>
@@ -614,40 +713,15 @@ def sidebar(session, run, show_store: bool = True):
                 f"completed {finished}</div>",
                 unsafe_allow_html=True,
             )
-            # A newer run existing must never blank this page — it is a
-            # separate note beside the completed run's own figures, not a
-            # replacement for them (2026-09-26; see latest_run()'s own note
-            # for the incident this fixes).
-            newer = (session.query(Run)
-                    .filter(Run.started_at > run.started_at)
-                    .order_by(Run.started_at.desc()).first())
-            if newer:
-                st.markdown(
-                    f"<div class='mop-sidebar-stamp mop-sidebar-stamp--build'>"
-                    f"A newer run (#{newer.id}, {newer.status}) exists but "
-                    f"is not shown here until it completes.</div>",
-                    unsafe_allow_html=True,
-                )
         else:
             st.markdown(
                 "<div class='mop-sidebar-stamp'>No run yet</div>",
                 unsafe_allow_html=True,
             )
 
-        # The build stamp — when THIS PROCESS loaded its code, not when the
-        # data was last reconciled (2026-09-13, on instruction: "so I can
-        # confirm I am looking at the new code"). §9a: a process started
-        # before a code change silently serves the OLD module; this is the
-        # one place on screen that answers "is this actually the process
-        # that was just restarted".
-        boot = getattr(sys, "_mop_reco_started_at", None)
-        if boot:
-            build = datetime.fromtimestamp(boot).strftime("%d %b %Y, %H:%M:%S")
-            st.markdown(
-                f"<div class='mop-sidebar-stamp mop-sidebar-stamp--build'>"
-                f"Code loaded: {build}</div>",
-                unsafe_allow_html=True,
-            )
+        # The build stamp is no longer page text (2026-10-14): it lives in the Live pill's
+        # tooltip (`build_stamp()`, `_write_status_pill`) so "which build am I on" is still
+        # answerable, and in the code (`sys._mop_reco_started_at`, selfcheck).
 
         _operator_footer()
 
@@ -659,6 +733,7 @@ def sidebar(session, run, show_store: bool = True):
 
     store = st.session_state[K_STORE]
     _write_range_label(date_from, date_to, None if store == "All stores" else store)
+    _write_status_pill(run, date_from, date_to, None if store == "All stores" else store)
     return date_from, date_to, (None if store == "All stores" else store)
 
 
@@ -680,16 +755,12 @@ def _operator_footer():
             if right.button("Change", key="op_change"):
                 st.session_state.pop(K_OPERATOR, None)
                 st.rerun()
-        else:
-            st.markdown(
-                "<div class='mop-sidebar-stamp mop-sidebar-stamp--build'>"
-                "Not signed in — your name is asked when you first record "
-                "something.</div>", unsafe_allow_html=True)
+        # Not signed in: nothing is shown - the name is asked when something is first recorded.
 
 
 def no_run_yet():
     st.info(
-        "No reconciliation has been run yet. Open **Run** to reconcile a date range — "
+        "No reconciliation has been run yet. Open **Upload** to reconcile a date range — "
         "a full month takes about 16 minutes."
     )
     st.stop()
@@ -716,7 +787,7 @@ def stop_if_no_dates(date_from, run):
         return
     st.info(
         f"Run #{run.id} completed but produced no reconciled dates for this "
-        "range. Open **Run** to check what it actually loaded."
+        "range. Open **Upload** to check what it actually loaded."
     )
     st.stop()
 
@@ -747,22 +818,36 @@ def export_all_button(fetch_all, total: int, meta: ExportMeta, key: str,
                       f"Will produce {fmt} "
                       f"({'above' if total > XLSX_ROW_LIMIT else 'within'} the "
                       f"{fmt_count(XLSX_ROW_LIMIT)}-row Excel threshold)."):
+        # Three honest phases: COLLECTING (rows are read and shaped, up to 60% - the file's own
+        # columns are checked on the first chunk, so a schema error surfaces here, not at the end),
+        # BUILDING (the workbook or CSV is written, 60-95%), READY. The bar never reaches 100% until
+        # the file exists; any failure is shown as an error with its reason, not as a bar that
+        # filled and then threw.
         status = st.status(f"Collecting {fmt_count(total)} rows…", expanded=True)
         bar = status.progress(0.0)
 
         def fetched(done, of):
-            bar.progress(min(0.7, 0.7 * done / max(1, of)))
-            status.update(label=f"Collected {fmt_count(done)} of {fmt_count(of)} rows…")
+            bar.progress(min(0.6, 0.6 * done / max(1, of)))
+            status.update(label=f"Collecting rows - {fmt_count(done)} of {fmt_count(of)}…")
 
         def writing(fraction, message):
-            bar.progress(0.7 + 0.3 * fraction)
-            status.update(label=message)
+            bar.progress(0.6 + 0.35 * fraction)
+            status.update(label=f"Building the file - {message}")
 
-        df = fetch_all(fetched)
-        result = build_export(df, meta, progress=writing)
-        bar.progress(1.0)
-        status.update(label=f"{result.filename} — {result.note}", state="complete")
-        st.session_state[f"{key}_result"] = result
+        st.session_state.pop(f"{key}_result", None)
+        try:
+            df = fetch_all(fetched)
+            status.update(label=f"Collected {fmt_count(len(df))} rows - building the file…")
+            result = build_export(df, meta, progress=writing)
+        except Exception as exc:  # noqa: BLE001 - shown with its reason, never swallowed
+            bar.empty()
+            status.update(label=f"Export failed - {type(exc).__name__}", state="error", expanded=True)
+            st.error(f"The export could not be built: {exc}")
+        else:
+            bar.progress(1.0)
+            status.update(label=f"Ready - {result.filename} ({fmt_count(result.rows)} rows). {result.note}",
+                          state="complete")
+            st.session_state[f"{key}_result"] = result
 
     result = st.session_state.get(f"{key}_result")
     if result is not None:

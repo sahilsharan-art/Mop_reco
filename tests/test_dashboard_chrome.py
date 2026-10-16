@@ -10,6 +10,8 @@ crashes on open, and Upload did exactly that.
 
 from __future__ import annotations
 
+import re
+
 import ast
 import sys
 from datetime import date
@@ -183,10 +185,10 @@ def test_page_level_filters_stayed_on_their_page():
     """Status/MOP moved to Manual matches (2026-09-17, with the open-bills
     table that used to live on the now-removed Bill match page); Show moved
     to Summary's own Exceptions section."""
-    manual_matches = (APP / "pages" / "3_Manual_matches.py").read_text(encoding="utf-8")
+    manual_matches = (APP / "pages" / "8_Exceptions.py").read_text(encoding="utf-8")
     for label in ('"Status"', '"MOP"'):
         assert label in manual_matches
-    assert '"Show"' in (APP / "Summary.py").read_text(encoding="utf-8")
+    assert '"Show"' in manual_matches   # the Exceptions tab carries both (2026-10-14)
 
 
 def test_the_filters_persist_in_plain_keys_not_widget_keys():
@@ -264,8 +266,10 @@ def test_the_range_label_includes_the_store_or_says_all_stores():
     is on screen, and with no default date any more that includes the store
     filter, not only the date span."""
     source = COMMON.read_text(encoding="utf-8")
-    body = source[source.index("def _write_range_label("):
-                 source.index("@st.cache_resource")]
+    # The period beside the title was removed (2026-10-14); the Live pill carries the range
+    # and the store, so that is where "all stores" / "ABD only" must still be said.
+    body = source[source.index("def _write_status_pill("):
+                 source.index("def range_label_ddmmyyyy(")]
     assert 'store_words = f"{store} only" if store else "all stores"' in body
 
 
@@ -605,28 +609,37 @@ def test_inline_match_surfaces_the_date_lag_note_on_a_discrepant_case_too():
 
 
 def test_exceptions_show_dropdown_offers_only_open_and_under_investigation():
-    """The standalone Exceptions page is gone (2026-09-17) — this is now
-    Summary's own Exceptions section (its own +/- toggle since 2026-09-19,
-    not a plain st.expander any more)."""
-    source = (APP / "Summary.py").read_text(encoding="utf-8")
+    """The standalone Exceptions page is gone (2026-09-17) - this is Summary's own Exceptions
+    section. Since 2026-10-13 the choice is a persisted select (it survives navigation)."""
+    source = (APP / "pages" / "8_Exceptions.py").read_text(encoding="utf-8")
     section = source[source.index('_section_toggle(\n    "exceptions"'):]
-    assert 'selectbox("Show", ["Open", "Under investigation"]' in section
+    assert '_persisted_select("Show", ["Open", "Under investigation"]' in section
     assert '"Everything"' not in section
     assert '"Auto-resolved"' not in section
     assert '"Closed"' not in section
 
 
-def test_exceptions_section_has_a_bottom_expander_for_closed_and_auto_resolved():
-    """Bills and transactions are never merged into one count (2026-09-17) —
-    even the closed/auto-resolved expander keeps them as two separate tables
-    with two separate exports."""
-    source = (APP / "Summary.py").read_text(encoding="utf-8")
+def test_exceptions_section_keeps_closed_and_auto_resolved_reachable_but_lazy():
+    """Bills and transactions are never merged into one count (2026-09-17). Closed and
+    auto-resolved stay reachable (rule 4) - since 2026-10-13 behind their own lazy +/- section,
+    read only when opened - as two separate tables with two separate exports."""
+    source = (APP / "pages" / "8_Exceptions.py").read_text(encoding="utf-8")
     section = source[source.index('_section_toggle(\n    "exceptions"'):]
-    assert 'with st.expander(f"Closed and auto-resolved' in section
-    assert 'closed_statuses = ("closed", "auto_resolved")' in section
-    # Two separate exports — bills and transactions must never share one count.
-    assert 'key="dl_exc_bills_closed"' in section
-    assert 'key="dl_exc_txns_closed"' in section
+    assert '_section_toggle(\n        "closed_exceptions", "Closed and auto-resolved"' in section
+    assert 'CLOSED_STATUSES = ("closed", "auto_resolved")' in source
+    assert '"closed_exceptions": False' in source          # collapsed by default: nothing is fetched
+    # one block per kind (bills / txns), each with its own export key
+    assert '_exception_table_block("bills", CLOSED_STATUSES' in section
+    assert '_exception_table_block("txns", CLOSED_STATUSES' in section
+    assert "key=f\"dl_exc_{kind}{'' if editable else '_closed'}\"" in source
+
+
+def test_exception_tables_are_paged_server_side_and_never_load_the_whole_list():
+    source = (APP / "pages" / "8_Exceptions.py").read_text(encoding="utf-8")
+    section = source[source.index('_section_toggle(\n    "exceptions"'):]
+    assert "q.exception_page(" in source and "q.exception_export(" in source
+    assert "q.exception_rows(" not in section          # the load-everything call is gone from the page
+    assert "_pager(" in source
 
 
 def test_the_controls_table_and_notes_moved_into_a_bottom_expander():
@@ -720,3 +733,27 @@ def test_status_styler_handles_an_unmapped_value_without_colour():
     styled = status_styler(df, {"Status": {"open": "warn"}})
     html = styled._compute().to_html()
     assert "something_unexpected" in html
+
+
+def test_summary_no_longer_carries_the_exceptions_section_and_the_page_does():
+    summary = (APP / "Summary.py").read_text(encoding="utf-8")
+    assert "_exception_table_block" not in summary and "exception_page" not in summary
+    page = (APP / "pages" / "8_Exceptions.py").read_text(encoding="utf-8")
+    assert "_exception_table_block" in page and "manual_matching_section" in page
+
+
+def test_navigation_order_and_removed_tabs():
+    source = COMMON.read_text(encoding="utf-8")
+    start = source.index("NAV_PAGES = [")
+    block = source[start:source.index(chr(93), start + len("NAV_PAGES = ["))]
+    labels = re.findall(r'"([A-Za-z ]+)"\)', block)
+    assert labels == ["Summary", "Exceptions", "CMS Reco", "Float", "Store Task", "Upload", "Masters"]
+    assert not (APP / "pages" / "3_Manual_matches.py").exists()
+    assert not (APP / "pages" / "4_Run.py").exists()
+
+
+def test_the_removed_page_texts_are_gone_but_the_build_stamp_is_in_the_pill_tooltip():
+    source = COMMON.read_text(encoding="utf-8")
+    for gone in ("Code loaded:", "Not signed in", "A newer run", "All figures in Rs Cr"):
+        assert gone not in source.replace("# Not signed in:", "")
+    assert "title='Build: code loaded" in source

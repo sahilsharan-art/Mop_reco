@@ -140,6 +140,121 @@ def _read_xlsb(path: Path, sheet_name: Optional[str], max_rows: Optional[int] = 
     )
 
 
+# Excel serial 0 is 1899-12-30 (the 1900 leap-year bug folded in) - the same epoch
+# `parse_business_date` uses for a float serial.
+_EXCEL_EPOCH_US = None
+
+
+def read_xlsb_table(path: Path, text_columns: list, float_columns: list, date_columns: list,
+                    time_columns: list, sheet_transform=None, max_rows: int = None):
+    """Read the named columns of EVERY sheet of an `.xlsb` into one pandas frame with
+    Polars/calamine (fastexcel), ~15x faster than streaming pyxlsb cell by cell.
+
+    Returns (DataFrame, {sheet: data_rows}) shaped like what the pyxlsb path builds:
+    text columns are python str or None, `float_columns` float64, and
+    `date_columns` (BILLDATE) / `time_columns` (BILL_TIME) are Excel serial floats -
+    calamine hands back date-formatted cells as datetimes, so they are converted back
+    to the serial the downstream parsers (`parse_business_date`, `parse_bill_time`)
+    read: a date as days since 1899-12-30; a time as its fraction of a day taken from
+    the time of day alone (calamine places a time-only cell one day off the date
+    epoch, so no epoch is used for it).
+
+    NEVER LOSSY. Column types are not declared: fastexcel infers each selected column
+    from EVERY row under strict coercion, so a column that mixes types (a number among
+    text, say) raises instead of being quietly changed - and a declared type would do
+    the opposite, turning a mismatched cell into null without a word. The inferred
+    type must then be the expected one, or this raises `IOError_`. The caller falls
+    back to the original pyxlsb path on any such error. Every sheet must have the same
+    selected columns at the same sheet positions; per-sheet row counts are returned so
+    a lost sheet shows up as a number. A column named here that the file lacks is
+    simply absent from the result (the caller's required-column check decides whether
+    that is an error). `sheet_transform(polars_frame) -> polars_frame` runs on each
+    sheet as it is read (used to derive columns and drop heavy ones early)."""
+    import fastexcel
+    import polars as pl
+
+    wb = fastexcel.read_excel(str(path))
+    frames, per_sheet, header = [], {}, None
+    wanted = list(dict.fromkeys(text_columns + float_columns + date_columns + time_columns))
+    present = wanted           # optimistic: every wanted column exists
+    for name in wb.sheet_names:
+        # ONE load per sheet. (A separate header probe loads the sheet a second time -
+        # calamine parses the whole sheet range for any read - and cost ~1.8 GB of peak.)
+        try:
+            sheet = wb.load_sheet(name, use_columns=present, dtype_coercion="strict",
+                                  schema_sample_rows=None, n_rows=max_rows)
+        except fastexcel.ColumnNotFoundError:
+            # A file that lacks some wanted column (e.g. an old export without CREATEBY):
+            # ask for the ones it has; the caller's required-column check decides.
+            have = [c.name for c in wb.load_sheet(name, n_rows=1).available_columns()]
+            present = [c for c in wanted if c in have]
+            sheet = wb.load_sheet(name, use_columns=present, dtype_coercion="strict",
+                                  schema_sample_rows=None, n_rows=max_rows)
+        # (`available_columns()` would type EVERY column, including unselected ones with mixed
+        # cells, and fail under strict coercion; the selected columns' names AND sheet positions
+        # are what must agree between sheets.)
+        this_header = [(c.name, c.absolute_index) for c in sheet.selected_columns]
+        if header is None:
+            header = this_header
+        elif this_header != header:
+            raise IOError_(
+                f"{path.name}: sheet '{name}' header differs from the first sheet's - "
+                "refusing to concatenate mismatched columns.\n"
+                f"  first sheet: {header}\n  '{name}': {this_header}")
+        frame = sheet.to_polars()
+        del sheet
+
+        exprs = []
+        for c in frame.columns:
+            dtype = frame.schema[c]
+            if c in text_columns:
+                if dtype == pl.Null:
+                    exprs.append(pl.col(c).cast(pl.String))          # an entirely empty column
+                elif dtype != pl.String:
+                    raise IOError_(f"{path.name} [{name}] column {c!r}: expected text, calamine read {dtype}")
+            elif c in float_columns:
+                if dtype == pl.Null or dtype.is_integer():
+                    exprs.append(pl.col(c).cast(pl.Float64))          # whole numbers / all empty
+                elif dtype != pl.Float64:
+                    raise IOError_(f"{path.name} [{name}] column {c!r}: expected numbers, calamine read {dtype}")
+            elif c in date_columns:
+                if dtype == pl.Float64:
+                    pass                                              # already an Excel serial
+                elif isinstance(dtype, pl.Datetime) or dtype == pl.Date:
+                    # datetime -> Excel serial float (days since 1899-12-30), exactly.
+                    exprs.append(((pl.col(c).cast(pl.Datetime("us")) - pl.datetime(1899, 12, 30))
+                                  .dt.total_microseconds() / 86_400_000_000.0).alias(c))
+                else:
+                    raise IOError_(f"{path.name} [{name}] column {c!r}: expected dates, calamine read {dtype}")
+            elif c in time_columns:
+                if dtype == pl.Float64:
+                    pass
+                elif isinstance(dtype, pl.Datetime):
+                    t = pl.col(c).cast(pl.Datetime("us"))
+                    exprs.append(((t.dt.hour().cast(pl.Float64) * 3600 + t.dt.minute().cast(pl.Float64) * 60
+                                   + t.dt.second().cast(pl.Float64)
+                                   + t.dt.microsecond().cast(pl.Float64) / 1e6) / 86_400.0).alias(c))
+                else:
+                    raise IOError_(f"{path.name} [{name}] column {c!r}: expected times, calamine read {dtype}")
+        if exprs:
+            frame = frame.with_columns(exprs)
+        per_sheet[name] = frame.height
+        if sheet_transform is not None:
+            frame = sheet_transform(frame)       # per sheet, in Polars, before anything is concatenated
+        frames.append(frame)
+        if max_rows is not None:                 # a peek (tests): the first sheet only
+            break
+    table = pl.concat(frames, how="vertical") if len(frames) > 1 else frames[0]
+    df = table.to_pandas()
+    for c in df.columns:
+        if c in text_columns:
+            col = df[c]
+            df[c] = col.astype(object).where(col.notna(), None)
+    logger.info(f"read_xlsb_table: {path.name} [calamine sheets={list(per_sheet)}] - "
+                f"{sum(per_sheet.values())} data rows (per sheet: {per_sheet})")
+    return df, per_sheet
+
+
 def _read_xlsx(path: Path, sheet_name: Optional[str], max_rows: Optional[int] = None) -> ReadResult:
     # read_only=True keeps the underlying zip file handle open for lazy
     # row iteration — never closed before, which is harmless for a raw

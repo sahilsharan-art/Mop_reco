@@ -85,6 +85,10 @@ class ChunkedResult:
     unmapped_txns: pd.DataFrame
     linkage_exceptions: pd.DataFrame
     dates_with_bills: list = field(default_factory=list)
+    # One row per (business_date, store, gateway): every transaction the gateway file holds
+    # (total_n/total_v) and how many of those the engine matched to a bill (mapped_n/mapped_v).
+    # The Summary's "Mapped / Refunded / Unmapped" strip reads this instead of re-reading the pool.
+    txn_agg: pd.DataFrame = None
 
 
 def _empty_pool() -> pd.DataFrame:
@@ -111,12 +115,14 @@ class _PoolStore:
         self.db.execute("pragma synchronous=off")
         self.db.execute("pragma cache_size=-65536")      # 64 MB page cache, whatever the range
         self.db.execute("pragma temp_store=file")
+        self.db.execute("create table extra (gateway text, ref text, bdate text, store text, amt real)")
         self.db.execute(
             "create table pool (seq integer primary key, gateway text, ref text, bdate text, "
             "amt real, status text, ttype text, mode text, store text, ttime text, "
             "used integer not null default 0)")
         self.all_rows = 0
         self.matching_rows = 0
+        self.totals: list = []        # (date, store, gateway, n, value) over every row of every file
 
     def dates(self) -> set:
         out: set = set()
@@ -127,6 +133,38 @@ class _PoolStore:
     def row_counts(self) -> dict:
         return {g: sum(pq.ParquetFile(p).metadata.num_rows for p in self.files[g])
                 for g in GATEWAYS}
+
+    def txn_aggregate(self) -> pd.DataFrame:
+        """Per (business_date, store, gateway): totals over every transaction row, and how many
+        the engine matched to a bill (`used`: Tier 1 flagged in the index, Tier 2 marked after)."""
+        total = pd.DataFrame(self.totals, columns=["business_date", "store", "gateway", "total_n", "total_v"])
+        if total.empty:
+            return pd.DataFrame(columns=["business_date", "store", "gateway", "total_n", "total_v",
+                                         "mapped_n", "mapped_v"])
+        total = (total.groupby(["business_date", "store", "gateway"], dropna=False)
+                 .agg(total_n=("total_n", "sum"), total_v=("total_v", "sum")).reset_index())
+        # MAPPED, as the Summary's strip has always defined it: a row counts when its
+        # (gateway, reference) is one a bill matched - by reference, not by which physical row
+        # the engine happened to consume. (A duplicate line sharing a matched reference - 80 of
+        # them in the Axis file, Apr-Aug - is therefore "mapped" here although the engine
+        # lists it as an unmapped transaction.) Rows outside the matching pool count too.
+        self.db.execute("drop table if exists mk")
+        self.db.execute("create temp table mk as select distinct gateway, ref from pool "
+                        "where used=1 and ref is not null")
+        self.db.execute("create index ix_mk on mk (gateway, ref)")
+        rows = self.db.execute(
+            "select bdate, store, gateway, count(*), coalesce(sum(amt), 0.0) from ("
+            " select p.bdate, p.store, p.gateway, p.amt from pool p"
+            "  join mk on mk.gateway=p.gateway and mk.ref=p.ref"
+            " union all"
+            " select e.bdate, e.store, e.gateway, e.amt from extra e"
+            "  join mk on mk.gateway=e.gateway and mk.ref=e.ref"
+            ") group by bdate, store, gateway").fetchall()
+        mapped = pd.DataFrame(rows, columns=["business_date", "store", "gateway", "mapped_n", "mapped_v"])
+        out = total.merge(mapped, on=["business_date", "store", "gateway"], how="left")
+        out["mapped_n"] = out["mapped_n"].fillna(0).astype("int64")
+        out["mapped_v"] = out["mapped_v"].fillna(0.0)
+        return out
 
     def matching_pool_rows(self) -> int:
         return self.matching_rows
@@ -148,15 +186,22 @@ class _PoolStore:
         return self._datasets[gateway]
 
     def _normalise_file(self, gateway: str, path: str):
-        """One per-date Parquet file -> (all_rows, the pool rows it contributes)."""
+        """One per-date Parquet file -> (all_rows, the pool rows it contributes, the file's
+        totals per store over ALL its rows - refunds, chargebacks and failures included)."""
         _, _, cols = _SPEC[gateway]
         have = set(pq.read_schema(path).names)
         frame = pq.read_table(path, columns=[c for c in cols if c in have]).to_pandas()
         if frame.empty:
-            return 0, _empty_pool()
+            return 0, _empty_pool(), None, None
         arg = _SPEC[gateway][0]
         pool = r1.build_gateway_pool(**{arg: frame})
-        return len(pool), r1.successful_acquiring(pool).reset_index(drop=True)
+        everything = pool[["store", "amount"]].copy()
+        everything["amount"] = pd.to_numeric(everything["amount"], errors="coerce")
+        totals = (everything.groupby("store", dropna=False)["amount"]
+                  .agg(total_n="size", total_v="sum").reset_index())
+        matching = r1.successful_acquiring(pool)
+        extras = pool.loc[~pool.index.isin(matching.index)]
+        return len(pool), matching.reset_index(drop=True), totals, extras
 
     def build(self, on_progress=None):
         """Load every file once, in pool order (gateway, then date, then file
@@ -166,8 +211,19 @@ class _PoolStore:
         done = 0
         for gateway in GATEWAYS:
             for path in self.files[gateway]:
-                n_all, pool = self._normalise_file(gateway, path)
+                n_all, pool, totals, extras = self._normalise_file(gateway, path)
+                if extras is not None and len(extras):
+                    day_text = Path(path).stem
+                    self.db.executemany("insert into extra values (?,?,?,?,?)", [
+                        (gateway, _none_if_na(r), day_text, _none_if_na(st),
+                         None if pd.isna(a) else float(a))
+                        for r, st, a in zip(extras["txn_ref"], extras["store"], extras["amount"])])
                 self.all_rows += n_all
+                if totals is not None:
+                    day = Path(path).stem
+                    for store, n, v in zip(totals["store"], totals["total_n"], totals["total_v"]):
+                        self.totals.append((day, None if pd.isna(store) else str(store),
+                                            gateway, int(n), float(v)))
                 self.matching_rows += len(pool)
                 done += 1
                 if not pool.empty:
@@ -384,8 +440,10 @@ def _chunk_residual_pool(pool: _PoolStore, lo: str, hi: str) -> pd.DataFrame:
         slc = pool.range_slice(gateway, lo, hi, unused_only=True)
         if slc.empty:
             continue
-        parts.append(slc[_POOL_COLUMNS])
-    return (pd.concat(parts, ignore_index=True) if parts else _empty_pool())
+        parts.append(slc[_POOL_COLUMNS + ["seq"]])
+    if not parts:
+        return _empty_pool().assign(seq=pd.Series(dtype="int64"))
+    return pd.concat(parts, ignore_index=True)
 
 
 def _link_non_acquiring(pool: _PoolStore):
@@ -556,6 +614,8 @@ def run_r1_chunked(bill_files: dict, pool_files: dict, on_day=None, on_progress=
                                                           index=bills.index)
                 if eligible.any() and not residual.empty:
                     sub, consumed2 = r1.match_tier2_edc_other(bills.loc[eligible].copy(), residual, set())
+                    if consumed2:                # Tier 2 consumed these transactions: flag them mapped
+                        pool.mark_used(residual.loc[sorted(consumed2), "seq"].to_numpy())
                     for col in ("matched", "match_tier", "matched_gateway", "matched_txn_ref",
                                 "matched_payment_mode", "ambiguous_candidates"):
                         bills.loc[eligible, col] = sub[col].to_numpy()
@@ -606,7 +666,8 @@ def run_r1_chunked(bill_files: dict, pool_files: dict, on_day=None, on_progress=
             "unmatched_value": totals["unmatched_value"],
         }
         return ChunkedResult(summary=summary, unmapped_txns=unmapped,
-                             linkage_exceptions=linkage_exc, dates_with_bills=dates_with_bills)
+                             linkage_exceptions=linkage_exc, dates_with_bills=dates_with_bills,
+                             txn_agg=pool.txn_aggregate())
     finally:
         if pool is not None:
             pool.db.close()

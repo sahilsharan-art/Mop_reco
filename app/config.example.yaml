@@ -213,3 +213,27 @@ manual_match:
     # instead of a picked reason code, so this one fixed code identifies the
     # batch's own reason as "see the remark", never invented per row.
     - bulk_upload
+
+# Store Task (2026-10-14) - tasks assigned to stores, tracked to closure.
+store_tasks:
+  # Due by = raised date + this many WORKING days (weekends and listed holidays skipped).
+  sla_working_days:
+    open_bill: 3
+    cms_not_done: 3
+    high_float: 3
+  # A deposit not credited by this many working days after the deposit is late. The CMS cycle
+  # is T+0 or T+1 per store but no master carries it (CLAUDE.md 6.5), so the conservative
+  # bound is used: anything not credited by T+1 is late under either cycle.
+  cms_credit_due_working_days: 1
+
+# Exceptions tab (2026-10-14): candidate transactions found for each open bill - same store, exact
+# amount, nearest in time first. Time only orders and narrows; it never decides a match.
+exception_pairing:
+  window_minutes: 10   # tier 1: needs a time on both sides
+  window_days: 2       # tier 2: calendar days either side of the bill
+  # A tie on time between bills competing for one transaction goes to the bill whose MOP belongs to the
+  # transaction's gateway; a still-tied contest gives nobody the transaction.
+  mop_family:
+    paytm: [PAYTM EDC, PaytmDQR, PAYTM DQR MOREFUN]
+    axis: [EDC OTHER AXIS]
+    bajaj: [Bajajpay UPI, Bajajpay Card]

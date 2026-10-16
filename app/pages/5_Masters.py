@@ -13,7 +13,9 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from dashboard_common import db_session, latest_run, page, sidebar
+from mop_reco import cms_blocks as cb
 from mop_reco.config import load_config
+from mop_reco.formatting import money_table
 from mop_reco.masters import (
     MASTER_SPECS,
     build_unmapped_report,
@@ -21,7 +23,8 @@ from mop_reco.masters import (
     derive_provisional_store_master,
     due_date,
     get_rows_asof,
-    load_all_masters,
+    load_all_masters_safe,
+    master_label,
     version_history,
 )
 
@@ -38,9 +41,25 @@ session = db_session()
 sidebar(session, latest_run(session))
 
 # --- Load every master (versions on load; a no-op if content is unchanged) --
-load_results = load_all_masters(config, session)
+load_results, load_failures = load_all_masters_safe(config, session)
 
 st.header("Masters")
+# One bad master never takes the page down: each failure is named here and every other master
+# still renders. The version already stored stays in force; nothing is inferred to fill a gap.
+for _name, _message in load_failures.items():
+    st.error(_message + ". The version loaded earlier is still the one in force; "
+             "restore the file and reload.")
+_run = latest_run(session)
+if _run is not None:
+    _slips, _deps = cb.load(session, _run.id)
+    _unmapped = cb.unresolved_rows(_slips, "0000-01-01", "9999-12-31")
+    if len(_unmapped):
+        st.error(f"**Pickup codes with no store mapping: {len(_unmapped)} code(s), "
+                 f"{int(_unmapped['rows'].sum())} CMS row(s), Rs {money_table(_unmapped['amount'].sum())}.** "
+                 "Shown until fixed. No store is guessed for these; they sit as UNRESOLVED on CMS Reco.")
+        st.dataframe(_unmapped.rename(columns={"pickup_code": "Pickup code", "location": "Location",
+                                               "rows": "Rows", "amount": "Value"}),
+                     hide_index=True, width="stretch")
 rows = []
 for master_name, (version, created) in load_results.items():
     rows.append(
@@ -187,7 +206,7 @@ with st.expander("Settings this run obeys"):
     a2.metric("MOP classes configured", len(config.mop_classification))
     a2.caption("An unknown MOP stops that store-day and is reported.")
     a3.metric("Sources configured", len(config.all_source_statuses()))
-    a3.caption("Data availability per source is on the **Run** page.")
+    a3.caption("Data availability per source is on the **Upload** page.")
 
     st.dataframe(
         pd.DataFrame(sorted(config.mop_classification.items()), columns=["MOP", "Class"]),

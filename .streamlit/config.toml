@@ -12,6 +12,10 @@ backgroundColor = "#FFFFFF"
 secondaryBackgroundColor = "#F4F7FB"
 textColor = "#0F2B46"
 
+[client]
+# The page list is the top bar now (dashboard_common.top_nav); the native sidebar list is hidden.
+showSidebarNavigation = false
+
 [server]
 headless = true
 

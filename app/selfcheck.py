@@ -34,26 +34,16 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
 
-# Which import aliases in the page sources refer to which module. Only modules
-# whose functions a page calls by attribute need listing.
-WATCHED = {
-    "q": "mop_reco.queries",
-    "queries": "mop_reco.queries",
-    "mm": "mop_reco.manual_match",
-    "manual_match": "mop_reco.manual_match",
-    "r3a": "mop_reco.r3a_store_cash",
-    "ss": "mop_reco.store_sheet",
-    "src": "mop_reco.store_sheet_source",
-}
+# Every module that belongs to this project (2026-10-15). The two hand-kept lists this replaced
+# (WATCHED aliases, FROM_MODULES) went blind the moment a page imported a module nobody had
+# listed - `exception_pairing as ep` was never checked, and a stale process served a page that
+# called `ep.open_population`, which the module it had loaded did not have. Now ANY alias or name
+# imported from one of these roots is checked, in pages and in the modules that call each other.
+PROJECT_ROOTS = ("mop_reco", "dashboard_common", "inline_match", "run_panel")
 
-# Modules a page imports names FROM, checked for those names existing.
-FROM_MODULES = ("dashboard_common", "inline_match", "mop_reco.export",
-                "mop_reco.exceptions", "mop_reco.formatting", "mop_reco.queries",
-                "mop_reco.manual_match", "mop_reco.config", "mop_reco.masters",
-                "mop_reco.ingest", "mop_reco.runs", "mop_reco.uploads",
-                "mop_reco.db", "mop_reco.r3a_store_cash",
-                "mop_reco.store_sheet", "mop_reco.store_sheet_source",
-                "mop_reco.store_sheet_export")
+
+def _is_project(dotted: str) -> bool:
+    return bool(dotted) and dotted.split(".")[0] in PROJECT_ROOTS
 
 
 @dataclass
@@ -97,6 +87,15 @@ def _pages() -> list:
     return [p for p in pages if p.exists()]
 
 
+def _sources() -> list:
+    """Every file whose references are checked: the pages, the app's own modules, and every module of
+    the mop_reco package (modules call each other too)."""
+    files = _pages()
+    files += [p for p in sorted(APP_DIR.glob("*.py")) if p.name not in ("Summary.py", "selfcheck.py")]
+    files += sorted((APP_DIR / "mop_reco").glob("*.py"))
+    return [p for p in files if p.exists()]
+
+
 def _module_file(dotted: str):
     """The file a module resolves to, importing it if needed. None if it will
     not import at all — that is a different failure and raises normally."""
@@ -120,7 +119,7 @@ def _stale_modules() -> list:
         # a stale process from a fresh one. Say nothing rather than guess.
         return problems
 
-    for dotted in sorted(set(WATCHED.values()) | set(FROM_MODULES)):
+    for dotted in sorted(n for n in list(sys.modules) if _is_project(n)):
         module = sys.modules.get(dotted)
         if module is None:
             continue
@@ -139,82 +138,91 @@ def _stale_modules() -> list:
     return problems
 
 
-def _attribute_calls(tree: ast.AST) -> set:
-    """Every `alias.name(...)` call, as (alias, name)."""
-    found = set()
+def _absolute(path: Path, node: ast.ImportFrom) -> str:
+    """`from . import x` / `from .m import y` resolved against the file's package."""
+    if not node.level:
+        return node.module or ""
+    package = "mop_reco" if (APP_DIR / "mop_reco") in path.parents else ""
+    base = package.split(".") if package else []
+    base = base[:len(base) - (node.level - 1)] if node.level > 1 else base
+    return ".".join(base + ([node.module] if node.module else []))
+
+
+def _references(path: Path, tree: ast.AST):
+    """(module_aliases {alias: dotted}, imported_names [(dotted, name)], rebound names).
+
+    An alias is a module when `from pkg import name` names a SUBMODULE (importable), or `import a.b as c`.
+    A rebound name (assigned or a function argument anywhere in the file) is never trusted as an alias,
+    so a local variable that happens to be called `q` cannot raise a false alarm."""
+    aliases, names, rebound = {}, [], set()
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)):
-            found.add((node.func.value.id, node.func.attr))
-    return found
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            rebound.add(node.id)
+        elif isinstance(node, ast.arg):
+            rebound.add(node.arg)
+        elif isinstance(node, ast.Import):
+            for al in node.names:
+                if _is_project(al.name) and al.asname:
+                    aliases[al.asname] = al.name
+        elif isinstance(node, ast.ImportFrom):
+            base = _absolute(path, node)
+            if not _is_project(base):
+                continue
+            for al in node.names:
+                if al.name == "*":
+                    continue
+                sub = f"{base}.{al.name}"
+                try:
+                    importlib.import_module(sub)
+                    aliases[al.asname or al.name] = sub          # a submodule
+                except ModuleNotFoundError:
+                    names.append((base, al.name))                # a name defined in `base`
+                except Exception:  # noqa: BLE001 - a module that fails to import is reported by Python itself
+                    pass
+    return aliases, names, rebound
 
 
-def _imported_names(tree: ast.AST) -> set:
-    """Every `from <module> import name`, as (module, name)."""
-    found = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            for alias in node.names:
-                found.add((node.module, alias.name))
-    return found
-
-
-def _aliases(tree: ast.AST) -> dict:
-    """`import x.y as z` / `from x import y as z` -> {alias: dotted}."""
-    out = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                out[alias.asname or alias.name.split(".")[0]] = alias.name
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            for alias in node.names:
-                if alias.asname:
-                    out[alias.asname] = f"{node.module}.{alias.name}"
-    return out
+def _attribute_loads(tree: ast.AST) -> set:
+    """Every `alias.name` reference (call OR plain attribute), as (alias, name)."""
+    return {(n.value.id, n.attr) for n in ast.walk(tree)
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)}
 
 
 def run_check() -> CheckResult:
-    """Every page's calls and imports against the modules as loaded."""
+    """Every reference to a project module, in every page and module, against the module as LOADED."""
     result = CheckResult()
     result.problems.extend(_stale_modules())
+    pages = {p.name for p in _pages()}
 
-    for page in _pages():
-        result.pages_checked += 1
+    for path in _sources():
+        if path.name in pages:
+            result.pages_checked += 1
+        rel = str(path.relative_to(APP_DIR)).replace("\\", "/")
         try:
-            tree = ast.parse(page.read_text(encoding="utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError as exc:
-            result.problems.append(Problem(
-                "missing_name", page.name, page.name, "(syntax)", str(page),
-                detail=str(exc)))
+            result.problems.append(Problem("missing_name", rel, rel, "(syntax)", str(path), detail=str(exc)))
             continue
+        aliases, names, rebound = _references(path, tree)
 
-        aliases = _aliases(tree)
-
-        # 1. module.function(...) calls
-        for alias, name in _attribute_calls(tree):
-            dotted = aliases.get(alias) or WATCHED.get(alias)
-            if dotted not in set(WATCHED.values()):
+        for alias, attr in _attribute_loads(tree):
+            dotted = aliases.get(alias)
+            if not dotted or alias in rebound:
                 continue
-            module, path = _module_file(dotted)
+            module, mpath = _module_file(dotted)
+            if module is None:
+                continue
+            result.calls_checked += 1
+            if not hasattr(module, attr):
+                result.problems.append(Problem("missing_attribute", rel, dotted, attr, str(mpath)))
+
+        for dotted, name in names:
+            module, mpath = _module_file(dotted)
             if module is None:
                 continue
             result.calls_checked += 1
             if not hasattr(module, name):
-                result.problems.append(Problem(
-                    "missing_attribute", page.name, dotted, name, str(path)))
-
-        # 2. from module import name
-        for dotted, name in _imported_names(tree):
-            if dotted not in FROM_MODULES:
-                continue
-            module, path = _module_file(dotted)
-            if module is None:
-                continue
-            result.calls_checked += 1
-            if not hasattr(module, name):
-                result.problems.append(Problem(
-                    "missing_name", page.name, dotted, name, str(path)))
+                result.problems.append(Problem("missing_name", rel, dotted, name, str(mpath)))
 
     return result
 

@@ -455,6 +455,38 @@ def load_all_masters(config: Config, session):
     return {name: load_master(config, session, name) for name in MASTER_SPECS}
 
 
+def master_label(master_name: str) -> str:
+    """"pickup_location" -> "Pickup location master"."""
+    return master_name.replace("_", " ").capitalize() + " master"
+
+
+def load_all_masters_safe(config: Config, session):
+    """Like `load_all_masters`, but one bad master never stops the others (2026-10-14).
+
+    Each master is checked first (`preflight_master`: file, sheet, every required column) and
+    only loaded if it passes. Returns ({master_name: (version, created)}, {master_name: message}).
+    A master that fails is reported by a plain message - "Pickup location master cannot be
+    loaded - LOCATION column missing" - never a traceback, and the stored version already in
+    the database stays in force; nothing is guessed or inferred to fill the gap."""
+    loaded, failed = {}, {}
+    for name in MASTER_SPECS:
+        check = preflight_master(config, name)
+        if check.missing:
+            cols = ", ".join(str(MASTER_SPECS[name]["aliases"][m][0]) for m in check.missing)
+            failed[name] = (f"{master_label(name)} cannot be loaded - {cols} column missing "
+                            f"(header on disk: {', '.join(map(str, check.columns_found))}; "
+                            f"file modified {check.modified})")
+            continue
+        if check.problems:
+            failed[name] = f"{master_label(name)} cannot be loaded - " + "; ".join(check.problems)
+            continue
+        try:
+            loaded[name] = load_master(config, session, name)
+        except MasterLoadError as exc:
+            failed[name] = f"{master_label(name)} cannot be loaded - {exc}"
+    return loaded, failed
+
+
 # A master version's rows are immutable once written (a change always creates
 # a NEW version — see _upsert_master_version). So the parsed rows for a given
 # version.id can be cached for the life of the process: without this, calling

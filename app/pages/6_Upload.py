@@ -27,6 +27,7 @@ from dashboard_common import (
     page,
     sidebar,
 )
+import run_panel
 from mop_reco import uploads as up
 from mop_reco.config import load_config
 from mop_reco.db import Run
@@ -34,8 +35,7 @@ from mop_reco.export import ExportMeta
 from mop_reco.formatting import count as fmt_count
 from mop_reco.formatting import display_date
 
-page("Upload", "Supply or replace a specific report for a specific month "
-              "without touching the numbered source folders.")
+page("Upload", "Supply or replace a report, then reconcile a date range. Upload first, Run below.")
 
 config = load_config()
 session = db_session()
@@ -69,6 +69,7 @@ def _month_label(m: str) -> str:
 # ===========================================================================
 # The form
 # ===========================================================================
+st.header("Upload")
 st.markdown("##### Supply a file")
 
 report_names = [s.display_name for s in up.SOURCE_REGISTRY]
@@ -207,3 +208,11 @@ else:
             (st.success if ok else st.error)(msg)
             if ok:
                 st.rerun()
+
+
+# ===========================================================================
+# Run (2026-10-14) - merged in from the former Run page, a separate section below the upload
+# ===========================================================================
+st.divider()
+st.header("Run reconciliation")
+run_panel.render(config, session)

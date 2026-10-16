@@ -22,6 +22,8 @@ import pandas as pd
 from . import ingest as ingest_mod
 from . import store_sheet_source
 from .config import Config
+from . import cms_blocks
+from . import store_tasks
 from .db import R1BillLine, ReconciliationResult, Run, RunFile
 from . import manual_match
 from . import masters as masters_mod
@@ -289,6 +291,9 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         logger.info(f"run {run.id}: persisted {len(dates_in_range)} date(s), "
                     f"{persisted_rows} R1 bill-line detail rows, committed per date")
 
+        with _stage(session, run, timings, "persist_txn_day_agg"):
+            txn_agg_rows = _persist_txn_day_agg(session, run.id, result.txn_agg)
+
         bill_lines = (pd.concat(unmatched_in_range, ignore_index=True)
                       if unmatched_in_range else pd.DataFrame({"matched": pd.Series(dtype=bool)}))
         has_lines = bool(dates_in_range)
@@ -370,10 +375,38 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
                 "on the Manual matches page for a person to resolve"
             )
 
+        # Store tasks (2026-10-14): create the new, revise the live, auto-close the ones whose
+        # condition has cleared. Derived from this run's own rows and never alters a bill, a
+        # match or a balance - so a failure here must not fail the reconciliation, but it is
+        # recorded on the run and logged as an error, never swallowed.
+        store_task_report = {}
+        with _stage(session, run, timings, "store_tasks"):
+            try:
+                store_task_report = store_tasks.sync_tasks(
+                    session, run.id, date.today(), config.raw).as_dict()
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                logger.error(f"run {run.id}: store task sync failed: {exc}", exc_info=True)
+                store_task_report = {"error": f"{type(exc).__name__}: {exc}"}
+
+        # CMS Reco inputs (2026-10-16): the Axis CMS slips and PTC deposits the CMS Reco page reads.
+        # Never alters a bill or a balance; a failure is recorded on the run, not swallowed, and does
+        # not fail the reconciliation (the pickup-location master file can be broken independently).
+        cms_report = {}
+        with _stage(session, run, timings, "cms_slips"):
+            try:
+                cms_report = cms_blocks.persist(session, run.id, config)
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                logger.error(f"run {run.id}: CMS slips persist failed: {exc}", exc_info=True)
+                cms_report = {"error": f"{type(exc).__name__}: {exc}"}
+
         run.finished_at = datetime.now()
         run.status = "completed"
         run.notes = json.dumps({
             "r1": result.summary,
+            "cms_slips": cms_report,
+            "store_tasks": store_task_report,
             "exceptions": sync_result,
             "manual_overlay": manual_result,
             "store_day_agg": agg_report,
@@ -465,6 +498,28 @@ def _bill_line_record(run_id: int, row) -> dict:
         "bill_time": _s(getattr(row, "bill_time", None)),
         "created_by": _s(getattr(row, "created_by", None)),
     }
+
+
+def _persist_txn_day_agg(session, run_id: int, txn_agg) -> int:
+    """The engine's per-(date, store, gateway) transaction totals, written once for the run (see
+    db.TxnDayAgg for why the Summary reads this instead of the gateway pool). Replaced, never
+    appended, so replaying a run id cannot leave duplicates."""
+    from .db import TxnDayAgg
+
+    session.query(TxnDayAgg).filter(TxnDayAgg.run_id == run_id).delete()
+    if txn_agg is None or len(txn_agg) == 0:
+        session.commit()
+        return 0
+    records = [{
+        "run_id": run_id, "business_date": str(r.business_date),
+        "store": None if pd.isna(r.store) else str(r.store), "gateway": str(r.gateway),
+        "total_n": int(r.total_n), "total_v": float(r.total_v),
+        "mapped_n": int(r.mapped_n), "mapped_v": float(r.mapped_v),
+    } for r in txn_agg.itertuples(index=False)]
+    for i in range(0, len(records), 5000):
+        session.execute(TxnDayAgg.__table__.insert(), records[i:i + 5000])
+    session.commit()
+    return len(records)
 
 
 def _text_column(series: pd.Series) -> pd.Series:

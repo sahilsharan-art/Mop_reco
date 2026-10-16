@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from . import io_
@@ -88,12 +89,19 @@ def _resolve_store_column(session, source: str, identifiers, amounts, business_d
     rows_with_store = 0
     rows_without_date = 0
     unmapped_agg: dict = {}
+    # resolve_store is a pure function of (source, identifier, business date) - the master
+    # version is chosen by the date - so ask it once per distinct pair (~15k for a month of
+    # Paytm) instead of once per row (642k). Every row is still counted and accumulated.
+    memo: dict = {}
     for identifier, amount, business_date in zip(identifiers, amounts, business_dates):
         if pd.isna(business_date):
             stores.append(None)
             rows_without_date += 1
             continue
-        result = resolve_store(session, source, identifier, business_date)
+        key = (identifier, business_date)
+        result = memo.get(key)
+        if result is None:
+            result = memo[key] = resolve_store(session, source, identifier, business_date)
         stores.append(result.store)
         if result.status == "resolved":
             rows_with_store += 1
@@ -360,10 +368,53 @@ def _to_float(value) -> float:
     return float(s)
 
 
+def _to_float_series(values: pd.Series) -> pd.Series:
+    """`values.map(_to_float)` as one Polars pass: trim, drop surrounding single quotes,
+    blank / "nan" / missing -> 0.0, otherwise the decimal value. Whatever Polars cannot
+    parse (Python's float() is more permissive: "1_000", "infinity") goes through the
+    original `_to_float` for exactly those cells, so the result is the same number -
+    and a genuinely non-numeric cell raises the same ValueError - as before."""
+    import polars as pl
+
+    raw = values.tolist()
+    text = pl.Series("v", raw, dtype=pl.String)
+    trimmed = text.str.strip_chars().str.replace(r"(?s)^'(.*)'$", "${1}")
+    zero = text.is_null() | (trimmed == "") | (trimmed.str.to_lowercase() == "nan")
+    parsed = trimmed.cast(pl.Float64, strict=False)
+    out = pl.select(pl.when(zero).then(0.0).otherwise(parsed)).to_series().to_numpy().copy()
+    unparsed = np.flatnonzero((~zero & parsed.is_null()).to_numpy())
+    for i in unparsed:
+        out[i] = _to_float(raw[i])
+    return pd.Series(out, index=values.index, dtype="float64")
+
+
 def _strip_quotes(value):
+    """THE SPECIFICATION of quote stripping (one value). The live code strips whole
+    columns with `_strip_quotes_columns`; `tests/test_paytm_ingest_vectorized.py`
+    asserts the two agree on awkward values."""
     if isinstance(value, str) and value.startswith("'") and value.endswith("'") and len(value) >= 2:
         return value[1:-1]
     return value
+
+
+def _strip_quotes_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """`_strip_quotes` over every cell of an all-text frame (str or None cells), as one
+    Polars regex per column - the per-cell Python call was ~36 s of a month's Paytm
+    ingest (9M cells). Same rule: a value that starts AND ends with a single quote and
+    has at least two characters loses exactly its first and last character; anything
+    else, including None, is untouched. Columns come back as object dtype holding str or
+    None, as before."""
+    import polars as pl
+
+    table = pl.from_pandas(frame, include_index=False)
+    table = table.with_columns(
+        pl.col(c).str.replace(r"(?s)^'(.*)'$", "${1}") for c in table.columns)
+    out = table.to_pandas()
+    out.index = frame.index
+    for c in out.columns:
+        col = out[c]
+        out[c] = col.astype(object).where(col.notna(), None)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -454,8 +505,11 @@ def ingest_paytm(config: Config, session, file_paths: list = None) -> tuple:
                 f"header and were padded. Reported: a short row may mean a truncated export."
             )
 
-        part_df = pd.DataFrame(part_rows, columns=header)
-        part_df = part_df[[c for c in PAYTM_REQUIRED_COLUMNS if c in part_df.columns]]
+        # Only the columns the ingest keeps are turned into a frame (13 of the file's 100 - building
+        # all 100 as Arrow strings was ~15 s a month). Same columns, same order, same values.
+        position = {name: i for i, name in reversed(list(enumerate(header)))}   # first wins, as df[col] did
+        kept = [c for c in PAYTM_REQUIRED_COLUMNS if c in position]
+        part_df = pd.DataFrame({c: [row[position[c]] for row in part_rows] for c in kept}, columns=kept)
         rows_before += len(part_df)
         parts.append(part_df)
         files_meta.append(FileRead(path=str(zpath), mtime=mtime, encoding=result.encoding_used))
@@ -464,8 +518,7 @@ def ingest_paytm(config: Config, session, file_paths: list = None) -> tuple:
     combined = pd.concat(parts, ignore_index=True)
 
     # Values arrive wrapped in single quotes ('SUCCESS') — strip them everywhere.
-    for col in combined.columns:
-        combined[col] = combined[col].map(_strip_quotes)
+    combined = _strip_quotes_columns(combined)
 
     combined["transaction_id"] = combined["transaction_id"].map(io_.clean_ref)
     combined["utr_no"] = combined["utr_no"].map(io_.clean_ref)
@@ -475,7 +528,7 @@ def ingest_paytm(config: Config, session, file_paths: list = None) -> tuple:
     logger.info(f"ingest_paytm: {rows_before} rows before dedupe, {len(combined)} after")
 
     for col in ("amount", "commission", "gst", "settled_amount"):
-        combined[col] = combined[col].map(_to_float)
+        combined[col] = _to_float_series(combined[col])
 
     # transaction_date carries the time embedded, e.g. '20-07-2026 19:21:19'.
     parsed = pd.to_datetime(combined["transaction_date"], format="%d-%m-%Y %H:%M:%S")
@@ -1051,6 +1104,76 @@ def _assert_known_mops(df: pd.DataFrame, config: Config):
         )
 
 
+# The columns the POS bill-wise ingest keeps, by how calamine must type them. Every
+# one is DECLARED (see io_.read_xlsb_table) so nothing is guessed from a sample.
+_POS_TEXT_COLUMNS = ["BILLNO", "PSITE_POSBILL_CODE", "STORE_NAME", "MOPDESC",
+                     "TPEDCRESPONSE", "CREATEBY"]
+_POS_FLOAT_COLUMNS = ["BASEAMT"]
+_POS_DATE_COLUMNS = ["BILLDATE"]
+_POS_TIME_COLUMNS = ["BILL_TIME"]
+
+
+def _pos_extract_refs_polars(frame):
+    """Per sheet, inside the reader: derive the four reference columns from the
+    TPEDCRESPONSE JSON with the one authoritative parser (`_extract_pos_refs`) and
+    drop the JSON before the sheet is concatenated or converted to pandas. The JSON
+    is ~65% of the frame's memory (CLAUDE.md 6.14); a month of it as Python str
+    objects was most of the ingest's peak."""
+    import polars as pl
+
+    if "TPEDCRESPONSE" not in frame.columns:
+        return frame
+    # In batches: all ~800k JSON strings of a sheet as Python objects at once was ~2 GB
+    # of transient memory on top of the sheet itself.
+    refs = []
+    json_col = frame["TPEDCRESPONSE"]
+    for start in range(0, frame.height, 100_000):
+        refs.extend(_extract_pos_refs(v) for v in json_col.slice(start, 100_000).to_list())
+    return frame.drop("TPEDCRESPONSE").with_columns(
+        pl.Series("paytm_ref", [r[0] for r in refs], dtype=pl.String),
+        pl.Series("axis_ref", [r[1] for r in refs], dtype=pl.String),
+        pl.Series("bajaj_ref", [r[2] for r in refs], dtype=pl.String),
+        pl.Series("tpedc_parse_failed", [r[3] for r in refs], dtype=pl.Boolean),
+    )
+
+
+def _read_pos_raw(file_path: Path):
+    """The raw POS bill-wise table: (DataFrame, {sheet: data_rows}).
+
+    An `.xlsb` goes through calamine (Polars' fastexcel): ~15x faster than streaming
+    pyxlsb cell by cell, with the same cells (`tests/test_pos_ingest_calamine.py`
+    asserts the ingested frame identical, cell for cell). Anything calamine cannot
+    serve - another format, a header that is not on row 1, fastexcel not installed,
+    a required column missing - takes the original pyxlsb/grid path, unchanged."""
+    if Path(file_path).suffix.lower() == ".xlsb":
+        try:
+            df, per_sheet = io_.read_xlsb_table(
+                file_path, _POS_TEXT_COLUMNS, _POS_FLOAT_COLUMNS, _POS_DATE_COLUMNS, _POS_TIME_COLUMNS,
+                sheet_transform=_pos_extract_refs_polars)
+        except ImportError:
+            df = None
+        except Exception as exc:
+            # Never lossy: anything calamine cannot read exactly (a column that mixes types,
+            # a header that moves between sheets, a type it did not infer as expected) goes
+            # to the original reader - named, not swallowed.
+            logger.warning(f"ingest_pos_bill_wise: calamine could not read '{Path(file_path).name}' "
+                           f"exactly ({type(exc).__name__}: {str(exc)[:200]}) - using the original "
+                           "pyxlsb reader")
+            df = None
+        else:
+            # (TPEDCRESPONSE was consumed per sheet into the reference columns.)
+            needed = [c for c in POS_BILL_WISE_REQUIRED_COLUMNS if c != "TPEDCRESPONSE"]
+            if all(c in df.columns for c in needed) and "paytm_ref" in df.columns:
+                return df, per_sheet
+            logger.info(f"ingest_pos_bill_wise: '{Path(file_path).name}' has no row-1 header "
+                        "calamine can use - reading it with the original pyxlsb path")
+    result = io_.read_any(file_path)
+    header_idx = io_.find_header_row(result.grid, POS_BILL_WISE_REQUIRED_COLUMNS)
+    header = [str(c).strip() for c in result.grid[header_idx]]
+    data_rows = result.grid[header_idx + 1:]
+    return pd.DataFrame(data_rows, columns=header), result.sheet_row_counts
+
+
 def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
                                    use_warehouse: bool = True) -> tuple:
     """Reads (or warehouse-caches) exactly ONE POS bill-wise file, fully
@@ -1076,11 +1199,7 @@ def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
             "missing_optional_columns": cached_missing,
         }
 
-    result = io_.read_any(file_path)
-    header_idx = io_.find_header_row(result.grid, POS_BILL_WISE_REQUIRED_COLUMNS)
-    header = [str(c).strip() for c in result.grid[header_idx]]
-    data_rows = result.grid[header_idx + 1:]
-    df = pd.DataFrame(data_rows, columns=header)
+    df, sheet_row_counts = _read_pos_raw(file_path)
 
     # The schema guard for bill_time/created_by (2026-09-29) — loud, not a
     # hard raise: these two are kept OUT of POS_BILL_WISE_REQUIRED_COLUMNS
@@ -1104,7 +1223,8 @@ def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
         )
 
     keep_cols = POS_BILL_WISE_REQUIRED_COLUMNS + [
-        c for c in POS_BILL_WISE_OPTIONAL_COLUMNS if c in df.columns]
+        c for c in POS_BILL_WISE_OPTIONAL_COLUMNS if c in df.columns] + [
+        c for c in ("paytm_ref", "axis_ref", "bajaj_ref", "tpedc_parse_failed") if c in df.columns]
     df = df[[c for c in keep_cols if c in df.columns]]
 
     df = df.rename(columns={
@@ -1149,11 +1269,18 @@ def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
             f"Per MOP: {excluded_by_mop}"
         )
 
-    refs = df["TPEDCRESPONSE"].map(_extract_pos_refs)
-    df["paytm_ref"] = [r[0] for r in refs]
-    df["axis_ref"] = [r[1] for r in refs]
-    df["bajaj_ref"] = [r[2] for r in refs]
-    df["tpedc_parse_failed"] = [r[3] for r in refs]
+    if "TPEDCRESPONSE" in df.columns:
+        refs = df["TPEDCRESPONSE"].map(_extract_pos_refs)
+        df["paytm_ref"] = [r[0] for r in refs]
+        df["axis_ref"] = [r[1] for r in refs]
+        df["bajaj_ref"] = [r[2] for r in refs]
+        df["tpedc_parse_failed"] = [r[3] for r in refs]
+    else:
+        # The calamine reader already derived them per sheet and dropped the JSON. Put the
+        # four columns where the pyxlsb path leaves them - after everything computed so
+        # far - so the two paths return the same frame, column for column.
+        derived = ["paytm_ref", "axis_ref", "bajaj_ref", "tpedc_parse_failed"]
+        df = df[[c for c in df.columns if c not in derived] + derived]
 
     parse_failed_count = int(df["tpedc_parse_failed"].sum())
     if parse_failed_count:
@@ -1174,7 +1301,7 @@ def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
     # concat and the per-date Parquet write is what turned a routine
     # duplicate-bill check into `pyarrow.lib.ArrowMemoryError: realloc of
     # size 2566667392 failed`, reproduced and confirmed as the actual crash.
-    df = df.drop(columns=["TPEDCRESPONSE"])
+    df = df.drop(columns=["TPEDCRESPONSE"], errors="ignore")
 
     # line_seq — a bill can carry up to 4 MOP lines.
     df = df.sort_index()
@@ -1193,12 +1320,12 @@ def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
 
     cache_paths = _write_parquet_single_file_cache(df, "pos_bill_wise", file_path)
     _write_manifest("pos_bill_wise", file_path, cache_paths, extra={
-        "sheet_row_counts": result.sheet_row_counts or {},
+        "sheet_row_counts": sheet_row_counts or {},
         "rows_without_date": rows_without_date,
     })
 
     return df, {
-        "sheet_row_counts": result.sheet_row_counts or {},
+        "sheet_row_counts": sheet_row_counts or {},
         "rows_without_date": rows_without_date,
         "from_warehouse": False,
         "missing_optional_columns": missing_optional,
@@ -1485,6 +1612,37 @@ def ingest_pos_store_wise(config: Config, session, bill_wise_df: pd.DataFrame = 
 
 def detect_duplicate_candidates(bill_wise_df: pd.DataFrame) -> list:
     """Digital-MOP bill lines (class 'digital' or 'digital_noref') sharing
+    store + business_date + amount with another bill line - CLAUDE.md 6.8. Returns
+    the bill numbers in each group, in row order, so a group can be investigated.
+    A group qualifies on row count, not distinct-bill count.
+
+    Polars group-by (2026-10-13): the pandas `groupby(...).apply(list)` over ~566k
+    groups took 33 s a month. Same groups, same order (sorted by store, date,
+    amount), same bill_nos order, rows with a missing store/date/amount excluded as
+    before - `tests/test_pos_ingest_calamine.py` asserts it against
+    `detect_duplicate_candidates_pandas` on randomised and on real data."""
+    import polars as pl
+
+    needed = bill_wise_df[["store", "business_date", "amount", "bill_no", "mop_class"]]
+    digital = needed[needed["mop_class"].isin(["digital", "digital_noref"])]
+    frame = pl.from_pandas(digital[["store", "business_date", "amount", "bill_no"]].reset_index(drop=True))
+    groups = (
+        frame.drop_nulls(["store", "business_date", "amount"])
+        .filter(~pl.col("amount").is_nan())
+        .group_by(["store", "business_date", "amount"], maintain_order=True)
+        .agg(pl.col("bill_no"))
+        .filter(pl.col("bill_no").list.len() > 1)
+        .sort(["store", "business_date", "amount"])
+    )
+    return [
+        {"store": store, "business_date": str(day), "amount": float(amount), "bill_nos": bill_nos}
+        for store, day, amount, bill_nos in groups.iter_rows()
+    ]
+
+
+def detect_duplicate_candidates_pandas(bill_wise_df: pd.DataFrame) -> list:
+    """THE SPECIFICATION (pandas) of `detect_duplicate_candidates`, kept for the equivalence
+    test - the live function is the Polars one below. Digital-MOP bill lines (class 'digital' or 'digital_noref') sharing
     store + business_date + amount with another bill line. Returns the bill
     numbers in each group, not just a count, so a group can be investigated.
 

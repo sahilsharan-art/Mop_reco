@@ -190,6 +190,45 @@ POOL_COLUMNS = {
 }
 
 
+def targeted_pool(transaction_ref: str, warehouse=None) -> pd.DataFrame:
+    """The rows of the gateway pool whose reference is exactly `transaction_ref` - same shape as
+    `gateway_pool_for_date`, but read with a Parquet predicate on the reference column so a
+    single pasted id costs a few column reads instead of loading millions of rows. The search is
+    still the WHOLE warehouse (a gateway reference is globally unique), never a date window."""
+    from pathlib import Path as _Path
+
+    ref = _clean_ref(transaction_ref)
+    root = _Path(warehouse) if warehouse else _Path(__file__).resolve().parents[2] / "warehouse"
+    columns = ["gateway", "txn_ref", "business_date", "store", "amount", "status", "txn_type", "payment_mode"]
+    frames = []
+    for name, source in POOL_SOURCE.items():
+        folder = root / source
+        if not folder.exists() or not ref:
+            continue
+        ref_col = next(src for src, dst in POOL_COLUMNS[name].items() if dst == "txn_ref")
+        for path in sorted(folder.glob("*.parquet")):
+            if path.stem.startswith("_"):
+                continue
+            try:
+                raw = pd.read_parquet(path, filters=[(ref_col, "==", ref)])
+            except Exception:  # noqa: BLE001 - a file without the column cannot hold the id
+                continue
+            if raw.empty:
+                continue
+            mapping = {src: dst for src, dst in POOL_COLUMNS[name].items() if src in raw.columns}
+            frame = raw[list(mapping)].rename(columns=mapping)
+            frame["gateway"] = name
+            if "business_date" not in frame.columns:
+                frame["business_date"] = path.stem
+            for column in ("status", "txn_type", "store", "payment_mode"):
+                if column not in frame.columns:
+                    frame[column] = None
+            frames.append(frame[columns])
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True)
+
+
 def gateway_pool_for_date(business_date=None, gateway: str = None,
                           warehouse=None) -> pd.DataFrame:
     """Every loaded row for a gateway (or all three), in the engine's pool

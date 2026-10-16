@@ -148,3 +148,95 @@ stage is outside this loop and unchanged until Step 3.
 summation as `Series.sum` (asserted bit-identical to the old per-group loop in `tests/test_runs_persist.py`).
 
 Run #11 was 58,818 s.
+
+
+---
+
+# Steps 3-6 - measured 2026-10-13/14
+
+## Step 3 - Polars, targeted at ingest (and nowhere it does not pay)
+
+Raw-source ingest of ONE month (July), cold, temporary warehouse + scratch DB. Every frame compared with the
+pandas/pyxlsb baseline cell by cell (`scripts/compare_ingest.py`).
+
+| Source | Before | After | Peak | Identical to baseline? |
+|---|---|---|---|---|
+| POS bill-wise `.xlsb`, 1,490,141 rows | 303.8 s | 45-50 s | 4,348 -> 4,133 MB | every column, except the raw `BILL_TIME` serial float differs by <= 1.1e-16 (one unit in the last place) in 489,529 cells. Nothing reads that column after ingest; the derived `bill_time` text and `business_date` are identical on all 1.49M rows |
+| Paytm settlement, 642,165 rows | 65 s | 32 s | 3,556 -> 3,347 MB | IDENTICAL, all 17 columns |
+| Axis EDC / Bajaj / PTC | 7 s / 0.8 s / 1.2 s | unchanged | | IDENTICAL |
+| Warehouse Parquet read, 8.6M POS rows (5 months) | 7.9 s | 1.2 s | | IDENTICAL, values and dtypes |
+
+What changed: the `.xlsb` is read by calamine (`fastexcel`) instead of pyxlsb cell by cell, one load per sheet, the
+JSON references extracted per sheet before the heavy column is ever a Python object; duplicate-bill detection is
+a Polars group-by (33 s -> ~3 s); quote stripping and numeric parsing are one Polars pass per column with the
+original per-cell function as the exact fallback; store resolution is asked once per distinct (MID, date); the shared
+Parquet reader is a lazy Polars scan with a pandas fallback.
+
+Never lossy: fastexcel is NOT given declared column types - a declared type turns a mismatched cell into null
+without a word (a test caught this). Types are inferred from every row under strict coercion, the inferred type must
+be the expected one, and any error falls back, named in the log, to the original pyxlsb reader.
+
+Not done, and why: the aggregate group-bys (`persist_mop_day_agg`: 13.5 s of a ~12-minute run; the POS read inside it
+is now 1.2 s) and the store-day build, which cannot be exercised on real data today (the pickup-location master is
+broken and PTC reads only its newest file); rewriting them would move sums whose last-bit behaviour cannot be verified.
+Reference extraction (~15 s a month) is still the per-row Python parser - the one authoritative implementation.
+Raw ingest only happens for a NEW month (everything else is read from the warehouse cache).
+
+## Step 4 - lazy loading, server-side paging, remembered state
+
+* Exceptions: header counts are SQL aggregates; each table reads ONE page (50 rows) sorted and filtered in the query
+  (`queries.exception_page`, total order, no repeated or skipped rows across pages); the closed/auto-resolved
+  section is now its own collapsed section that reads nothing until opened; exports are a separate full-population
+  path in chunks of 25,000 with progress (`queries.exception_export`) - 4,769 rows built in 2.2 s.
+* Remembered across navigation and re-runs (plain session keys, not widget state): section open/closed, the Show and
+  Sort choices, each pager's offset. Verified live: Next -> 51-100, leave to Run, come back in 1.8 s, still 51-100.
+* The two Summary strips that dominated first paint are now precomputed per run and read in milliseconds:
+  `transaction_resolution_summary` 99-144 s / 6.2 GB -> 0.03 s (new table `txn_day_agg`, filled by the engine at run
+  time); `bill_match_summary` 22 s -> 0.36 s (from the persisted per-store-date results). Manual matches and refunds
+  still cascade with no re-run: a handful of live rows are applied on top. Both proven identical to the slow
+  originals on Run #11 (all ten transaction figures; bill totals for three scopes).
+* FINDING (not changed): the Axis file holds 80 duplicate lines (same RRN, amount, date, store - e.g. RKL 12 Aug).
+  The engine consumes one row per bill and lists the leftover as an unmapped transaction (correct under 6.3); the
+  Summary strip has always counted it as "mapped" because its RRN matches (6,725 unmapped vs the engine's 6,805 on
+  the same definition). The strip keeps its original definition so no baseline figure moves.
+
+## Step 5 - top navigation
+
+A bar of `st.page_link`s across the top (Summary | CMS Reco | Float | Manual matches | Upload | Run | Masters), the
+open page drawn as a label with the 3px accent underline, the native sidebar list hidden, Filters kept in the sidebar,
+and a status pill under it ("Live . run #11 . 01/04/2026 to 31/08/2026 . all stores"). Not `st.tabs`: that renders every
+tab's content on every run and would undo Step 4. (Not benchmarked - `st.tabs` was rejected on how it works, as you said I
+could do; measuring it was not needed to choose.)
+
+## Step 6 - process pool: measured, NOT adopted
+
+Two POS months (Apr, Aug), each worker owning one file, writing its own Parquet and returning a path:
+serial 110.2 s / 5.5 GB peak; two workers 89.0 s / 7.5 GB summed peak = **1.24x for +37% memory**. calamine's read is
+single-threaded per file and a normal monthly run has ONE new file, where a pool gains nothing. No pool code was added
+to the application (nothing to remove); Polars already uses its own cores. The one-run-at-a-time lock is untouched.
+
+## Whole run, stage by stage (5 months, Apr-Aug; Run #11 = before)
+
+| Stage | Before (Run #11) | After |
+|---|---|---|
+| ingest POS (warm cache) | 157 s | unchanged path; a COLD month is 304 s -> ~47 s |
+| ingest Paytm | 222 s | ~32 s per month measured (5-month total not run) |
+| ingest Axis EDC / Bajaj | 83 s / 0.6 s | unchanged |
+| r1_match | 56,050 s | 179-216 s (incl. building the pool index) |
+| persist results | 1,786 s | 462-540 s (index-bound; indexes kept per 6.14) |
+| digital-mode aggregate | 46 s | 35-70 s |
+| store-day / mop-day aggregates | 88 s / 13.5 s | not measured (store-day cannot run on real data today) |
+| exception register | 3 s | 1.6-4.3 s |
+| manual overlay | 368 s | not measured on real data (0 s in the scratch run, which has no manual matches) |
+| **Run total** | **58,819 s (980 min)** | **~735 s with ingest stubbed to the warehouse** - ingest and the cash-side aggregates were not run end to end |
+
+Interactions, live in the app on Run #11 (Apr-Aug), fresh process:
+
+| | Before | After |
+|---|---|---|
+| Summary first paint | the two summaries alone cost 144 s + 22 s on every load | 13.8 s cold process, 3.6 s warm |
+| Change the store filter | the same page re-run, so the same cost | settles in ~1-1.5 s |
+| Expand one date | same | 2.0 s (opening the Store-wise section: 2.3 s) |
+
+("Before" for the interactions is the measured cost of the functions the page called on every run, not a second
+live session on the old code.)

@@ -111,7 +111,7 @@ div[data-testid="stMarkdownContainer"] h5 {
 
 /* Page title — st.title() renders an <h1>. */
 div[data-testid="stAppViewContainer"] h1 {
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 700;
 }
 
@@ -674,11 +674,11 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
 .mop-matrix { width: 100%; min-width: 720px; border-collapse: collapse; }
 .mop-matrix-grouprow th {
   font-family: var(--font-heading);
-  font-size: 10px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .06em;
-  color: var(--ink-soft);
+  color: var(--ink);
   text-align: center;
   padding: 0 10px 6px;
   border-bottom: 1px solid var(--border);
@@ -761,3 +761,99 @@ hr, div[data-testid="stDivider"] {
   font-family: var(--font-mono);
   font-size: 12px;
 }
+
+
+/* ============================================================================
+   Top navigation bar (2026-10-13) - replaces the sidebar page list. White bar, the
+   active page in --ink with a 3px --accent underline, the others in --ink-soft.
+   The open page is a label (top_nav marks it - 1.57 sets no aria-current). Not st.tabs: see
+   dashboard_common.NAV_PAGES for why.
+   ============================================================================ */
+
+[data-testid="stSidebarNav"] { display: none !important; }
+
+.st-key-topnav {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  margin: 6px -16px 6px;
+  padding: 0 16px;
+}
+
+/* Sticky (2026-10-14): the bar now sits BELOW the page's opening block, and stays in reach
+   when the page is scrolled past it. It is the WRAPPER Streamlit puts around the keyed
+   container that must stick - the container itself is only as tall as its parent wrapper, so
+   sticking it does nothing. `top` clears Streamlit's own fixed header. */
+div[data-testid="stLayoutWrapper"]:has(> .st-key-topnav) {
+  position: sticky;
+  top: 3.75rem;
+  z-index: 98;
+}
+
+/* Logo + title (2026-10-14): logo 32px high at the top left, title to its right.
+   The image keeps its aspect ratio (height set, width auto). */
+.mop-titlebar { display: flex; align-items: center; gap: 12px; }
+.mop-titlebar .mop-logo { height: 32px; width: auto; flex: 0 0 auto; display: block; }
+.mop-titlebar h1 { margin: 0; padding: 0; }
+.st-key-topnav [data-testid="stHorizontalBlock"] { gap: 2px; align-items: flex-end; }
+.st-key-topnav [data-testid="stColumn"] { min-width: 0; }
+.st-key-topnav a[data-testid="stPageLink-NavLink"] {
+  display: flex; justify-content: center; align-items: center;
+  box-sizing: border-box; height: 46px; padding: 0 8px;
+  border-radius: 0;
+  border-bottom: 3px solid transparent;
+  color: var(--ink-soft);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.st-key-topnav a[data-testid="stPageLink-NavLink"] p {
+  color: inherit; font-family: var(--font-heading); font-size: 14px; font-weight: 600; margin: 0;
+}
+.st-key-topnav a[data-testid="stPageLink-NavLink"]:hover { background: transparent; color: var(--ink); }
+/* The open page: drawn as a label (dashboard_common.top_nav), same box as a link. */
+.st-key-topnav [data-testid="stMarkdownContainer"] { margin: 0; }
+.st-key-topnav [data-testid="stElementContainer"] { margin: 0; }
+.st-key-topnav .mop-nav-active {
+  display: flex; justify-content: center; align-items: center;
+  box-sizing: border-box; height: 46px; padding: 0 8px;
+  position: relative; top: -3px;   /* the markdown wrapper sits 3px below a link's: measured, aligned */
+  border-bottom: 3px solid var(--accent);
+  color: var(--ink);
+  font-family: var(--font-heading); font-size: 14px; font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The status pill, under the bar. */
+.mop-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: 2px 0 4px;
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-alt);
+  color: var(--ink-soft);
+  font-size: 12px; line-height: 1.3;
+}
+.mop-pill-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+.mop-pill-live { color: var(--ink); font-weight: 600; }
+.mop-pill-sep { color: var(--border-strong, var(--ink-soft)); opacity: .7; }
+
+
+/* Summary button row (2026-10-14): Expand all | Collapse all | Build the Excel sheet - one
+   row, left aligned, 12px gap. */
+.st-key-btnrow { gap: 12px !important; justify-content: flex-start !important; flex-wrap: nowrap; }
+.st-key-btnrow > div { width: auto !important; flex: 0 0 auto !important; }
+
+
+/* Store Task filter row (2026-10-14): every control the same height and radius as the sidebar's
+   (40px, 10px, white, 1px --border), labelled - the search box reads as a filter, not a bare field. */
+.st-key-st-filters [data-baseweb="select"] > div,
+.st-key-st-filters [data-baseweb="input"] {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  min-height: 40px;
+  box-sizing: border-box;
+}
+.st-key-st-filters [data-baseweb="input"] > div { background: transparent; }
+.st-key-st-filters input { background: transparent; font-size: 14px; }
+.st-key-st-filters label p { font-size: 11px; color: var(--ink-soft); }

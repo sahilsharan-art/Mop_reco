@@ -44,6 +44,7 @@ from dashboard_common import (
     stmt_table,
     stop_if_no_dates,
     tile,
+    top_nav,
 )
 from mop_reco import exception_remarks as er
 from mop_reco import exceptions as exc_mod
@@ -55,7 +56,7 @@ from mop_reco.formatting import count as fmt_count
 from mop_reco.formatting import blank, display_date, money_cr, money_short, money_table
 from mop_reco.store_sheet_export import build_workbook
 
-page("MOP RECO_Store Wise")
+page("MOP RECO_Store Wise", nav=False)
 
 session = db_session()
 run = latest_run(session)
@@ -81,7 +82,7 @@ if _run_from and _run_to and (date_to < _run_from or date_from > _run_to):
     st.warning(
         f"**{date_from} to {date_to} is not covered by run #{run.id}**, which "
         f"reconciled {_run_from} to {_run_to}. This is not \"no data\" — it is "
-        "\"not run yet\". Open **Run** to reconcile this period, or change the "
+        "\"not run yet\". Open **Upload** to reconcile this period, or change the "
         "filter back to a range this run covered."
     )
     st.stop()
@@ -331,12 +332,17 @@ if _matrix_failed:
     for label, _holds, detail in _matrix_failed:
         st.markdown(f"- **{label}** — {detail}")
 
+# The navigation bar sits BELOW the summary matrix (2026-10-14), sticky. Every other
+# page puts it directly under its heading, so it is in the same place relative to the
+# page's own opening block everywhere.
+top_nav("Summary")
+
 # ===========================================================================
 # Section open/closed state — plain session keys (2026-09-19), not widget
 # keys, so a filter change or a page switch never resets which sections are
 # open. Default: Exceptions open, everything else closed.
 # ===========================================================================
-SECTION_DEFAULTS = {"store_detail": False, "matched": False, "exceptions": True}
+SECTION_DEFAULTS = {"store_detail": False, "matched": False}
 
 
 def _section_key(name: str) -> str:
@@ -373,12 +379,17 @@ all_dates = [d for d in summary_by_date_shown["date"] if d != "TOTAL"]
 OPEN_DATES_KEY = "sm_open_dates"
 st.session_state.setdefault(OPEN_DATES_KEY, set())
 
-ea, ca, _sp = st.columns([1, 1, 4])
-if ea.button("Expand all", key="ss_expand_all"):
+# Expand all | Collapse all | Build the Excel sheet - ONE row, left aligned, 12px gap
+# (2026-10-14). Build keeps the filled accent style; the other two stay secondary.
+with st.container(key="btnrow", horizontal=True):
+    _expand = st.button("Expand all", key="ss_expand_all")
+    _collapse = st.button("Collapse all", key="ss_collapse_all")
+    _build = st.button("Build the Excel sheet", type="primary", key="ss_build_sheet")
+if _expand:
     for name in SECTION_DEFAULTS:
         st.session_state[_section_key(name)] = True
     st.rerun()
-if ca.button("Collapse all", key="ss_collapse_all"):
+if _collapse:
     for name in SECTION_DEFAULTS:
         st.session_state[_section_key(name)] = False
     st.rerun()
@@ -391,7 +402,7 @@ if ca.button("Collapse all", key="ss_collapse_all"):
 # `src.data_quality_rows()` are untouched and now read from the Float page
 # instead, merged under Float's own existing deposit-vs-credit data quality
 # heading (see app/pages/1_Float.py) so there is exactly one place to look.
-if st.button("Build the Excel sheet", type="primary"):
+if _build:
     with st.spinner("Writing the workbook…"):
         shown_summary = ss.summarise_by_date(shown)
         shown_by_store = ss.summarise_by_store(shown)
@@ -790,7 +801,8 @@ if store_detail_open:
 # immediately with no re-run.
 # ===========================================================================
 bill_summary = q.bill_match_summary(session, run.id, date_from, date_to, store)
-txn_summary = q.transaction_resolution_summary(session, date_from, date_to, store)
+txn_summary = q.transaction_resolution_summary(session, date_from, date_to, store,
+                                                run_id=run.id)
 
 bills_closed_n, bills_closed_v = bill_summary["closed"]["count"], bill_summary["closed"]["value"]
 bills_open_n, bills_open_v = bill_summary["open"]["count"], bill_summary["open"]["value"]
@@ -926,334 +938,7 @@ if matched_open:
         key="dl_matched_bills", noun="matched bills",
     )
 
-# ===========================================================================
-# Section: Exceptions — expanded by default (2026-09-17). Two tables, never
-# merged into one count: bills with no matching transaction, and
-# transactions with no matching bill. Plain tables, no drill-through — the
-# rich grouped/detail Exceptions page is gone; this is the work queue.
-# ===========================================================================
-BILL_EXCEPTION_TYPES = q.NOT_RECEIVED_TYPES
-TXN_EXCEPTION_TYPES = q.RECEIVED_NOT_BILLED_TYPES + ("original_txn_not_found", "store_ambiguous")
-
-BILL_EXC_COLUMNS = ["date", "time", "store", "bill_no", "mop", "amount",
-                    "created_by", "status", "remark", "remark_by", "remark_at"]
-TXN_EXC_COLUMNS = ["gateway", "transaction_id", "date", "time", "store",
-                   "amount", "payment_mode", "status", "remark", "remark_by",
-                   "remark_at"]
-
-# Narrower id/remark columns (2026-09-29) — with bill_time/created_by/
-# transaction_time added, 10 columns no longer fit this grid's own
-# container at 1366px without its internal horizontal scrollbar
-# appearing. Rather than drop a column, the two free-text columns that
-# never need much width to stay readable (bill_no/transaction_id are
-# short codes, remark/remark_by are usually empty or a short phrase) give
-# theirs back — every column stays, none gets dropped. remark_at
-# (2026-09-30) gets the same treatment.
-BILL_EXC_COLUMN_CONFIG = {
-    "bill_no": st.column_config.TextColumn(width="small"),
-    "remark": st.column_config.TextColumn(width="small", help="Click to edit — saves on Enter."),
-    "remark_by": st.column_config.TextColumn(width="small"),
-    "remark_at": st.column_config.TextColumn(width="small"),
-}
-TXN_EXC_COLUMN_CONFIG = {
-    "transaction_id": st.column_config.TextColumn(width="small"),
-    "remark": st.column_config.TextColumn(width="small", help="Click to edit — saves on Enter."),
-    "remark_by": st.column_config.TextColumn(width="small"),
-    "remark_at": st.column_config.TextColumn(width="small"),
-}
-
-
-def _with_remarks(session, df, key_col="exception_key"):
-    if df.empty:
-        return df
-    remarks = q.latest_remarks_full(session, df[key_col].tolist())
-    df = df.copy()
-    df["remark"] = df[key_col].map(lambda k: remarks.get(k, ("", "", None))[0])
-    df["remark_by"] = df[key_col].map(lambda k: remarks.get(k, ("", "", None))[1] or "")
-    df["remark_at"] = df[key_col].map(
-        lambda k: remarks.get(k, ("", "", None))[2].strftime("%d/%m/%Y %H:%M")
-        if remarks.get(k, ("", "", None))[2] else "")
-    return df
-
-
-def _bill_exception_frame(all_df, statuses):
-    if all_df.empty:
-        return pd.DataFrame(columns=BILL_EXC_COLUMNS + ["exception_key"])
-    df = all_df[all_df["type"].isin(BILL_EXCEPTION_TYPES)
-               & all_df["status"].isin(statuses)].copy()
-    if df.empty:
-        return pd.DataFrame(columns=BILL_EXC_COLUMNS + ["exception_key"])
-    df = _with_remarks(session, df)
-    df["bill_no"] = df["detail"].map(lambda d: d.get("bill_no") or "—")
-    df["mop"] = df["detail"].map(lambda d: d.get("mop") or "—")
-    # BILL_TIME / CREATEBY (2026-09-29) — real R1BillLine columns, joined by
-    # the bill's own deterministic key (business_date, store, bill_no, mop).
-    # Exception_ itself never carries these two; see
-    # queries.unmatched_bill_facts()'s own docstring for why the join lives
-    # here rather than duplicating them into `detail`. Genuinely blank,
-    # never "nan"/"None", on the rare row a source file predates these two
-    # columns for.
-    bill_facts = q.unmatched_bill_facts(session, run.id)
-    facts = df.apply(
-        lambda r: bill_facts.get((str(r["date"]), str(r["store"]), str(r["bill_no"]), str(r["mop"]))),
-        axis=1)
-    df["time"] = facts.map(lambda f: blank(f[0]) if f else "")
-    df["created_by"] = facts.map(lambda f: blank(f[1]) if f else "")
-    return (df[BILL_EXC_COLUMNS + ["exception_key"]]
-           .sort_values("amount", ascending=False).reset_index(drop=True))
-
-
-def _txn_exception_frame(all_df, statuses):
-    if all_df.empty:
-        return pd.DataFrame(columns=TXN_EXC_COLUMNS + ["exception_key"])
-    df = all_df[all_df["type"].isin(TXN_EXCEPTION_TYPES)
-               & all_df["status"].isin(statuses)].copy()
-    if df.empty:
-        return pd.DataFrame(columns=TXN_EXC_COLUMNS + ["exception_key"])
-    df = _with_remarks(session, df)
-    df["gateway"] = df["detail"].map(lambda d: (d.get("gateway") or "—"))
-    df["transaction_id"] = df["detail"].map(
-        lambda d: d.get("transaction_id") or d.get("bill_no") or "—")
-    df["payment_mode"] = df["detail"].map(lambda d: d.get("payment_mode") or "—")
-    # transaction_time (2026-09-29) — a real Exception_ column, not inside
-    # `detail`. Genuinely blank for Axis (its own TRAN_TIME field is a
-    # constant placeholder, never a real time; see
-    # r1_bill_txn.build_gateway_pool) and for any row whose time failed to
-    # parse. Never "nan"/"None".
-    df["time"] = df["transaction_time"].map(blank)
-    return (df[TXN_EXC_COLUMNS + ["exception_key"]]
-           .sort_values("amount", ascending=False).reset_index(drop=True))
-
-
-EXCEPTION_STATUS_TINT = {"open": "warn", "under_investigation": "accent",
-                         "closed": "good", "auto_resolved": "good"}
-
-
-def _format_exceptions(df):
-    """The plain (unstyled) display frame — amount/date formatted, nothing
-    else. Used directly by the editable grid (2026-09-30), since
-    `st.data_editor` cannot render a pandas Styler the way `st.dataframe`
-    can (no equivalent hook — the same canvas-grid constraint already
-    documented for the particulars matrix, §8.1)."""
-    if df.empty:
-        return df
-    out = df.copy()
-    out["amount"] = out["amount"].map(money_table)
-    if "date" in out.columns:
-        out["date"] = out["date"].map(display_date)
-    return out
-
-
-def _display_exceptions(df):
-    """The READ-ONLY, tinted display — used only by the "Closed and
-    auto-resolved" register at the bottom, which stays st.dataframe."""
-    out = _format_exceptions(df)
-    if not out.empty and "status" in out.columns:
-        return status_styler(out, {"status": EXCEPTION_STATUS_TINT})
-    return out
-
-
-def _editable_exceptions(df, column_list, column_config, table_key, id_col, label_prefix):
-    """Inline-editable remark column (2026-09-30) — every OTHER column is
-    `disabled=True`; a remark never changes a figure, a status or a match
-    (rule 4). The operator's name is asked inline, at the point of the
-    action (never up front), via the same `require_operator()` pattern
-    every other write in this app already uses. A detected change writes
-    through `exceptions.add_remark()` — append-only, a brand new `Remark`
-    row every time, never an overwrite — the instant the name is known;
-    until then the typed text stays in the widget with a caption saying it
-    is not yet saved.
-
-    History: `st.data_editor`'s canvas grid has no per-row expander or
-    tooltip hook (the same constraint already documented for the
-    particulars matrix, §8.1), so "prior versions in a tooltip or a small
-    expander on the row" becomes the practical equivalent here — a picker
-    naming every row that carries a remark, showing that one row's full
-    history, oldest first, the instant it's picked."""
-    if df.empty:
-        st.caption("Nothing in this view.")
-        return
-    shown = _format_exceptions(df).reset_index(drop=True)
-    baseline = shown["remark"].fillna("").copy()
-
-    edited = st.data_editor(
-        shown, hide_index=True, width="stretch", key=table_key,
-        column_order=column_list,
-        disabled=[c for c in shown.columns if c != "remark"],
-        column_config=column_config,
-    )
-
-    changed = edited.index[edited["remark"].fillna("") != baseline]
-    if len(changed):
-        # Asked only now — at the point of the action, never up front —
-        # the same `require_operator()` pattern used everywhere else in
-        # this app. The typed remark stays in the widget (Streamlit keeps
-        # it keyed to `table_key`) until a name is given, then saves on
-        # the very next rerun.
-        operator = require_operator("adding a remark", key=f"{table_key}_op")
-        if not operator:
-            st.warning(f"{len(changed)} remark(s) typed but not yet saved — "
-                       "give your name above to save them.")
-        else:
-            for idx in changed:
-                text = str(edited.loc[idx, "remark"]).strip()
-                if text:
-                    exc_mod.add_remark(session, shown.loc[idx, "exception_key"], text, operator)
-            st.session_state.pop(table_key, None)
-            st.rerun()
-
-    have_remark = shown[shown["remark"].astype(str).str.strip() != ""]
-    if not have_remark.empty:
-        options = ["—"] + [f"{label_prefix} {v}" for v in have_remark[id_col]]
-        picked = st.selectbox("View remark history for", options,
-                              key=f"{table_key}_history_pick")
-        if picked != "—":
-            picked_id = picked[len(label_prefix) + 1:]
-            hist_row = have_remark[have_remark[id_col].astype(str) == picked_id].iloc[0]
-            history = exc_mod.remarks_for(session, hist_row["exception_key"])
-            st.dataframe(pd.DataFrame([
-                {"When": r.created_at.strftime("%d/%m/%Y %H:%M"),
-                 "Who": r.created_by or "", "Remark": r.remark_text}
-                for r in history
-            ]), hide_index=True, width="stretch")
-
-
-def _bulk_remark_upload(label, validate_fn, template_bytes, key_prefix):
-    """Validate-then-preview-then-confirm, all-or-nothing on apply — the
-    same shape `manual_match.py`'s and `refunds.py`'s own bulk uploads
-    already use. Nothing is written until the operator explicitly clicks
-    Apply, after seeing exactly which rows were accepted and why any
-    others were not."""
-    with st.expander(f"Bulk upload remarks — {label}"):
-        st.download_button(
-            "Download template", template_bytes,
-            file_name=f"{key_prefix}_remarks_template.csv", mime="text/csv",
-            key=f"{key_prefix}_template_dl")
-        uploaded = st.file_uploader(
-            "Upload a filled template (.csv or .xlsx)",
-            type=["csv", "xlsx"], key=f"{key_prefix}_upload")
-        if uploaded is None:
-            return
-        raw_df = er.read_upload(uploaded.getvalue(), uploaded.name)
-        results = validate_fn(session, raw_df)
-        preview = er.preview_frame(results)
-        accepted_n = sum(1 for r in results if r.ok)
-        rejected_n = len(results) - accepted_n
-        st.markdown(f"**{fmt_count(accepted_n)} accepted, {fmt_count(rejected_n)} rejected**")
-        st.dataframe(preview, hide_index=True, width="stretch")
-        if accepted_n == 0:
-            st.caption("Nothing to apply.")
-            return
-        operator = require_operator("applying this bulk upload", key=f"{key_prefix}_bulk_op")
-        if st.button(f"Apply {accepted_n} accepted remark(s)", key=f"{key_prefix}_bulk_apply",
-                    disabled=not operator):
-            accepted_rows = [r for r in results if r.ok]
-            n = er.apply_bulk_remarks(session, accepted_rows, operator)
-            st.success(f"Applied {n} remark(s).")
-            st.session_state.pop(f"{key_prefix}_upload", None)
-            st.rerun()
-
-
-# The header count uses a cheap COUNT+SUM aggregate (2026-09-19), never the
-# full per-row build `exception_rows()` does (JSON-parsed detail, severity,
-# age for every row, then the bulk remarks join) — that only happens once
-# the section is actually open, below.
-_preview_bill_n, _preview_bill_v, _preview_txn_n, _preview_txn_v = q.exception_counts(
-    session, date_from, date_to, store, BILL_EXCEPTION_TYPES, TXN_EXCEPTION_TYPES,
-    statuses=("open",))
-
-exceptions_open = _section_toggle(
-    "exceptions", "Exceptions",
-    f"{fmt_count(_preview_bill_n)} bill(s), "
-    f"{fmt_count(_preview_txn_n)} transaction(s) open")
-
-if exceptions_open:
-    scope = st.selectbox("Show", ["Open", "Under investigation"], key="sm_exc_scope")
-    status_wanted = ("open",) if scope == "Open" else ("under_investigation",)
-
-    all_exc = q.exception_rows(
-        session, date_from, date_to, store, open_only=False,
-        types=BILL_EXCEPTION_TYPES + TXN_EXCEPTION_TYPES)
-
-    bill_exc = _bill_exception_frame(all_exc, status_wanted)
-    txn_exc = _txn_exception_frame(all_exc, status_wanted)
-
-    st.markdown(f"**Exception bills** {fmt_count(len(bill_exc))} bills · "
-               f"{money_short(float(bill_exc['amount'].sum()) if not bill_exc.empty else 0.0)}")
-    st.caption("Bills with no matching transaction. The remark cell is editable — "
-              "click it, type, Enter or click away to save.")
-    _editable_exceptions(bill_exc, BILL_EXC_COLUMNS, BILL_EXC_COLUMN_CONFIG,
-                        "sm_exc_bills_editor", "bill_no", "Bill")
-    frame_export_button(
-        bill_exc[BILL_EXC_COLUMNS] if not bill_exc.empty else bill_exc,
-        ExportMeta(run_id=run.id, run_timestamp=run.started_at,
-                  date_from=date_from, date_to=date_to,
-                  filters={"store": store, "show": scope}, value_column="amount",
-                  title="Exception bills"),
-        key="dl_exc_bills", noun="exception bills",
-    )
-    _bulk_remark_upload("Exception bills", er.validate_bill_remarks,
-                       er.bill_template_csv(), "sm_exc_bills_bulk")
-
-    st.divider()
-
-    st.markdown(f"**Exception transactions** {fmt_count(len(txn_exc))} txns · "
-               f"{money_short(float(txn_exc['amount'].sum()) if not txn_exc.empty else 0.0)}")
-    st.caption("Transactions with no matching bill. The remark cell is editable — "
-              "click it, type, Enter or click away to save.")
-    _editable_exceptions(txn_exc, TXN_EXC_COLUMNS, TXN_EXC_COLUMN_CONFIG,
-                        "sm_exc_txns_editor", "transaction_id", "Txn")
-    if not txn_exc.empty and (txn_exc["gateway"] == "axis").any():
-        st.caption("Axis does not supply a transaction time.")
-    frame_export_button(
-        txn_exc[TXN_EXC_COLUMNS] if not txn_exc.empty else txn_exc,
-        ExportMeta(run_id=run.id, run_timestamp=run.started_at,
-                  date_from=date_from, date_to=date_to,
-                  filters={"store": store, "show": scope}, value_column="amount",
-                  title="Exception transactions"),
-        key="dl_exc_txns", noun="exception transactions",
-    )
-    _bulk_remark_upload("Exception transactions", er.validate_txn_remarks,
-                       er.txn_template_csv(), "sm_exc_txns_bulk")
-
-    # --- closed and auto-resolved — never made unreachable ------------------
-    closed_statuses = ("closed", "auto_resolved")
-    closed_bills = _bill_exception_frame(all_exc, closed_statuses)
-    closed_txns = _txn_exception_frame(all_exc, closed_statuses)
-    st.divider()
-    with st.expander(f"Closed and auto-resolved — {fmt_count(len(closed_bills))} bill(s), "
-                     f"{fmt_count(len(closed_txns))} transaction(s)"):
-        st.markdown(f"**Exception bills** {fmt_count(len(closed_bills))} · "
-                   f"{money_short(float(closed_bills['amount'].sum()) if not closed_bills.empty else 0.0)}")
-        if closed_bills.empty:
-            st.caption("Nothing closed or auto-resolved in this range yet.")
-        else:
-            st.dataframe(_display_exceptions(closed_bills), hide_index=True, width="stretch",
-                        column_config=BILL_EXC_COLUMN_CONFIG)
-        frame_export_button(
-            closed_bills[BILL_EXC_COLUMNS] if not closed_bills.empty else closed_bills,
-            ExportMeta(run_id=run.id, run_timestamp=run.started_at,
-                      date_from=date_from, date_to=date_to,
-                      filters={"store": store}, value_column="amount",
-                      title="Closed exception bills"),
-            key="dl_exc_bills_closed", noun="closed exception bills",
-        )
-
-        st.markdown(f"**Exception transactions** {fmt_count(len(closed_txns))} · "
-                   f"{money_short(float(closed_txns['amount'].sum()) if not closed_txns.empty else 0.0)}")
-        if closed_txns.empty:
-            st.caption("Nothing closed or auto-resolved in this range yet.")
-        else:
-            st.dataframe(_display_exceptions(closed_txns), hide_index=True, width="stretch",
-                        column_config=TXN_EXC_COLUMN_CONFIG)
-        frame_export_button(
-            closed_txns[TXN_EXC_COLUMNS] if not closed_txns.empty else closed_txns,
-            ExportMeta(run_id=run.id, run_timestamp=run.started_at,
-                      date_from=date_from, date_to=date_to,
-                      filters={"store": store}, value_column="amount",
-                      title="Closed exception transactions"),
-            key="dl_exc_txns_closed", noun="closed exception transactions",
-        )
+# The Exceptions section moved to its own tab, Exceptions (2026-10-14).
 
 # --- data notes, collapsed, at the bottom (2026-09-12, controls moved in
 # here entirely 2026-09-30) --------------------------------------------

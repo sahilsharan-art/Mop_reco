@@ -714,7 +714,7 @@ def _run_dates(session) -> dict:
     return {r.id: r.started_at for r in session.query(Run).all()}
 
 
-def unmatched_bill_facts(session, run_id: int) -> dict:
+def unmatched_bill_facts(session, run_id: int, bill_nos=None) -> dict:
     """{(business_date, store, bill_no, mop): (bill_time, created_by)} for
     every UNMATCHED bill line of this run — the bounded, indexed population
     (ix_r1_matched_date) an exception-bills view actually needs, never the
@@ -724,29 +724,27 @@ def unmatched_bill_facts(session, run_id: int) -> dict:
     own `detail`, so this is the join that puts the three back together for
     display, without duplicating them into a JSON blob."""
     out = {}
-    rows = (session.query(R1BillLine.business_date, R1BillLine.store,
-                          R1BillLine.bill_no, R1BillLine.mop,
-                          R1BillLine.bill_time, R1BillLine.created_by)
-            .filter(R1BillLine.run_id == run_id, R1BillLine.matched.is_(False))
-            .all())
+    query = (session.query(R1BillLine.business_date, R1BillLine.store,
+                           R1BillLine.bill_no, R1BillLine.mop,
+                           R1BillLine.bill_time, R1BillLine.created_by)
+             .filter(R1BillLine.run_id == run_id, R1BillLine.matched.is_(False)))
+    if bill_nos is not None:
+        # Only the bills a page actually shows (bill_no is globally unique, CLAUDE.md 5).
+        wanted = sorted({str(b) for b in bill_nos if b})
+        if not wanted:
+            return {}
+        if len(wanted) <= 900:          # SQLite's bound-variable limit; a bigger set (an export chunk)
+            query = query.filter(R1BillLine.bill_no.in_(wanted))   # reads the whole unmatched set instead
+    rows = query.all()
     for business_date, store, bill_no, mop, bill_time, created_by in rows:
         out[(str(business_date), str(store), str(bill_no), str(mop))] = (bill_time, created_by)
     return out
 
 
-def exception_rows(session, date_from=None, date_to=None, store=None,
-                   open_only=True, types=None, search: str = None) -> pd.DataFrame:
-    """The working list: readable columns, severity, dates not run numbers.
-
-    Sorted by value descending — the biggest number is the first thing seen.
-    The composite key stays as the stable identity but is not a display column.
-    """
-    query = _apply_exception_filters(session.query(Exception_), date_from, date_to,
-                                     store, open_only)
-    if types:
-        query = query.filter(Exception_.type.in_(types))
-
-    rows = query.all()
+def _exception_records(session, rows) -> pd.DataFrame:
+    """Readable exception columns for the given Exception_ ORM rows (and only those):
+    severity, dates not run numbers, the JSON `detail` parsed. Shared by the whole-list
+    view and the server-side page, so the two can never disagree about a row."""
     if not rows:
         return pd.DataFrame()
 
@@ -782,8 +780,25 @@ def exception_rows(session, date_from=None, date_to=None, store=None,
             # file — see r1_bill_txn.build_gateway_pool's own note).
             "transaction_time": e.transaction_time,
         })
+    return pd.DataFrame(records)
 
-    df = pd.DataFrame(records)
+
+def exception_rows(session, date_from=None, date_to=None, store=None,
+                   open_only=True, types=None, search: str = None) -> pd.DataFrame:
+    """The working list: readable columns, severity, dates not run numbers.
+
+    Sorted by value descending — the biggest number is the first thing seen.
+    The composite key stays as the stable identity but is not a display column.
+    Loads EVERY matching row - use `exception_page` for anything a person scrolls.
+    """
+    query = _apply_exception_filters(session.query(Exception_), date_from, date_to,
+                                     store, open_only)
+    if types:
+        query = query.filter(Exception_.type.in_(types))
+
+    df = _exception_records(session, query.all())
+    if df.empty:
+        return df
 
     if search:
         needle = search.strip().lower()
@@ -793,6 +808,65 @@ def exception_rows(session, date_from=None, date_to=None, store=None,
         df = df[mask]
 
     return df.sort_values("amount", ascending=False).reset_index(drop=True)
+
+
+# Server-side sort choices for an exception page: label -> ordered SQL columns. The id is
+# always the last key, so a page boundary can never repeat or skip a row.
+EXCEPTION_SORTS = {
+    "Amount (high to low)": lambda: (Exception_.amount.desc(), Exception_.id.asc()),
+    "Amount (low to high)": lambda: (Exception_.amount.asc(), Exception_.id.asc()),
+    "Date (oldest first)": lambda: (Exception_.business_date.asc(), Exception_.store.asc(),
+                                    Exception_.id.asc()),
+    "Date (newest first)": lambda: (Exception_.business_date.desc(), Exception_.store.asc(),
+                                    Exception_.id.asc()),
+    "Store": lambda: (Exception_.store.asc(), Exception_.business_date.asc(), Exception_.id.asc()),
+}
+DEFAULT_EXCEPTION_SORT = "Amount (high to low)"
+
+
+def _exception_page_query(session, date_from, date_to, store, types, statuses):
+    query = _apply_exception_filters(session.query(Exception_), date_from, date_to, store,
+                                     open_only=False)
+    query = query.filter(Exception_.type.in_(types))
+    if statuses:
+        query = query.filter(Exception_.status.in_(statuses))
+    return query
+
+
+def exception_page(session, date_from, date_to, store, types, statuses=("open",),
+                   limit: int = 50, offset: int = 0, sort: str = DEFAULT_EXCEPTION_SORT):
+    """ONE PAGE of exceptions, filtered and sorted in the database. Returns
+    (frame_for_this_page_only, total_rows, total_value) - the count and value are SQL
+    aggregates over the whole filtered population, never a length of the page. Only the
+    page's rows have their JSON parsed; nothing else is read."""
+    base = _exception_page_query(session, date_from, date_to, store, types, statuses)
+    n, v = (_exception_page_query(session, date_from, date_to, store, types, statuses)
+            .with_entities(func.count(Exception_.id), func.sum(Exception_.amount)).one())
+    order = EXCEPTION_SORTS.get(sort, EXCEPTION_SORTS[DEFAULT_EXCEPTION_SORT])()
+    rows = base.order_by(*order).limit(limit).offset(offset).all()
+    return _exception_records(session, rows), int(n or 0), float(v or 0.0)
+
+
+def exception_export(session, date_from, date_to, store, types, statuses=("open",),
+                     sort: str = DEFAULT_EXCEPTION_SORT, progress=None, transform=None) -> pd.DataFrame:
+    """EVERY exception in the filtered population - never the page on screen - read in
+    chunks of EXPORT_CHUNK with progress, so a large export never holds one giant query
+    result. `transform(page_frame) -> frame` (optional) shapes each chunk exactly as the
+    screen shapes its page, so the file and the screen cannot disagree."""
+    base = _exception_page_query(session, date_from, date_to, store, types, statuses)
+    total = base.with_entities(func.count(Exception_.id)).scalar() or 0
+    order = EXCEPTION_SORTS.get(sort, EXCEPTION_SORTS[DEFAULT_EXCEPTION_SORT])()
+    frames, done = [], 0
+    while done < total:
+        rows = base.order_by(*order).limit(EXPORT_CHUNK).offset(done).all()
+        if not rows:
+            break
+        frame = _exception_records(session, rows)
+        frames.append(transform(frame) if transform else frame)
+        done += len(rows)
+        if progress:
+            progress(done, total)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def exception_counts(session, date_from, date_to, store, bill_types, txn_types,
@@ -1056,12 +1130,60 @@ def _apply_bill_match_scope(query, manual_bill_nos: set, show: str):
     return query
 
 
+def _bill_match_summary_from_results(session, run_id, date_from, date_to, store, manual_bill_nos):
+    """`bill_match_summary` from the run's persisted per-(date, store) R1 results - a few
+    thousand small rows summed in SQL - instead of counting and summing 3.7M bill lines
+    (12.7 s for five months). The engine's matched/total are in each result's payload; a bill
+    a person matched but the engine did not is added from the (few) manual matches, exactly as
+    the line-level query's `matched OR bill_no IN manual` does. Returns None when the run has
+    no persisted results (an older run, a test) so the caller falls back to the line query."""
+    base = session.query(ReconciliationResult).filter(
+        ReconciliationResult.run_id == run_id, ReconciliationResult.reconciliation == "R1")
+    if date_from is not None:
+        base = base.filter(ReconciliationResult.business_date >= str(date_from))
+    if date_to is not None:
+        base = base.filter(ReconciliationResult.business_date <= str(date_to))
+    if store:
+        base = base.filter(ReconciliationResult.store == store)
+    if session.query(ReconciliationResult.id).filter(
+            ReconciliationResult.run_id == run_id,
+            ReconciliationResult.reconciliation == "R1").first() is None:
+        return None
+
+    def jsum(field):
+        return func.sum(func.json_extract(ReconciliationResult.payload, f"$.{field}"))
+
+    n, v, mn, mv = base.with_entities(
+        jsum("digital_bill_lines"), jsum("digital_value"), jsum("matched"), jsum("matched_value")).one()
+    total_n, total_v = int(n or 0), float(v or 0)
+    closed_n, closed_v = int(mn or 0), float(mv or 0)
+
+    if manual_bill_nos:
+        extra_n, extra_v = _apply_bill_filters(
+            session.query(func.count(R1BillLine.id), func.sum(R1BillLine.amount)),
+            run_id, date_from, date_to, store,
+        ).filter(R1BillLine.matched.is_(False), R1BillLine.bill_no.in_(manual_bill_nos)).one()
+        closed_n += int(extra_n or 0)
+        closed_v += float(extra_v or 0)
+
+    return {
+        "open": {"count": total_n - closed_n, "value": total_v - closed_v},
+        "closed": {"count": closed_n, "value": closed_v},
+        "total": {"count": total_n, "value": total_v},
+    }
+
+
 def bill_match_summary(session, run_id, date_from=None, date_to=None,
                        store=None) -> dict:
     """Open/Closed counts and value, bucketed exactly as the row list is —
     a manually-matched bill counts as closed even though the engine's own
     `matched` column still reads False for it."""
     manual_bill_nos = _active_manual_bill_nos(session, date_from, date_to, store)
+
+    fast = _bill_match_summary_from_results(session, run_id, date_from, date_to, store,
+                                            manual_bill_nos)
+    if fast is not None:
+        return fast
 
     total_n, total_v = _apply_bill_filters(
         session.query(func.count(R1BillLine.id), func.sum(R1BillLine.amount)),
@@ -1102,6 +1224,15 @@ def _bill_match_query(session, run_id, date_from=None, date_to=None, store=None,
             | R1BillLine.axis_ref.like(needle)
             | R1BillLine.bajaj_ref.like(needle)
         )
+    if show == "open":
+        # The open bills are a few thousand of millions of lines. With a plain ORDER BY the
+        # planner walks the page index (ix_r1_page) in order, filtering matched=0 as it goes - the
+        # whole month, 40 s for five months - when (run, matched, date) is a direct seek.
+        # SQLAlchemy cannot emit SQLite's INDEXED BY, so the ordering is wrapped in a no-op
+        # function: the planner can no longer be tempted by an index that merely provides the
+        # order, picks the selective one, and sorts the few thousand rows it returns. Same order.
+        return query.order_by(func.coalesce(R1BillLine.business_date, ""), func.coalesce(R1BillLine.store, ""),
+                              func.coalesce(R1BillLine.bill_no, ""))
     return query.order_by(R1BillLine.business_date, R1BillLine.store, R1BillLine.bill_no)
 
 
@@ -1138,13 +1269,20 @@ def _bill_match_frame(session, rows) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def _fast_count(query) -> int:
+    """COUNT over the same filtered query - without the wrapping subquery `Query.count()` builds,
+    which drops the index hint and made the open-bills count walk the whole month (18 s)."""
+    from sqlalchemy import func
+    return int(query.order_by(None).with_entities(func.count(R1BillLine.id)).scalar() or 0)
+
+
 def bill_match_page(session, run_id, date_from=None, date_to=None, store=None,
                     show: str = "open", status=None, mop=None, search: str = None,
                     limit: int = 50, offset: int = 0):
     """One page of bills, Bill-match style — Open/Closed/All, overlay-aware."""
     query = _bill_match_query(session, run_id, date_from, date_to, store, show,
                               status, mop, search)
-    total = query.count()
+    total = _fast_count(query)
     rows = query.limit(limit).offset(offset).all()
     return _bill_match_frame(session, rows), total
 
@@ -1155,7 +1293,7 @@ def bill_match_export(session, run_id, date_from=None, date_to=None, store=None,
     """EVERY bill matching the filters and the Open/Closed/All scope."""
     query = _bill_match_query(session, run_id, date_from, date_to, store, show,
                               status, mop, search)
-    total = query.count()
+    total = _fast_count(query)
     frames, done = [], 0
     while done < total:
         rows = query.limit(EXPORT_CHUNK).offset(done).all()
@@ -1473,8 +1611,70 @@ class TransactionResolution:
         return self.total_n - (self.mapped_n + self.refunded_n + self.unmapped_n)
 
 
+def _manual_txn_facts(session) -> list:
+    """[(gateway, business_date, store, amount)] of the TRANSACTION each ACTIVE, accepted manual
+    match closed - read from the validation snapshot taken when it was recorded. An asserted-but-
+    unverified match names no real transaction and is not here."""
+    out = []
+    for m in (session.query(ManualMatch)
+              .filter(ManualMatch.lifecycle == "active", ManualMatch.status == "matched_manual").all()):
+        try:
+            txn = (json.loads(m.validation_detail) if m.validation_detail else {}).get("txn") or {}
+        except ValueError:
+            continue
+        if txn.get("gateway") and txn.get("business_date"):
+            out.append((str(txn["gateway"]).lower(), str(txn["business_date"]), txn.get("store"),
+                        float(txn.get("amount") or 0.0)))
+    return out
+
+
+def _transaction_resolution_from_agg(session, run_id, date_from, date_to, store):
+    """The Mapped / Refunded / Unmapped strip from the run's persisted `txn_day_agg`, with the
+    live things applied on top - never the 3.7M-row pool. A manual match moves one transaction
+    from unmapped to mapped; a customer refund moves one from unmapped to refunded. Returns None
+    when the run has no aggregate (an older run) so the caller falls back to the pool read."""
+    from .db import TransactionRefund, TxnDayAgg
+
+    if session.query(TxnDayAgg.id).filter(TxnDayAgg.run_id == run_id).first() is None:
+        return None
+    query = session.query(func.sum(TxnDayAgg.total_n), func.sum(TxnDayAgg.total_v),
+                          func.sum(TxnDayAgg.mapped_n), func.sum(TxnDayAgg.mapped_v)).filter(
+        TxnDayAgg.run_id == run_id,
+        TxnDayAgg.business_date >= str(date_from), TxnDayAgg.business_date <= str(date_to))
+    if store:
+        query = query.filter(TxnDayAgg.store == store)
+    tn, tv, mn, mv = query.one()
+    out = TransactionResolution()
+    out.total_n, out.total_v = int(tn or 0), float(tv or 0.0)
+    out.mapped_n, out.mapped_v = int(mn or 0), float(mv or 0.0)
+
+    for _gateway, day, txn_store, amount in _manual_txn_facts(session):
+        if str(date_from) <= day <= str(date_to) and (not store or txn_store == store):
+            out.mapped_n += 1
+            out.mapped_v += amount
+
+    refunds = session.query(TransactionRefund).filter(
+        TransactionRefund.business_date >= str(date_from), TransactionRefund.business_date <= str(date_to))
+    if store:
+        refunds = refunds.filter(TransactionRefund.store == store)
+    for r in refunds.all():
+        amount = float(r.amount or 0.0)
+        out.refunded_n += 1
+        out.refunded_v += amount
+        if r.refund_status == "pending":
+            out.refund_pending_n += 1
+            out.refund_pending_v += amount
+        else:
+            out.refund_released_n += 1
+            out.refund_released_v += amount
+
+    out.unmapped_n = out.total_n - out.mapped_n - out.refunded_n
+    out.unmapped_v = out.total_v - out.mapped_v - out.refunded_v
+    return out
+
+
 def transaction_resolution_summary(session, date_from=None, date_to=None,
-                                   store=None, warehouse=None) -> TransactionResolution:
+                                   store=None, warehouse=None, run_id=None) -> TransactionResolution:
     """Mapped to bill / Refunded to customer / Unmapped (open) / Total — the
     three lines must sum to the full transaction population; asserted here,
     shown as MISMATCH by the caller if `.ok` is False."""
@@ -1483,6 +1683,11 @@ def transaction_resolution_summary(session, date_from=None, date_to=None,
     out = TransactionResolution()
     if date_from is None or date_to is None:
         return out
+
+    if run_id is not None and warehouse is None:
+        fast = _transaction_resolution_from_agg(session, run_id, date_from, date_to, store)
+        if fast is not None:
+            return fast
 
     frame = gt.gateway_transactions_with_resolution(session, date_from, date_to,
                                                      warehouse=warehouse)

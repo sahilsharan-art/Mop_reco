@@ -3591,6 +3591,182 @@ filter, never only the rows on screen (§8's export rule, applied here even
 though this page has no server-side paging — the whole filtered frame is
 already in memory).
 
+### 6.16 The performance rewrite (2026-10-13) - rules that now hold
+
+Measured in `docs/PERF_BASELINE.md`; every claim below was proved against Run #11 (`docs/BASELINE_APR_AUG.md`,
+which stays the truth until September is reconciled, then is extended to APR_SEP with Apr-Aug unchanged).
+
+* **R1 is chunked** (`r1_chunked.py`): a chunk of consecutive dates (default 100,000 digital lines, lowered if the RAM
+  available at run time could not hold it) is matched at a time against a disk-resident SQLite index of the whole
+  pool, so a gateway reference is still found across ALL loaded dates (6.3 is unchanged). Consumption is a `used`
+  flag on the pool row; Tier 2 runs in a second pass. Commits stay per business date. The vectorized matchers in
+  `r1_bill_txn.py` are proved against a frozen copy of the per-row engine in `tests/reference_matcher.py` - that
+  oracle is never edited. Time is flat from ~100k lines per chunk; only memory grows with chunk size.
+* **Masters have a schema guard** (`masters.preflight_masters`): it runs FIRST in every run, read-only, and fails the
+  run - naming every master, file and missing column - if a master file, sheet or required column is gone. Soft findings
+  (rows added/removed, Excel `#REF!`, an identifier mapped to two stores) are warnings recorded on the run.
+  Incident: `PICKUP LOCATION MASTER.xlsx` lost its LOCATION column on 2026-10-08; LOCATION is what splits pickup code
+  AX31918 between APM and MMR (Apr-Aug: APM Rs 1,45,53,494 / MMR Rs 1,78,56,493 depend on it).
+* **The Summary reads precomputed aggregates, never raw rows.** `txn_day_agg` (per run x date x store x gateway, filled
+  by the engine) feeds the Mapped/Refunded/Unmapped strip; per-store-date `reconciliation_results` feed the bills strip.
+  A manual match or a refund is applied live on top (no re-run, 6.9b-ii). The strip's "mapped" means "a bill matched
+  this (gateway, reference)" - NOT "this physical row was consumed": 80 duplicate Axis lines (same RRN, amount, date,
+  store) count as mapped although the engine lists them as unmapped. Open finding; the strip keeps its original definition
+  so no baseline figure moves.
+* **Exceptions are paged in the query**, 50 rows a page; a collapsed section reads nothing but its count; exports are
+  a separate full-population path in chunks. Section state, Show/Sort choices and pager offsets live in plain session
+  keys (a widget key is dropped when its page is not rendered).
+* **Ingest uses Polars only where it measured faster, and never lossily.** `.xlsb` via calamine (`fastexcel`) with column
+  types INFERRED from every row under strict coercion (a declared type silently nulls a mismatched cell); any error falls
+  back, named in the log, to pyxlsb. The one known difference from the pyxlsb path is the raw `BILL_TIME` serial float
+  (<= 1.1e-16, unused after ingest). Dependencies are pinned: `polars==1.44.2`, `fastexcel==0.21.0`.
+* **A process pool for file parsing was measured and NOT adopted** (1.24x for +37% memory; a monthly run has one new file).
+* **Navigation is a top bar of `st.page_link`s** (`dashboard_common.NAV_PAGES`), not `st.tabs` (which renders every tab
+  on every run), with a status pill under it; the native sidebar list is hidden. Filters stay in the sidebar.
+
+### 6.17 Navigation below the matrix, the logo, and Store Task (2026-10-14)
+
+* **The navigation bar sits BELOW the page's opening block and is sticky.** On Summary that is under the particulars
+  matrix (`page(..., nav=False)` then `top_nav("Summary")` after the matrix); on every other page it is directly under
+  the heading and status pill, so it is in the same place relative to the page's own top block everywhere. Stickiness is
+  on the `stLayoutWrapper` that Streamlit puts around the keyed container (`div[data-testid="stLayoutWrapper"]:has(>
+  .st-key-topnav)`) - sticking the container itself does nothing, its parent wrapper is exactly as tall. The page order is
+  logo + title + period, the Live pill, the matrix, the bar. `theme.css` is cached per process: restart to see CSS edits.
+* **Logo:** `app/assets/citykart-logo.png`, 32px high, aspect kept, left of the title on the same line (data: URI, read
+  once per file version). If the file is missing or is not a PNG the title stands alone and a warning is logged - never a
+  broken image. THE FILE IS NOT IN THE REPOSITORY YET; it has to be supplied.
+* **Store Task** (`pages/7_Store_Task.py`, `mop_reco/store_tasks.py`, tables `store_tasks` + append-only
+  `store_task_events`). Tasks are generated from data, close themselves when the data clears them, and a store's reply
+  never closes one. Types and conditions:
+  * `open_bill` - an engine-unmatched bill line with no active manual match, merged to one task per
+    date|store|bill_no|mop. Closes when the bill is matched (engine or person) or leaves the dump.
+  * `high_float` - float (column N) above the store's threshold and no weekend/holiday auto-remark. Active only while the
+    store's high-float streak is unbroken to the last loaded date; the first later day at/below threshold closes it.
+  * `cms_not_done` - merged per store|date from two facts: NO DEPOSIT (a day's cash sale was due for deposit by the next
+    banking day - not Sunday, 2nd/4th Saturday or a listed holiday - and no deposit voucher appears; clears when the store
+    later makes a deposit the agency credited) and NOT CREDITED (a deposit the running CMS ledger still shows outstanding
+    past T+1 working day, allocated to the newest deposits first). The running ledger, not per-day K, is used on purpose: K
+    shows phantom shortfalls wherever a credit was booked on another date or store (Defect B). The T+0/T+1 per-store cycle
+    is in no master, so T+1 is the bound (config `store_tasks.cms_credit_due_working_days`).
+  * Keys are stored type-prefixed (`open_bill:`, `cms_not_done:`, `high_float:`) because the last two share the
+    `store|date` shape. `generation` is 1 for the first task on a key; a task a person closed is never reopened - if the
+    condition is still true on a later sync a NEW task (generation + 1) is raised.
+  * Conditions that arose in the loaded history and have ALREADY cleared are counted (`SyncReport.already_clear`) but not
+    persisted as tasks. Auto-closure only touches tasks whose business date lies inside the dates the syncing run covers.
+  * Raised on = the sync date; Due by = raised + `store_tasks.sla_working_days[type]` working days (default 3); Overdue
+    = not closed and due before today. "Closed this period" = closed tasks whose business date is in the sidebar range.
+  * The sync runs as the `store_tasks` stage of every run (failure is logged and recorded on the run, never fatal) and
+    again on page load when the run or the set of active manual matches changed, so a manual match closes its task at once.
+  * Replies: bulk upload `task_id, store, reply, replied_by`, every row validated (task exists, not closed, store is the
+    task's own, no task twice in a file), preview, confirm. A reply replaces the current reply; earlier ones stay in the
+    history. Every read takes `store`, which is how a store login will be scoped later.
+  * Measured on Run #11 (Apr-Aug): 7,968 live tasks - 4,769 open bills (Rs 46,85,928), 3,123 high float on 64 stores
+    (Rs 12.95 Cr of float), 76 CMS not done (Rs 1.38 Cr); a further 5,200 high-float and 3,004 no-deposit conditions had
+    already cleared.
+
+### 6.18 Tab restructure, Exceptions pairing, masters failing gracefully (2026-10-14)
+
+* **Tabs, in order:** Summary | Exceptions | CMS Reco | Float | Store Task | Upload | Masters. **Manual matches and Run
+  are gone as tabs.** Nothing was deleted: By bill / By transaction matching, the bulk upload, the refund upload, the
+  manual-match report and the register are sections of the **Exceptions** page (`pages/8_Exceptions.py`, under a "Manual
+  matching" heading); the Run controls, run history, heartbeat and "what a run would read" are the Run section of **Upload**
+  (`run_panel.py`, below the upload form). The Exceptions section moved off Summary unchanged.
+* **Exception bills are paired with candidate transactions** (`mop_reco/exception_pairing.py`). Candidates are the engine's
+  open unmapped-transaction exceptions (less anything a person matched or refunded) in the SAME store with the EXACT amount,
+  first within +/-10 minutes (needs a time on both sides; Axis has none), then +/-2 days; nearest in time first
+  (`config.yaml` exception_pairing). Time orders and narrows; it never decides. The table shows Txn 1 / Amount 1 / Txn 2 /
+  Amount 2 / More ("+N more", full list in a picker) / Match / Remark. Txn 1 and Txn 2 are editable (a pasted id is
+  validated like any manual match, searching the whole warehouse with `manual_match.targeted_pool`, ~1.5 s); Match records
+  the manual match with full validation, naming the bill that holds a transaction already used. A bill with two genuine
+  payments is NOT forced to 1:1: after matching one, the bill is closed and the other transaction stays open, flagged under
+  "Second transaction still open" for a person to decide (refund, or a second bill). On Run #11: of 4,769 open bills 2,808
+  have 1 candidate, 542 have 2, 279 have more than 2, 1,140 have none (30 have one within 10 minutes).
+* **Two slow queries were fixed because the page now carries them:** the open-bills page/count used to walk the whole 3.7M-row
+  table (23 s) - an index hint plus a hint-preserving count make it 0.9 s; the "matched on a different day" list scans every
+  matched line (37 s) and now loads only when asked.
+* **A master that cannot be loaded no longer takes the Masters page down** (`masters.load_all_masters_safe`): each master is
+  pre-flighted and a bad one is reported - "Pickup location master cannot be loaded - LOCATION column missing (header on
+  disk ...; file modified ...)" - while every other master renders and the stored version stays in force. Nothing is inferred.
+* **Page chrome:** title 18px; the period is no longer written beside the title (the Live pill shows it); the build stamp
+  ("code loaded ...") is the Live pill's tooltip, not page text; the "newer run", "Not signed in" and "All figures in Rs Cr"
+  texts are gone. Summary's three buttons are one left-aligned row, 12px gap, Build keeps the accent fill. The matrix's
+  DIGITAL / CASH headers are bold and centred exactly over their column spans.
+* **Store Task tiles** are Open (raised, no store reply) / Pending (store replied, awaiting HO review) / WIP (HO reviewing,
+  action underway) / Closed (resolved by the data or a person), each count and value; Sort, Overdue-only, the Due by column
+  and the Overdue column were removed; filters are one row (Store code, Search, Type, Status) styled like the sidebar.
+
+### 6.19 One definition of the Exceptions tables, for the screen and the export (2026-10-15)
+
+* **Incident:** exporting Exception bills raised `KeyError: ['Txn 1', 'Amount 1', ...] not in index`. The screen had gained the
+  candidate-transaction columns; the export query still returned the old frame and the page selected the screen's column list
+  against it. The progress bar had said "Collected 4,769 of 4,769" and then crashed at the write step.
+* **Fix:** `mop_reco/exception_tables.py` holds the declared schema (data columns, candidate columns Txn 1 / Amount 1 / Txn 2 /
+  Amount 2, remark columns, and the UI-only `More` / `Match`) and the frame builders (`bill_frame`, `txn_frame`,
+  `add_pairing`) that the page AND the export both call, so they cannot drift. `export_view()` refuses a UI-only column by name
+  and `select()` names a declared column that is missing (`ExportSchemaError`) instead of a KeyError. An open-bills export has
+  the candidate columns; a closed one does not (nothing to pair). Dates are written DD/MM/YYYY, ids and times as text.
+* **Progress is honest:** `export_all_button` shows Collecting (to 60%), Building the file (60-95%), then Ready; a failure
+  shows an error with its reason instead of a full bar. The first chunk is shaped and checked before the rest are read.
+* **The open-bills query** (`queries._bill_match_query`) wraps its ORDER BY in `coalesce` so SQLite stops walking the page
+  index for the order: the open-bills export fell from 81 s to 0.3 s. (SQLAlchemy cannot emit INDEXED BY; its `with_hint` renders
+  nothing on SQLite - the earlier "hint" was not applied and the speed-up on a 50-row page was luck of the planner.)
+
+### 6.20 Candidate transactions are a GLOBAL ASSIGNMENT, not a per-bill lookup (2026-10-15)
+
+* **Incident:** the first pairing looked up store + amount per bill independently. 705 of 3,582 suggested transactions were
+  offered against more than one bill (1,573 slots; one id against five bills) - accepting them would have closed five bills with
+  one payment. It also filled Txn 2 on 821 bills with the "next best" transaction: all 821 had Amount 1 equal to the bill, so
+  **0 of 821** satisfied Amount 1 + Amount 2 = bill amount - every one was noise.
+* **Rule:** `exception_pairing.assign()` builds the candidate set once over the WHOLE open population (open + under
+  investigation, never a page or filter) with a hard constraint that a transaction is suggested to at most one bill.
+  1. EXACT: same store, exact amount, within +/-2 days. A contest is won by the smallest time difference (untimed - Axis, or a
+     bill with no time - is "about half a day" plus whole days, so a date with no clock never invents minutes), then by the bill
+     whose MOP belongs to the transaction's gateway (config exception_pairing.mop_family), else NOBODY gets it.
+  2. SPLIT: a bill with no exact candidate at all may take TWO free transactions whose amounts sum exactly to the bill. This is
+     the only meaning of Txn 2. A duplicate payment (second transaction equal to the bill) is never Txn 2.
+  3. AMBIGUOUS clusters (N bills and M transactions of one store and amount that cannot be separated) are left blank, flagged
+     "ambiguous - N bills, M transactions", and offered in a resolver for the page: N == M can be paired as a set in time order
+     (amounts are equal, so no figure moves); otherwise listed for a decision.
+  Contests are decided by sort key and tie-group components, never by row order (a test reverses the input).
+* **Asserted, not trusted:** `assert_unique()` runs inside `assign()` and fails the build if a transaction appears twice across Txn 1
+  and Txn 2, or is both suggested and in an ambiguous cluster. At match time the page re-reads the unmapped pool and refuses a
+  suggestion another bill has since taken, naming the holder; a split bill is not one-click matched (a manual match holds one
+  transaction).
+* **Run #11 result (4,769 open bills, 6,272 unmapped transactions):** exact 3,089 bills / Rs 30.94 L; split 213 / Rs 3.56 L (all 213
+  sum exactly); ambiguous 532 / Rs 1.99 L in 242 clusters (220 of them N == M); none 935 / Rs 10.36 L (925 have no same-store,
+  same-amount transaction, 10 lost the contest). 3,515 distinct transactions suggested, 0 more than once.
+* The screen and the export both call `exception_tables.add_pairing(frame, assignment)` with the same assignment.
+
+### 6.21 The self-check now covers every project module, not a hand-kept list (2026-10-15)
+
+* **Incident:** the Exceptions page crashed with `module 'mop_reco.exception_pairing' has no attribute 'open_population'`. The
+  function was on disk; the running dashboard had imported an older copy (CLAUDE.md 9a). `selfcheck` should have said so, but it
+  only knew two hand-kept lists (`WATCHED` aliases, `FROM_MODULES`) and `ep` was on neither, so it was blind to the module.
+* **Fix:** `selfcheck.run_check()` now checks EVERY reference to a project module (`mop_reco.*`, `dashboard_common`,
+  `inline_match`, `run_panel`) in every page, every app module and every `mop_reco` module - `alias.attr` calls and plain
+  attribute loads, and `from module import name` - against the module as LOADED in the process, and the stale check covers every
+  loaded project module. An alias that a file rebinds locally is never trusted. 457 references resolve today; tests delete a
+  function from a previously unlisted module and demand it is named.
+* **The exceptions assignment cache key** (`_pairing_fp`): run id, number of ACTIVE manual matches and the newest manual-match id
+  (a reversal changes the first), refund count, and the size and newest id of the open exception population (a bill or
+  transaction closed, auto-resolved or re-raised by any route). There is deliberately no date/store filter in it: the assignment
+  runs over the whole open population so a transaction is never suggested to different bills in different views.
+
+### 6.22 CMS Reco - one block per deposit date, chained per store (2026-10-16)
+
+* Replaces the running-ledger page. Per store, per deposit date d: OPENING (previous CLOSING; first block from config
+  `cms_reco.opening`, default 0 at the run's first date) + Cash/CMS Deposit (-1 x PTC deposit vouchers) - CMS Report (1)
+  (COL slips, DEPDATE = d, CRDATE = d) - CMS Report (2) (same, CRDATE = d+1) = CLOSING. `mop_reco/cms_blocks.py` (engine),
+  `cms_blocks_export.py` (wide workbook, live formulas), `pages/2_CMS_Reco.py`. Inputs are persisted at run time into
+  `cms_slips` / `cms_ptc_deposits` (stage `cms_slips`; `scripts/backfill_cms_slips.py` for an older run).
+* CRDATE, not CLGDATE: CLGDATE equals DEPDATE on every COL row, so it cannot tell same-day from next-day credit.
+* A credit dated day+2 or later is in NEITHER column. It stays in CLOSING and is listed under "Credited later than day+1"
+  (T+10 or more flagged). Store comes from the pickup master (location-aware); no match = UNRESOLVED (kept in totals);
+  BNK is its own pseudo-store. ZPO (no dates) and ADJ rows are not in the grid and are listed on the page.
+* Controls: block arithmetic, chain, summary Diff = last CLOSING, page deposit = store-sheet column I. Page CMS Report vs
+  column J is shown as a MISMATCH with a full bridge (credited later, credits after the run's last date, unmapped stores,
+  ADJ net). Column J is NOT redefined; awaiting a ruling. Remarks are keyed on store + period, with append-only history.
+
 ## 7. Acceptance numbers
 
 Every stage is proved against these. They come from the two workbooks already

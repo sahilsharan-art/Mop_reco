@@ -359,6 +359,132 @@ class FloatRemarkEvent(Base):
 
 
 # ---------------------------------------------------------------------------
+# Store Task (2026-10-14) - items assigned to stores, their replies, tracked to closure.
+# Tasks are GENERATED from data (open bill / CMS not done / high float) and closed by the
+# data; they belong to no run, so a re-run never duplicates or loses one. Every task
+# carries its store so a future store login is a WHERE clause, not a rebuild.
+# ---------------------------------------------------------------------------
+
+class StoreTask(Base):
+    __tablename__ = "store_tasks"
+
+    id = Column(Integer, primary_key=True)
+    # Deterministic key, prefixed with the type because CMS not done and high float share
+    # the `store|date` shape (open_bill:date|store|bill_no|mop, cms_not_done:store|date,
+    # high_float:store|date). `generation` is 1 for the first task on a key; a task the operator closed
+    # by hand is never reopened - if the condition is still true on a later sync a NEW task
+    # (generation + 1) is raised.
+    task_key = Column(String, nullable=False)
+    generation = Column(Integer, nullable=False, default=1)
+    task_type = Column(String, nullable=False, index=True)   # open_bill | cms_not_done | high_float
+    store = Column(String, nullable=False, index=True)
+    business_date = Column(String, nullable=False, index=True)
+    bill_no = Column(String, nullable=True)
+    mop = Column(String, nullable=True)
+    amount = Column(Numeric, nullable=False, default=0)
+    detail = Column(Text, nullable=True)                      # JSON: the type's own facts
+    raised_on = Column(String, nullable=False)                # ISO date
+    due_by = Column(String, nullable=False)
+    status = Column(String, nullable=False, default="open", index=True)  # open|replied|under_review|closed
+    store_reply = Column(Text, nullable=True)
+    replied_by = Column(String, nullable=True)
+    replied_at = Column(DateTime, nullable=True)
+    ho_remark = Column(Text, nullable=True)
+    closed_on = Column(String, nullable=True)
+    closed_by = Column(String, nullable=True)                 # "resolved by the data" | a name
+    close_reason = Column(Text, nullable=True)
+    first_seen_run_id = Column(Integer, nullable=True)
+    last_seen_run_id = Column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ux_store_task_key_gen", "task_key", "generation", unique=True),
+        Index("ix_store_task_page", "store", "business_date", "task_type"),
+    )
+
+
+class StoreTaskEvent(Base):
+    """Append-only history: raise, every reply, every remark, every status change, every
+    closure. A reply or a remark is never overwritten silently - the task row shows the
+    latest, this table keeps them all (rule 4)."""
+    __tablename__ = "store_task_events"
+
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, ForeignKey("store_tasks.id"), nullable=False, index=True)
+    at = Column(DateTime, nullable=False)
+    by = Column(String, nullable=False)
+    event = Column(String, nullable=False)   # raised|reply|remark|under_review|closed|auto_closed|amount_revised
+    text = Column(Text, nullable=True)
+
+
+# ---------------------------------------------------------------------------
+# CMS Reco (2026-10-16) - one block per DEPOSIT DATE, chained per store. The page reads these
+# precomputed rows only: the CMS slips (every Axis CMS row of the five types, with its store
+# resolved through the pickup-code master) and the PTC cash deposits, per run.
+# ---------------------------------------------------------------------------
+
+class CmsSlip(Base):
+    __tablename__ = "cms_slips"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=False, index=True)
+    row_type = Column(String, nullable=False)                 # COL | ADJ.CR. | ADJ.DB. | ZPO
+    dep_date = Column(String, nullable=True, index=True)      # ISO; NULL for ZPO (the file gives none)
+    cr_date = Column(String, nullable=True)                   # CRDATE, ISO
+    store = Column(String, nullable=False)                    # a store code, 'UNRESOLVED', or 'BNK' (its own pseudo-store)
+    pickup_code = Column(String, nullable=True)
+    location = Column(String, nullable=True)
+    slip_no = Column(String, nullable=True)
+    amount = Column(Numeric, nullable=False)                  # SLIPAMOUNT
+    adj = Column(Numeric, nullable=True)                      # ADJ (column U)
+    recovered = Column(Numeric, nullable=True)                # RECOVEREDAMOUNT (column X)
+    source_file = Column(String, nullable=True)
+
+    __table_args__ = (Index("ix_cms_slips_run_dep", "run_id", "row_type", "dep_date"),)
+
+
+class CmsPtcDeposit(Base):
+    """PTC 'Cash/CMS Deposit' per store per business date, carried POSITIVE (the source is negative
+    and multiplied by -1)."""
+    __tablename__ = "cms_ptc_deposits"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=False, index=True)
+    dep_date = Column(String, nullable=False)
+    store = Column(String, nullable=False)
+    amount = Column(Numeric, nullable=False)
+
+    __table_args__ = (Index("ix_cms_ptc_run_date", "run_id", "dep_date", "store"),)
+
+
+class CmsRecoRemark(Base):
+    """The current remark for a store over a period (from..to). History is `CmsRecoRemarkEvent`."""
+    __tablename__ = "cms_reco_remarks"
+
+    id = Column(Integer, primary_key=True)
+    store = Column(String, nullable=False)
+    period_from = Column(String, nullable=False)
+    period_to = Column(String, nullable=False)
+    remark = Column(Text, nullable=False)
+    remark_by = Column(String, nullable=False)
+    remark_at = Column(DateTime, nullable=False)
+
+    __table_args__ = (Index("ux_cms_reco_remark", "store", "period_from", "period_to", unique=True),)
+
+
+class CmsRecoRemarkEvent(Base):
+    """Append-only: every remark ever set (rule 4)."""
+    __tablename__ = "cms_reco_remark_events"
+
+    id = Column(Integer, primary_key=True)
+    store = Column(String, nullable=False, index=True)
+    period_from = Column(String, nullable=False)
+    period_to = Column(String, nullable=False)
+    remark = Column(Text, nullable=False)
+    remark_by = Column(String, nullable=False)
+    remark_at = Column(DateTime, nullable=False)
+
+
+# ---------------------------------------------------------------------------
 # Store-day and date-total aggregates (2026-09-20) — precomputed at RUN time,
 # not view time (CLAUDE.md's performance rework: "the Run stage must write
 # persisted aggregate tables ... the Summary page READS these"). These carry
@@ -404,6 +530,35 @@ class StoreDayAgg(Base):
               unique=True),
         Index("ix_store_day_agg_date_store", "run_id", "business_date", "store"),
     )
+
+
+class TxnDayAgg(Base):
+    """Per run, per business date, store and gateway (2026-10-13): how many transactions the
+    gateway file holds and how many of those the ENGINE matched to a bill.
+
+    This is what the Summary's "Mapped / Refunded / Unmapped" strip reads. Building that strip
+    live meant loading the whole 3.7M-row gateway pool into pandas on every page load (144 s and
+    6 GB for five months). The engine's own answer is fixed once the run is done; what a person
+    does afterwards - a manual match, a customer refund - moves a handful of transactions, so
+    those are applied live on top of this (queries.transaction_resolution_summary), keeping the
+    no-re-run cascade (CLAUDE.md 6.9b-ii) without the pool read.
+
+    `total_*` covers EVERY row of the gateway files (refunds, chargebacks and failures too -
+    the strip's total always has); `mapped_*` is the matching-pool rows a bill consumed. `store`
+    is NULL for a transaction whose MID resolves to no store."""
+    __tablename__ = "txn_day_agg"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=False)
+    business_date = Column(String, nullable=False)
+    store = Column(String, nullable=True)
+    gateway = Column(String, nullable=False)
+    total_n = Column(Integer, nullable=False)
+    total_v = Column(Numeric, nullable=False)
+    mapped_n = Column(Integer, nullable=False)
+    mapped_v = Column(Numeric, nullable=False)
+
+    __table_args__ = (Index("ix_txn_day_agg_run_date_store", "run_id", "business_date", "store"),)
 
 
 class MopDayAgg(Base):

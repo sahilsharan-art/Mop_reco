@@ -1,19 +1,16 @@
-"""CMS Reco — the cash-with-agency reconciliation (2026-09-30).
+"""CMS Reco - one block per DEPOSIT DATE, chained per store (2026-10-16).
 
-What stores deposited, what the bank credited, and what is still
-outstanding — a RUNNING LEDGER per store, never netted per day. A deposit
-made on day D and credited on D+1 clears the OPENING balance on D+1; it
-does not create an "excess" on D+1 and a "shortfall" on D. See
-mop_reco/cms_reco.py for the full reasoning.
+The operator's workbook model: Opening + Cash/CMS Deposit - CMS Report (credited same day) - CMS Report
+(credited next day) = Closing, and the Closing becomes the next block's Opening. See mop_reco/cms_blocks.py
+for the rules and for why a credit dated day+2 or later is listed separately instead of dropped.
 
-Sits directly below Float in the nav, on instruction. Reads only the
-precomputed store_day_agg aggregate — never a raw file, never a bill-line
-scan (CLAUDE.md 6.14).
+Reads only rows written at run time (cms_slips, cms_ptc_deposits) - never a raw file (CLAUDE.md 6.14).
 """
 
 from __future__ import annotations
 
 import sys
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -21,27 +18,14 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dashboard_common import (
-    db_session,
-    frame_export_button,
-    latest_run,
-    no_run_yet,
-    page,
-    sidebar,
-    stmt_row,
-    stmt_table,
-    stop_if_no_dates,
-    tile,
-)
-from mop_reco import cms_reco as cr
-from mop_reco import store_sheet_source as src
-from mop_reco.export import ExportMeta
-from mop_reco.formatting import count as fmt_count
-from mop_reco.formatting import display_date, money_short, money_table
+from dashboard_common import (confirm_with_operator, db_session, latest_run, no_run_yet, page, sidebar,
+                              stop_if_no_dates, tile)
+from mop_reco import cms_blocks as cb
+from mop_reco import cms_blocks_export as cbx
+from mop_reco.config import load_config
+from mop_reco.formatting import blank, display_date, money_short, money_table
 
-page("CMS Reco", "Cash handed to the agency, credited by the bank, and what "
-                "is still outstanding — a running ledger per store, not a "
-                "per-day net.")
+page("CMS Reco", "Cash handed to the agency against what the bank credited, block by deposit date, chained per store.")
 
 session = db_session()
 run = latest_run(session)
@@ -50,214 +34,203 @@ if run is None:
 
 date_from, date_to, store = sidebar(session, run)
 stop_if_no_dates(date_from, run)
+cfg = load_config()
 
 
-@st.cache_data(ttl=600, show_spinner="Building the CMS ledger…")
-def _load_ledger(run_id: int):
-    # Always the FULL loaded range — never the sidebar's date filter — so
-    # narrowing the date window never resets a store's carried receivable
-    # to zero at the window's own start (mop_reco.cms_reco's own docstring).
-    # No opening-receivable file has ever been supplied, so every store
-    # opens at exactly zero on its first loaded date (stated on the page).
-    return cr.build_ledger(session, run_id, store=None, opening_receivable=None)
+@st.cache_data(ttl=600, show_spinner="Building the CMS blocks...")
+def _load(run_id: int):
+    s = db_session()
+    slips, deposits = cb.load(s, run_id)
+    first, last = cb.run_range(s, run_id)
+    openings = cb.opening_from_config(cfg.raw)
+    if slips.empty and deposits.empty:
+        return slips, deposits, None, first, last
+    return slips, deposits, cb.build_model(slips, deposits, first, last, openings), first, last
 
 
-ledger_all = _load_ledger(run.id)
-if ledger_all.empty:
-    st.warning("Nothing loaded for this selection.")
+slips, deposits, model, first, last = _load(run.id)
+if model is None:
+    st.warning("No CMS data has been stored for this run. Run `scripts/backfill_cms_slips.py` or re-run the reconciliation.")
     st.stop()
 
-ledger_store = ledger_all if not store else ledger_all[ledger_all["store"] == store]
-date_from_s, date_to_s = str(date_from), str(date_to)
-ledger_window = ledger_store[(ledger_store["business_date"] >= date_from_s)
-                             & (ledger_store["business_date"] <= date_to_s)]
+d0 = max(str(date_from), first)
+d1 = min(str(date_to), last)
+if d0 > d1:
+    st.warning("The selected dates are outside this run.")
+    st.stop()
 
-st.caption("No opening-receivable file has ever been supplied — every store's "
-          "ledger opens at exactly zero on its own first loaded date.")
+st.caption(f"Opening CMS outstanding assumed zero at {display_date(first)}. "
+           "It is a configured value (cms_reco.opening in config.yaml), so a file can be supplied later.")
 
-# ===========================================================================
-# Controls — asserted and shown, quiet only when clean (2026-09-12 pattern)
-# ===========================================================================
-checks = cr.run_checks(ledger_store)
-failed = [c for c in checks.controls if not c.holds]
+# --- period -----------------------------------------------------------------------------------------
+month_keys = sorted({d[:7] for d in model.dates if d0 <= d <= d1})
+labels = {"all": f"Whole range ({display_date(d0)} - {display_date(d1)})"}
+for mk in month_keys:
+    labels[mk] = date.fromisoformat(mk + "-01").strftime("%B %Y")
+choice = st.selectbox("Period", ["all"] + month_keys, index=len(month_keys) if month_keys else 0,
+                      format_func=lambda k: labels[k], key=f"cms_period_{d0}_{d1}")
 
-# The live parity check against the store sheet — SAME filter (date range
-# AND store) as the sidebar currently holds, never the full range this
-# ledger is otherwise built over. CMS Reco and the store sheet must never
-# disagree (the operator's own instruction).
-parity = src.store_cash_summary(session, run.id, date_from, date_to, store)
-sum_i_ledger = float(ledger_window["cash_deposit"].sum())
-sum_j_ledger = float(ledger_window["cash_received"].sum())
-parity_i_diff = round(sum_i_ledger - parity["cash_deposit"], 2)
-parity_j_diff = round(sum_j_ledger - parity["cash_received"], 2)
-parity_ok = abs(parity_i_diff) <= 0.005 and abs(parity_j_diff) <= 0.005
 
-if failed or not parity_ok:
-    st.error(f"**{len(failed) + (0 if parity_ok else 1)} control(s) do not hold.** "
-            "The figures below cannot be relied on until this is explained.")
+def _bounds(key: str):
+    if key == "all":
+        return d0, d1
+    ds = [d for d in model.dates if d.startswith(key) and d0 <= d <= d1]
+    return ds[0], ds[-1]
+
+
+p0, p1 = _bounds(choice)
+
+# --- controls ---------------------------------------------------------------------------------------
+controls = cb.block_controls(model, p0, p1)
+tie_i = cb.deposit_tie(session, run.id, deposits, p0, p1)
+bridge = cb.bridge_to_j(session, run.id, model, slips, p0, p1)
+failed = [c for c in controls + [tie_i] if not c.ok]
+if failed:
+    st.error(f"**{len(failed)} control(s) do not hold.**")
     for c in failed:
-        st.markdown(f"- **({c.key})** {c.what} — {c.detail}")
-    if not parity_ok:
-        st.markdown(
-            f"- **(parity)** this page's sum(I)/sum(J) must equal the store "
-            f"sheet's own totals for the same filter — got I {sum_i_ledger:,.2f} "
-            f"vs {parity['cash_deposit']:,.2f} (diff {parity_i_diff:,.2f}), "
-            f"J {sum_j_ledger:,.2f} vs {parity['cash_received']:,.2f} "
-            f"(diff {parity_j_diff:,.2f})."
-        )
+        st.markdown(f"- **{c.label}** - {c.detail} (difference {money_table(c.amount)})")
 
-# ===========================================================================
-# Tiles
-# ===========================================================================
-outstanding_floored = max(0.0, sum_i_ledger - sum_j_ledger)
-over_2_days = ledger_store[
-    (ledger_store["business_date"] == ledger_store["business_date"].max())
-    & (ledger_store["days_outstanding"] > 2)]
+st.markdown("##### How the page relates to store sheet column J")
+st.caption("Different measures, both correct: this page groups credits by DEPOSIT date (same day and next day); "
+           "column J is cash credited in the period, by CREDIT date. They are not expected to tie.")
+rows = [
+    ("Page CMS Report (by deposit date, day and day+1)", bridge.page_cms),
+    ("add  credited later than day+1", bridge.credited_later),
+    (f"less credited after {display_date(bridge.cutoff)}", -bridge.after_cutoff),
+    ("less unmapped stores (UNRESOLVED; BNK is in column J, not a cause)", -bridge.unmapped),
+    ("less ADJ net (ADJ.CR. - ADJ.DB., in column J only)", bridge.adj_net),
+    ("= Store sheet column J (as reconstructed)", bridge.expected_j),
+    ("Store sheet column J (as stored)", bridge.store_sheet_j),
+    ("Unexplained remainder", bridge.unexplained),
+]
+st.dataframe(pd.DataFrame({"Item": [r[0] for r in rows], "Rs": [money_table(r[1]) for r in rows]}),
+             hide_index=True, width="stretch")
+if abs(bridge.unexplained) > cb.EPS:
+    st.error(f"MISMATCH - Rs {money_table(bridge.unexplained)} of the difference between this page and column J is "
+             "not explained by the items above.")
 
-with st.container(key="cms-reco-ribbon"):
-    r1, r2, r3, r4 = st.columns(4)
-    tile(r1, "CASH DEPOSITED (PERIOD)", money_short(sum_i_ledger),
-        tooltip=f"Rs {money_table(sum_i_ledger)}")
-    tile(r2, "CASH CREDITED (PERIOD)", money_short(sum_j_ledger),
-        tooltip=f"Rs {money_table(sum_j_ledger)}")
-    tile(r3, "OUTSTANDING RECEIVABLE", money_short(outstanding_floored),
-        state="attention" if outstanding_floored > 0.005 else "clean",
-        note="closing, floored at zero", tooltip=f"Rs {money_table(outstanding_floored)}")
-    tile(r4, "STORES > 2 DAYS OUTSTANDING", fmt_count(over_2_days["store"].nunique()),
-        state="action" if len(over_2_days) else "clean", note="the work queue")
+# --- tiles ------------------------------------------------------------------------------------------
+sm = cb.summary_frame(model, p0, p1)
+if store:
+    sm = sm[sm["store"] == store]
+tot = sm[["opening", "deposit", "cms", "diff"]].sum()
+with st.container(key="cms-blocks-ribbon"):
+    c1, c2, c3, c4 = st.columns(4)
+    tile(c1, "OPENING", money_short(tot["opening"]), tooltip=f"Rs {money_table(tot['opening'])}")
+    tile(c2, "CASH/CMS DEPOSIT", money_short(tot["deposit"]), tooltip=f"Rs {money_table(tot['deposit'])}")
+    tile(c3, "CMS REPORT", money_short(tot["cms"]), tooltip=f"Rs {money_table(tot['cms'])}")
+    tile(c4, "DIFF (STILL OUTSTANDING)", money_short(tot["diff"]), accent="warn" if abs(tot["diff"]) > cb.EPS else None,
+         tooltip=f"Rs {money_table(tot['diff'])}")
 
-# Same statement-style presentation as Summary's own cash block (the
-# operator's own instruction) — labels carry the operation, every figure
-# stays positive. Opening/closing are STOCKS (the first/last filtered
-# date's own value, summed across stores — never summed across dates,
-# which would double-count a carried balance, the same discipline
-# store_cash_summary() already applies to column H); deposited/credited are
-# FLOWS, summed across the whole filtered window.
-_period_opening = float(
-    ledger_window[ledger_window["business_date"] == date_from_s]["opening_receivable"].sum()
-) if not ledger_window.empty else 0.0
-_period_closing = float(
-    ledger_window[ledger_window["business_date"] == date_to_s]["closing_receivable"].sum()
-) if not ledger_window.empty else 0.0
-_stmt_rows = (
-    stmt_row("Opening receivable", _period_opening)
-    + stmt_row("Add: Cash deposited", sum_i_ledger)
-    + stmt_row("Less: Cash credited", sum_j_ledger)
-)
-st.markdown(
-    f"<div class='mop-stmt-grid'>"
-    f"{stmt_table('CASH WITH AGENCY (running)', f'{display_date(date_from)} to {display_date(date_to)}', _stmt_rows, 'Closing receivable', _period_closing, result_bad=not parity_ok)}"
-    f"</div>", unsafe_allow_html=True)
-
-st.caption(
-    "Ageing is indicative until Defect B (slip-to-voucher date attribution) is "
-    "resolved — a slip whose DEPDATE is the agency's banking date rather than "
-    "the store's handover date will still age wrongly. The running ledger "
-    "absorbs most of the day-shift noise, but not that one."
-)
-
-# ===========================================================================
-# Negative balances — never floored at the ledger level (rule 4)
-# ===========================================================================
-st.markdown("##### Data quality")
-negative = cr.negative_closing_rows(ledger_store)
-if not negative.empty:
-    neg_total = float(negative["closing_receivable"].sum())
-    st.warning(
-        f"⚠ **{fmt_count(len(negative))} store-day(s) show a negative closing "
-        f"receivable** (credits exceeded deposits) — combined **{money_short(neg_total)}**."
-    )
-    with st.expander(f"Negative closing receivable — {fmt_count(len(negative))} store-day(s)"):
-        neg_table = negative.rename(columns={
-            "business_date": "Date", "store": "Store",
-            "opening_receivable": "Opening receivable", "cash_deposit": "Cash deposit",
-            "cash_received": "Cash received", "closing_receivable": "Closing receivable",
-            "days_outstanding": "Days outstanding",
-        }).copy()
-        neg_table["Date"] = neg_table["Date"].map(display_date)
-        for column in ("Opening receivable", "Cash deposit", "Cash received", "Closing receivable"):
-            neg_table[column] = neg_table[column].map(money_table)
-        st.dataframe(neg_table, hide_index=True, width="stretch")
-        frame_export_button(
-            negative,
-            ExportMeta(run_id=run.id, run_timestamp=run.started_at,
-                      date_from=date_from, date_to=date_to,
-                      filters={"store": store}, value_column="closing_receivable",
-                      title="CMS Reco — negative closing receivable"),
-            key="dl_cms_negative", noun="negative closing rows",
-        )
-else:
-    st.caption("No negative closing receivable in this filter.")
-
-# ===========================================================================
-# The grid — date rows, expandable to store rows, like the Summary grid
-# ===========================================================================
-st.divider()
-all_dates = sorted(ledger_window["business_date"].unique())
-OPEN_DATES_KEY = "cms_reco_open_dates"
-st.session_state.setdefault(OPEN_DATES_KEY, set())
-
-head_l, head_r = st.columns([3, 2])
-head_l.markdown("##### Cash-with-agency ledger — by business date")
-with head_r:
-    dea, dca = st.columns(2)
-    if dea.button("Expand all", key="cms_dates_expand_all"):
-        st.session_state[OPEN_DATES_KEY] = set(all_dates)
-    if dca.button("Collapse all", key="cms_dates_collapse_all"):
-        st.session_state[OPEN_DATES_KEY] = set()
-
-grouped = cr.build_grouped_table(ledger_store, date_from_s, date_to_s,
-                                 st.session_state[OPEN_DATES_KEY])
-display_grouped = grouped.copy()
-display_grouped["business_date"] = display_grouped["business_date"].map(
-    lambda d: display_date(d) if d not in ("", "TOTAL") else d)
-for column in ("opening_receivable", "cash_deposit", "cash_received", "closing_receivable"):
-    display_grouped[column] = display_grouped[column].map(money_table)
-display_grouped = display_grouped.rename(columns={
-    "business_date": "Date", "store": "Store", "opening_receivable": "Opening receivable",
-    "cash_deposit": "Cash deposit (I)", "cash_received": "Cash received (J)",
-    "closing_receivable": "Closing receivable", "days_outstanding": "Days outstanding",
-})
-
-event = st.dataframe(
-    display_grouped, hide_index=True, width="stretch",
-    on_select="rerun", selection_mode="single-row", key="cms_reco_grouped_table",
-)
-selected_rows = event.selection.rows if event and event.selection else []
-if selected_rows:
-    parent_rows = [d for d in all_dates]
-    # Only a genuine "ALL STORES" parent row (not the TOTAL row, not an
-    # already-spliced-in store row) can be toggled — child rows carry a
-    # blank date and are skipped naturally since they are not in `all_dates`.
-    clicked_idx = selected_rows[0]
-    clicked_date_label = grouped.iloc[clicked_idx]["business_date"] if clicked_idx < len(grouped) else None
-    if clicked_date_label in all_dates:
-        opened = st.session_state[OPEN_DATES_KEY]
-        if clicked_date_label in opened:
-            opened.discard(clicked_date_label)
-        else:
-            opened.add(clicked_date_label)
+# --- monthly summary + remarks ----------------------------------------------------------------------
+st.markdown("##### Summary")
+saved = cb.remarks_for(session, p0, p1)
+view = sm.copy()
+view["Remarks"] = [saved.get(s, ("", "", None))[0] for s in view["store"]]
+total_row = pd.DataFrame([{"store": "TOTAL", "opening": tot["opening"], "deposit": tot["deposit"], "cms": tot["cms"],
+                           "diff": tot["diff"], "Remarks": ""}])
+edit_src = view.rename(columns={"store": "STORE NAME", "opening": "Opening", "deposit": "Cash/CMS Deposit",
+                                "cms": "CMS Report", "diff": "Diff"})
+edited = st.data_editor(
+    edit_src, hide_index=True, width="stretch", key=f"cms_sum_{run.id}_{p0}_{p1}_{store}",
+    disabled=["STORE NAME", "Opening", "Cash/CMS Deposit", "CMS Report", "Diff"],
+    column_config={"STORE NAME": st.column_config.TextColumn(pinned=True),
+                   **{c: st.column_config.NumberColumn(format="%.2f") for c in ("Opening", "Cash/CMS Deposit", "CMS Report", "Diff")},
+                   "Remarks": st.column_config.TextColumn(width="large")})
+st.dataframe(total_row.rename(columns={"store": "STORE NAME", "opening": "Opening", "deposit": "Cash/CMS Deposit",
+                                       "cms": "CMS Report", "diff": "Diff"}),
+             hide_index=True, width="stretch",
+             column_config={c: st.column_config.NumberColumn(format="%.2f") for c in ("Opening", "Cash/CMS Deposit", "CMS Report", "Diff")})
+changed = [(r["STORE NAME"], str(r["Remarks"] or "").strip()) for _, r in edited.iterrows()
+           if str(r["Remarks"] or "").strip() != (saved.get(r["STORE NAME"], ("",))[0] or "")]
+changed = [c for c in changed if c[1]]
+if st.button(f"Save {len(changed)} remark(s)", disabled=not changed, key="cms_save_remarks"):
+    who = confirm_with_operator(True, "save these remarks", "cms_rem")
+    if who:
+        for s_, text in changed:
+            cb.set_remark(session, s_, p0, p1, text, who)
+        st.success(f"Saved {len(changed)} remark(s) for {display_date(p0)} - {display_date(p1)}.")
         st.rerun()
+hist_store = st.selectbox("Remark history for", [""] + list(sm["store"]), key="cms_hist")
+if hist_store:
+    h = cb.remark_history(session, hist_store, p0, p1)
+    st.dataframe(h, hide_index=True, width="stretch") if len(h) else st.caption("No remark recorded.")
 
-frame_export_button(
-    ledger_window,
-    ExportMeta(run_id=run.id, run_timestamp=run.started_at,
-              date_from=date_from, date_to=date_to,
-              filters={"store": store}, value_column="closing_receivable",
-              title="CMS Reco ledger"),
-    key="dl_cms_reco_ledger", noun="CMS Reco ledger rows",
-)
+# --- credited later ---------------------------------------------------------------------------------
+later = cb.credited_later(slips, p0, p1)
+later_view = later if not store else later[later["store"] == store]
+st.markdown("##### Credited later than day+1")
+st.markdown(f"**{len(later_view):,} rows, Rs {money_table(later_view['amount'].sum())}** - not captured in the two "
+            "credit columns. They stay in Closing as outstanding.")
+if len(later_view):
+    with st.expander("Drill down", expanded=False):
+        show = later_view.copy()
+        show["dep_date"] = show["dep_date"].map(display_date)
+        show["cr_date"] = show["cr_date"].map(lambda v: display_date(v) if isinstance(v, str) else "")
+        st.dataframe(show.rename(columns={"store": "Store", "pickup_code": "Pickup code", "slip_no": "Slip no",
+                                          "dep_date": "DEPDATE", "cr_date": "CRDATE", "lag_days": "Lag days",
+                                          "amount": "Amount", "flag": "Flag"}),
+                     hide_index=True, width="stretch",
+                     column_config={"Amount": st.column_config.NumberColumn(format="%.2f")})
+        st.download_button("Export these rows (CSV)", later_view.to_csv(index=False, quoting=1).encode("utf-8"),
+                           f"cms_credited_later_{p0}_{p1}.csv", "text/csv", key="cms_later_csv")
 
-# ===========================================================================
-# Ageing profile
-# ===========================================================================
-st.divider()
-st.markdown("##### Ageing")
-profile = cr.ageing_profile(ledger_store)
-ap1, ap2, ap3, ap4 = st.columns(4)
-labels = [("1_day", "1 day", ap1), ("2_days", "2 days", ap2),
-         ("3_to_5_days", "3-5 days", ap3), ("over_5_days", "Over 5 days", ap4)]
-for k, label, col in labels:
-    n, v = profile[k]
-    tile(col, label.upper(), fmt_count(n), state="attention" if n else "clean",
-        tooltip=f"Rs {money_table(v)}", note=money_short(v))
+# --- unresolved and BNK -----------------------------------------------------------------------------
+ur = cb.unresolved_rows(slips, p0, p1)
+ps = cb.pseudo_store_totals(slips, p0, p1)
+st.markdown("##### Pickup codes with no store mapping")
+st.markdown(f"**UNRESOLVED:** {ps['UNRESOLVED'][0]:,} rows, Rs {money_table(ps['UNRESOLVED'][1])} - pickup code is not in "
+            f"the master; kept in every total. **BNK:** {ps['BNK'][0]:,} rows, Rs {money_table(ps['BNK'][1])} - its own "
+            "pseudo-store, never folded into a real store.")
+if len(ur):
+    st.dataframe(ur.rename(columns={"pickup_code": "Pickup code", "location": "Location", "rows": "Rows", "amount": "Amount"}),
+                 hide_index=True, width="stretch", column_config={"Amount": st.column_config.NumberColumn(format="%.2f")})
+
+# --- excluded types ---------------------------------------------------------------------------------
+st.markdown("##### Not in the grid")
+ex = cb.excluded_types(slips, p0, p1)
+st.dataframe(ex, hide_index=True, width="stretch",
+             column_config={c: st.column_config.NumberColumn(format="%.2f") for c in ("SLIPAMOUNT", "ADJ", "RECOVEREDAMOUNT")})
+
+# --- stores whose deposits differ from CMS ----------------------------------------------------------
+diffs = cb.store_differences(slips, deposits, p0, p1)
+st.markdown("##### Stores where deposits differ from CMS COL")
+st.markdown(f"**{len(diffs)} store(s), net Rs {money_table(diffs['difference'].sum())}** - PTC Cash/CMS Deposit against "
+            "COL slips of the same deposit dates, whatever their credit date.")
+if len(diffs):
+    with st.expander("Per store", expanded=False):
+        st.dataframe(diffs.rename(columns={"store": "Store", "deposit": "PTC deposit", "cms": "CMS COL",
+                                           "difference": "Difference"}), hide_index=True, width="stretch",
+                     column_config={c: st.column_config.NumberColumn(format="%.2f") for c in ("PTC deposit", "CMS COL", "Difference")})
+
+# --- date blocks for ONE month ----------------------------------------------------------------------
+st.markdown("##### Date blocks")
+block_month = choice if choice != "all" else month_keys[-1]
+if choice == "all":
+    st.caption(f"Blocks are shown one month at a time - showing {labels[block_month]}. Pick a month above to change it.")
+b0, b1 = _bounds(block_month)
+bf = cb.blocks_frame(model, b0, b1)
+if store:
+    bf = bf[bf["STORE NAME"] == store]
+st.dataframe(bf, hide_index=True, width="stretch",
+             column_config={"STORE NAME": st.column_config.TextColumn(pinned=True),
+                            **{c: st.column_config.NumberColumn(format="%.2f") for c in bf.columns if c != "STORE NAME"}})
+
+# --- export -----------------------------------------------------------------------------------------
+st.markdown("##### Export")
+if st.button("Build the Excel workbook", key="cms_build_xlsx"):
+    all_rem = {}
+    for mk in month_keys:
+        lo, hi = _bounds(mk)
+        all_rem[(lo, hi)] = {s_: v[0] for s_, v in cb.remarks_for(session, lo, hi).items()}
+    data = cbx.build_workbook(
+        model, d0, d1, all_rem, cb.credited_later(slips, d0, d1), cb.unresolved_rows(slips, d0, d1),
+        cb.excluded_types(slips, d0, d1), cb.block_controls(model, d0, d1) + [cb.deposit_tie(session, run.id, deposits, d0, d1)],
+        cb.store_differences(slips, deposits, d0, d1),
+        {"run_id": run.id, "run_ts": run.started_at,
+         "opening_note": f"Opening CMS outstanding assumed zero at {display_date(first)} unless configured."})
+    st.session_state["cms_xlsx"] = (data, f"CMS_Reco_{d0}_{d1}.xlsx")
+if "cms_xlsx" in st.session_state:
+    data, name = st.session_state["cms_xlsx"]
+    st.download_button(f"Download {name}", data, name,
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="cms_dl_xlsx")

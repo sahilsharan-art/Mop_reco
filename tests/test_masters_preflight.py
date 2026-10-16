@@ -148,3 +148,23 @@ def test_a_run_refuses_to_start_on_a_broken_master(patched, tmp_path, monkeypatc
     assert run.status == "failed" and run.current_stage == "masters_preflight"
     notes = json.loads(run.notes)
     assert "LOCATION" in notes["failure_reason"] and "pickup_location" in notes["failure_reason"]
+
+
+def test_one_bad_master_does_not_stop_the_others(monkeypatch):
+    """The Masters page must still render every other master when one has lost a column."""
+    from mop_reco import masters
+
+    def fake_preflight(config, name, stored_rows=None):
+        check = masters.MasterCheck(master=name, file="x.xlsx", modified="2026-10-08 12:55:44",
+                                    columns_found=["PICKCODE", "CODE", "PICKUP CODE"])
+        if name == "pickup_location":
+            check.missing = ["location"]
+            check.problems = ["lost required column"]
+        return check
+
+    monkeypatch.setattr(masters, "preflight_master", fake_preflight)
+    monkeypatch.setattr(masters, "load_master", lambda config, session, name: (f"v-{name}", False))
+    loaded, failed = masters.load_all_masters_safe(None, None)
+    assert set(failed) == {"pickup_location"}
+    assert failed["pickup_location"].startswith("Pickup location master cannot be loaded - LOCATION column missing")
+    assert "pickup_location" not in loaded and len(loaded) == len(masters.MASTER_SPECS) - 1

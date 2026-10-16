@@ -130,10 +130,10 @@ def test_every_page_is_covered():
     # Bill match, Transactions, Exceptions and Digital sale were removed
     # 2026-09-17, folded into Summary as sections — they are gone from disk
     # on purpose, not missing from this list by accident.
-    for expected in ("float", "manual_matches", "run", "masters"):
+    for expected in ("float", "exceptions", "upload", "masters"):
         assert expected in names, f"{expected} is not covered ({sorted(names)})"
-    for gone in ("bill_match", "transactions", "exceptions", "digital_sale"):
-        assert gone not in names, f"{gone} should have been removed 2026-09-17"
+    for gone in ("bill_match", "transactions", "digital_sale", "manual_matches", "run"):
+        assert gone not in names, f"{gone} was removed (Exceptions tab 2026-10-14 absorbed manual matches, Upload absorbed run)"
 
     # And every page file on disk really is in the list, so a new page cannot
     # be added without the check seeing it.
@@ -147,3 +147,49 @@ def test_the_check_runs_on_every_page_load():
     assert "selfcheck.mark_process_start()" in source
     assert "if not selfcheck.render(st):" in source
     assert "st.stop()" in source
+
+
+def test_a_module_nobody_listed_is_checked_too():
+    """The failure of 2026-10-15: the Exceptions page called `ep.open_population`, a function the
+    exception_pairing module loaded by that process did not have. The check used to know only a
+    hand-kept list of aliases and never looked at `ep`. Now any project module is checked."""
+    from mop_reco import exception_pairing as ep
+
+    saved = ep.open_population
+    del ep.open_population
+    try:
+        result = selfcheck.run_check()
+        hits = [p for p in result.problems if p.kind == "missing_attribute" and p.name == "open_population"]
+        assert hits and hits[0].module == "mop_reco.exception_pairing"
+        assert any(p.page == "pages/8_Exceptions.py" for p in hits)
+    finally:
+        ep.open_population = saved
+
+
+def test_modules_calling_each_other_are_checked_not_only_pages():
+    from mop_reco import exception_pairing as ep
+
+    saved = ep.assign
+    del ep.assign
+    try:
+        result = selfcheck.run_check()
+        assert any(p.name == "assign" and p.page == "mop_reco/exception_tables.py"
+                   or p.name == "assign" and p.page == "pages/8_Exceptions.py" for p in result.problems)
+    finally:
+        ep.assign = saved
+
+
+def test_a_missing_name_imported_from_a_project_module_is_caught():
+    import ast
+    import tempfile
+    src = "from mop_reco.exception_pairing import this_does_not_exist" + chr(10)
+    f = Path(tempfile.mkdtemp()) / "x.py"
+    f.write_text(src, encoding="utf-8")
+    aliases, names, _ = selfcheck._references(f, ast.parse(src))
+    assert ("mop_reco.exception_pairing", "this_does_not_exist") in names
+
+
+def test_every_page_and_module_reference_resolves_today():
+    result = selfcheck.run_check()
+    assert result.ok, [p.message() for p in result.problems]
+    assert result.calls_checked > 300

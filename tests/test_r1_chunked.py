@@ -224,3 +224,48 @@ def test_chunk_size_is_the_measured_default_and_shrinks_on_a_small_machine(monke
     monkeypatch.setattr(psutil, "virtual_memory", lambda: VM(100 * 1024 ** 2))
     small = chunked._adaptive_chunk_rows()
     assert 10_000 <= small < chunked.DEFAULT_CHUNK_ROWS                           # little RAM
+
+
+@pytest.mark.parametrize("chunk_rows", [0, 1])
+@pytest.mark.parametrize("seed", range(12))
+def test_transaction_aggregate_matches_what_the_whole_frame_engine_says(tmp_path, seed, chunk_rows):
+    """`txn_agg` (what the Summary's Mapped/Refunded/Unmapped strip reads) must equal, per
+    (date, store, gateway): every row of every gateway file in total_*, and in mapped_* the
+    matching-pool rows the whole-frame engine consumed (matching pool minus its unmapped)."""
+    bills, paytm, axis, bajaj = make_world(seed)
+    old = whole.run_r1(bills.copy(), paytm.copy(), axis.copy(), bajaj.copy())
+    res, _ = run_chunked(tmp_path, bills, paytm, axis, bajaj, chunk_rows)
+    agg = res.txn_agg.copy()
+    agg["store"] = agg["store"].where(agg["store"].notna(), None)
+
+    allrows = whole.build_gateway_pool(paytm.copy(), axis.copy(), bajaj.copy())
+    allrows["amount"] = pd.to_numeric(allrows["amount"], errors="coerce")
+    allrows["business_date"] = allrows["business_date"].astype(str)
+    allrows["store"] = allrows["store"].astype(object).where(allrows["store"].notna(), None)
+    want = (allrows.groupby(["business_date", "store", "gateway"], dropna=False)["amount"]
+            .agg(total_n="size", total_v="sum").reset_index())
+    # MAPPED is the Summary strip's own definition: a row (ANY row of the gateway files) counts when
+    # its (gateway, reference) is one a bill matched - read from the bill side, as the strip does.
+    matched_keys = {(str(g).lower(), str(r).strip())
+                    for g, r in zip(old.bill_lines.loc[old.bill_lines["matched"], "matched_gateway"],
+                                    old.bill_lines.loc[old.bill_lines["matched"], "matched_txn_ref"])}
+    is_mapped = [(str(g).lower(), str(r).strip()) in matched_keys
+                 for g, r in zip(allrows["gateway"], allrows["txn_ref"])]
+    mapped_rows = allrows[is_mapped]
+    grouped = (mapped_rows.groupby(["business_date", "store", "gateway"], dropna=False)["amount"]
+               .agg(n="size", v="sum").reset_index())
+    mm = {(r.business_date, None if pd.isna(r.store) else r.store, r.gateway): (int(r.n), float(r.v))
+          for r in grouped.itertuples()}
+
+    def key(row):
+        return (row["business_date"], None if pd.isna(row["store"]) else row["store"], row["gateway"])
+    got = {key(r): r for _, r in agg.iterrows()}
+    expect = {key(r): r for _, r in want.iterrows()}
+    assert set(got) == set(expect)
+    for k, e in expect.items():
+        g = got[k]
+        assert g["total_n"] == e["total_n"], k
+        assert g["total_v"] == pytest.approx(0.0 if pd.isna(e["total_v"]) else e["total_v"]), k
+        matched_n, matched_v = mm.get(k, (0, 0.0))
+        assert g["mapped_n"] == matched_n, k
+        assert g["mapped_v"] == pytest.approx(matched_v), k
