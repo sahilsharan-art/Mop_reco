@@ -1648,6 +1648,13 @@ def _manual_txn_facts(session) -> list:
         if txn.get("gateway") and txn.get("business_date"):
             out.append((str(txn["gateway"]).lower(), str(txn["business_date"]), txn.get("store"),
                         float(txn.get("amount") or 0.0)))
+        try:
+            txn2 = (json.loads(m.validation_detail) if m.validation_detail else {}).get("txn2") or {}
+        except ValueError:
+            txn2 = {}
+        if txn2.get("gateway") and txn2.get("business_date"):      # the second leg of a split is a transaction too
+            out.append((str(txn2["gateway"]).lower(), str(txn2["business_date"]), txn2.get("store"),
+                        float(txn2.get("amount") or 0.0)))
     return out
 
 

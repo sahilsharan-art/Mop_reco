@@ -29,6 +29,9 @@ def sync_closures(session, operator: str = "system") -> dict:
                                                ManualMatch.status == "matched_manual").all()):
         if close_txn_exception(session, m.gateway, m.transaction_ref, m.operator or operator, "matched manually"):
             matched += 1
+        if m.transaction_ref_2 and close_txn_exception(session, m.gateway_2, m.transaction_ref_2,
+                                                       m.operator or operator, "matched manually"):
+            matched += 1
     for r in session.query(TransactionRefund).all():
         if close_txn_exception(session, r.gateway, r.transaction_ref, r.uploaded_by or operator, "customer refund"):
             refunded += 1

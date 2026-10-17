@@ -36,6 +36,7 @@ from dashboard_common import (
     stop_if_no_dates,
     tile,
 )
+from mop_reco import bulk_accept as ba
 from mop_reco import exception_pairing as ep
 from mop_reco import exception_tables as et
 from mop_reco import exceptions as exc_mod
@@ -717,6 +718,111 @@ def _exc_counts_for(types, statuses):
     return n, v
 
 
+def _bulk_accept_block():
+    """Two buttons above the Exception bills table: exact single-candidate matches, and split payments. Each
+    previews its full list (exportable), then applies as manual matches after a confirmation. Nothing is
+    applied from the cached suggestion: `bulk_accept.apply` validates every row again at that moment."""
+    fp = _pairing_fp()
+    pool, bills_pop, assignment = _cached_assignment(fp)
+    if st.session_state.get("_bulk_fp") != fp:
+        st.session_state["_bulk_set"] = ba.build(bills_pop, pool, assignment)
+        st.session_state["_bulk_fp"] = fp
+    bulk = st.session_state["_bulk_set"]
+
+    done = st.session_state.pop("_bulk_result", None)
+    if done is not None:
+        rep, ov = done
+        st.success(f"Bulk accept ({rep.kind}) applied: {fmt_count(rep.bills_closed)} bills closed "
+                   f"({money_table(rep.value)}), {fmt_count(rep.transactions_consumed)} transactions consumed, "
+                   f"{fmt_count(rep.tasks_closed)} store tasks closed, in {rep.seconds:.0f}s. Digital receivable "
+                   f"{money_table(rep.open_value_before)} -> {money_table(rep.open_value_after)}. Batch #{rep.batch_id} "
+                   "- reverse it below if needed.")
+        st.caption("Two-sided controls after this accept: bills open + system + manual = total "
+                   + ("holds" if ov.bills_ok else f"BREAKS by {ov.bills_difference}") + "; transactions system + manual + "
+                   "refunded + unmapped = total " + ("holds" if ov.txns_ok else f"BREAKS by {ov.txns_difference}") + ".")
+        if rep.refused:
+            st.error(f"{len(rep.refused)} row(s) were refused at the moment of applying and stay in the table:")
+            st.dataframe(pd.DataFrame(rep.refused), hide_index=True, width="stretch")
+
+    c1, c2, _c3 = st.columns([1.5, 1.5, 2])
+    pick_exact = c1.button(f"Accept all exact matches - {fmt_count(bulk.exact_n)} bills, {money_table(bulk.exact_value)}",
+                           key="bulk_btn_exact", disabled=bulk.exact_n == 0,
+                           help="One candidate, amount equal to the bill to the paisa, same store, still unmapped.")
+    pick_split = c2.button(f"Accept all split matches - {fmt_count(bulk.split_n)} bills, {money_table(bulk.split_value)}",
+                           key="bulk_btn_split", disabled=bulk.split_n == 0,
+                           help="Amount 1 + Amount 2 equal the bill exactly; both transactions are consumed.")
+    if pick_exact:
+        st.session_state["_bulk_preview"] = "exact"
+    if pick_split:
+        st.session_state["_bulk_preview"] = "split"
+    if bulk.left:
+        why = "; ".join(f"{v['bills']:,} ({money_table(v['value'])}) {k}" for k, v in bulk.left.items())
+        st.caption(f"After both buttons {fmt_count(bulk.left_n)} bills ({money_table(bulk.left_value)}) stay for you "
+                   f"to decide one by one: {why}.")
+
+    kind = st.session_state.get("_bulk_preview")
+    if kind:
+        rows = bulk.exact if kind == "exact" else bulk.split
+        st.markdown(f"**Preview - {fmt_count(len(rows))} {kind} matches, {money_table(sum(r.amount for r in rows))}.** "
+                    "Nothing is applied until you confirm.")
+        prev = ba.preview_frame(rows)
+        shown = prev.copy()
+        shown["date"] = shown["date"].map(display_date)
+        shown["txn_date"] = shown["txn_date"].map(display_date)
+        for col in ("amount", "Amount 1", "Amount 2"):
+            shown[col] = shown[col].map(lambda v: money_table(v) if pd.notna(v) else "")
+        st.dataframe(shown, hide_index=True, width="stretch", height=320)
+        frame_export_button(prev, ExportMeta(run_id=run.id, run_timestamp=run.started_at, date_from=date_from,
+                                             date_to=date_to, filters={"bulk_accept": kind}, value_column="amount",
+                                             title=f"Bulk accept preview - {kind}"),
+                            key=f"bulk_prev_dl_{kind}", noun=f"{kind} matches")
+        a1, a2, _a3 = st.columns([1.4, 1, 3])
+        operator = confirm_with_operator(
+            a1.button(f"Apply {fmt_count(len(rows))} {kind} matches", type="primary", key=f"bulk_apply_{kind}"),
+            "applying this bulk accept", key=f"bulk_op_{kind}")
+        if a2.button("Cancel", key="bulk_cancel"):
+            st.session_state.pop("_bulk_preview", None)
+            st.rerun()
+        if operator:
+            bar = st.progress(0.0, text="Checking every row again against the bills and transactions as they are now...")
+            try:
+                rep = ba.apply(session, run.id, rows, operator, kind, progress=lambda f, m: bar.progress(f, text=m))
+            except Exception as exc:  # noqa: BLE001 - shown with its reason; nothing was applied
+                bar.empty()
+                st.error(f"Nothing was applied: {exc}")
+                return
+            bar.empty()
+            st.session_state["_bulk_result"] = (rep, q.match_overview(session, run.id, date_from, date_to, store))
+            st.session_state.pop("_bulk_preview", None)
+            st.session_state.pop("_bulk_fp", None)
+            st.cache_data.clear()
+            st.rerun()
+
+    batches = session.query(mm.ManualMatchBatch).filter(mm.ManualMatchBatch.source == ba.BULK_SOURCE) \
+        .order_by(mm.ManualMatchBatch.id.desc()).all()
+    if batches:
+        with st.expander(f"Bulk accept batches ({len(batches)}) - reverse one"):
+            live = {b.id: session.query(mm.ManualMatch).filter(mm.ManualMatch.batch_id == b.id,
+                                                              mm.ManualMatch.lifecycle == "active").count()
+                    for b in batches}
+            st.dataframe(pd.DataFrame([{"batch": b.id, "when": b.created_at.strftime("%d/%m/%Y %H:%M"),
+                                        "by": b.operator, "applied": b.rows_accepted, "refused": b.rows_rejected,
+                                        "still active": live[b.id], "rule": (b.note or "")[:60]} for b in batches]),
+                         hide_index=True, width="stretch")
+            pick = st.selectbox("Batch to reverse", [b.id for b in batches if live[b.id]], key="bulk_rev_pick")
+            reason = st.text_input("Reason for reversing (kept in the history)", key="bulk_rev_reason")
+            who = confirm_with_operator(
+                st.button("Reverse this batch", key="bulk_rev_btn", disabled=not (pick and reason.strip())),
+                "reversing this batch", key="bulk_rev_op")
+            if who and pick and reason.strip():
+                with st.spinner("Reversing - bills and transactions return to the exception tables..."):
+                    n = mm.reverse_batch(session, int(pick), who, reason.strip())
+                st.session_state.pop("_bulk_fp", None)
+                st.cache_data.clear()
+                st.success(f"Reversed {n} match(es). The records and their history are kept.")
+                st.rerun()
+
+
 # --- the tiles: bills and transactions split by who matched them (one overview, shared with Summary) ---
 _overview = q.match_overview(session, run.id, date_from, date_to, store)
 match_strip.render_tiles(_overview)
@@ -740,6 +846,8 @@ _ht_n, _ht_v = _exc_counts_for(TXN_EXCEPTION_TYPES, status_wanted)
 st.markdown(f"**Exception bills {fmt_count(_hb_n)} · {money_short(_hb_v)}**&nbsp;&nbsp;|&nbsp;&nbsp;"
             f"**Exception transactions {fmt_count(_ht_n)} · {money_short(_ht_v)}**")
 
+if status_view == "Open":
+    _bulk_accept_block()
 _exception_table_block("bills", status_wanted, scope_label, status_view == "Open", sort_label)
 
 # A bill a person matched that STILL has another unmapped transaction of the same store and

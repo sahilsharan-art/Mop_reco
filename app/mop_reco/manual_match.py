@@ -109,6 +109,8 @@ class Validation:
     # dates agree; date_lag_note is None in that case too.
     date_lag_days: int = 0
     date_lag_note: str = None
+    txn2: dict = None             # the second gateway row of a SPLIT payment (None for an ordinary match)
+    gateway2: str = None
 
     @property
     def needs_override(self) -> bool:
@@ -122,6 +124,7 @@ class Validation:
             "used_by_manual_id": self.used_by_manual_id,
             "date_lag_days": self.date_lag_days,
             "date_lag_note": self.date_lag_note,
+            "txn2": self.txn2, "gateway2": self.gateway2,
         }, default=str)
 
 
@@ -441,6 +444,11 @@ def validate(session, bill: dict, gateway: str, transaction_ref: str,
                     .filter(ManualMatch.gateway == gateway,
                             ManualMatch.transaction_ref == ref,
                             ManualMatch.lifecycle == ACTIVE)
+                    .first()
+                    or session.query(ManualMatch)
+                    .filter(ManualMatch.gateway_2 == gateway,
+                            ManualMatch.transaction_ref_2 == ref,
+                            ManualMatch.lifecycle == ACTIVE)
                     .first())
     if existing and existing.bill_key != bill_key_of(bill):
         problems.append(
@@ -539,6 +547,41 @@ def validate(session, bill: dict, gateway: str, transaction_ref: str,
     return Validation(CASE_CLEAN, True, STATUS_MATCHED_MANUAL, [],
                       txn=_txn_summary(txn),
                       date_lag_days=date_lag_days, date_lag_note=date_lag_note)
+
+
+def validate_split(session, bill: dict, legs: list, pool: pd.DataFrame) -> Validation:
+    """A SPLIT payment: one bill paid by exactly two transactions. `legs` = [(gateway, ref), (gateway, ref)].
+    Each leg must be a clean, unused, same-store SUCCESS / ACQUIRING transaction (the ordinary `validate`),
+    the two must be different, and their amounts must sum to the bill EXACTLY. Anything else is refused."""
+    problems, rows, results = [], [], []
+    if len(legs) != 2 or _clean_ref(legs[0][1]) == _clean_ref(legs[1][1]):
+        return Validation(CASE_DISCREPANT, False, STATUS_MATCHED_MANUAL,
+                          ["a split needs two different transactions"])
+    for gateway, ref in legs:
+        row = find_transaction(pool, _clean(gateway).lower(), _clean_ref(ref), bill["business_date"])
+        if row is None:
+            problems.append(f"transaction {_clean_ref(ref)} was not found")
+            continue
+        rows.append(row)
+        # validated as an ordinary match of THIS leg: amount is the leg's own, so only used / store / status
+        # / type can fail here - the amount rule for a split is the sum, checked below
+        v = validate(session, {**bill, "amount": float(row.get("amount") or 0)}, gateway, ref, pool)
+        results.append(v)
+        problems.extend(v.problems)
+    if len(rows) == 2:
+        total = round(sum(float(r.get("amount") or 0) for r in rows), 2)
+        if abs(total - float(bill.get("amount") or 0)) > 0.005:
+            problems.append(f"the two transactions total Rs {total:,.2f}, the bill is Rs {float(bill['amount']):,.2f}")
+    if problems or len(results) != 2:
+        return Validation(CASE_DISCREPANT, False, STATUS_MATCHED_MANUAL, problems,
+                          txn=_txn_summary(rows[0]) if rows else None,
+                          txn2=_txn_summary(rows[1]) if len(rows) > 1 else None)
+    out = Validation(CASE_CLEAN, True, STATUS_MATCHED_MANUAL, [], txn=_txn_summary(rows[0]),
+                     txn2=_txn_summary(rows[1]),
+                     date_lag_days=max((v.date_lag_days for v in results), key=abs))
+    out.gateway = _clean(legs[0][0]).lower()
+    out.gateway2 = _clean(legs[1][0]).lower()
+    return out
 
 
 def _txn_summary(txn: dict) -> dict:
@@ -645,7 +688,7 @@ def record(session, bill: dict, gateway, transaction_ref: str,
            reason_code: str, operator: str, validation: Validation,
            note: str = None, override_reason: str = None,
            batch: ManualMatchBatch = None, source: str = None,
-           commit: bool = True) -> ManualMatch:
+           commit: bool = True, second: dict = None) -> ManualMatch:
     """Write the overlay row, close the bill's exception, and log the event.
 
     Refuses a case (b) submission with no written override reason: the whole
@@ -703,6 +746,9 @@ def record(session, bill: dict, gateway, transaction_ref: str,
         batch_id=batch.id if batch else None,
         source=source,
         lifecycle=ACTIVE,
+        gateway_2=(_clean(second["gateway"]).lower() if second else None),
+        transaction_ref_2=(_clean_ref(second["txn_ref"]) if second else None),
+        amount_2=(float(second["amount"]) if second else None),
     )
     session.add(entry)
     session.flush()
@@ -730,6 +776,8 @@ def record(session, bill: dict, gateway, transaction_ref: str,
         # Both sides close together (2026-10-16): the transaction leaves Exception transactions and
         # the bill's open-bill store task closes as resolved by the data - no re-run, no waiting.
         close_txn_exception(session, gateway, transaction_ref, operator, "matched manually")
+        if second:
+            close_txn_exception(session, second["gateway"], second["txn_ref"], operator, "matched manually")
         from . import store_tasks
         store_tasks.close_bill_tasks(session, bill.get("bill_no"), commit=False)
 
@@ -741,7 +789,7 @@ def record(session, bill: dict, gateway, transaction_ref: str,
 
 
 def reverse(session, manual_match_id: int, operator: str,
-            reason: str, commit: bool = True) -> ManualMatch:
+            reason: str, commit: bool = True, reopen_tasks: bool = True) -> ManualMatch:
     """Undo a manual match: the bill returns to unmatched and the transaction
     is released. The record itself is kept (rule 4)."""
     entry = session.get(ManualMatch, manual_match_id)
@@ -769,8 +817,10 @@ def reverse(session, manual_match_id: int, operator: str,
     if entry.status == STATUS_MATCHED_MANUAL:
         # Both return: the transaction to Exception transactions, the bill's task re-opened.
         reopen_txn_exception(session, entry.gateway, entry.transaction_ref, operator, "manual match reversed")
+        if entry.transaction_ref_2:
+            reopen_txn_exception(session, entry.gateway_2, entry.transaction_ref_2, operator, "manual match reversed")
         run_id = latest_completed_run_id(session)
-        if run_id is not None:
+        if run_id is not None and reopen_tasks:
             session.flush()
             from . import store_tasks
             store_tasks.reopen_bill_tasks(session, run_id, entry.bill_no, operator=operator, commit=False)
@@ -785,8 +835,21 @@ def reverse_batch(session, batch_id: int, operator: str, reason: str) -> int:
     entries = (session.query(ManualMatch)
                .filter(ManualMatch.batch_id == batch_id,
                        ManualMatch.lifecycle == ACTIVE).all())
-    for entry in entries:
-        reverse(session, entry.id, operator, reason)
+    # ONE database transaction, and the open-bill tasks are re-raised in ONE pass - reversing a few thousand
+    # matches one by one (a commit and a scan of the open bills each) would take hours.
+    try:
+        for entry in entries:
+            reverse(session, entry.id, operator, reason, commit=False, reopen_tasks=False)
+        run_id = latest_completed_run_id(session)
+        if run_id is not None and entries:
+            session.flush()
+            from . import store_tasks
+            store_tasks.reopen_bill_tasks(session, run_id, {e.bill_no for e in entries if e.status == STATUS_MATCHED_MANUAL},
+                                          operator=operator, commit=False)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return len(entries)
 
 
@@ -814,9 +877,12 @@ def consumed_transactions(session) -> set:
     The engine must treat these as already consumed on a re-run — a
     transaction consumed manually can never also be consumed automatically.
     """
-    return {(r.gateway, r.transaction_ref) for r in
-            session.query(ManualMatch)
-            .filter(ManualMatch.lifecycle == ACTIVE).all()}
+    out = set()
+    for r in session.query(ManualMatch).filter(ManualMatch.lifecycle == ACTIVE).all():
+        out.add((r.gateway, r.transaction_ref))
+        if r.transaction_ref_2:
+            out.add((r.gateway_2, r.transaction_ref_2))
+    return out
 
 
 def apply_overlay(session, bill_lines: pd.DataFrame) -> pd.DataFrame:

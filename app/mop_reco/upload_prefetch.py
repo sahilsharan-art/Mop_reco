@@ -91,6 +91,8 @@ def prefetch(session, run_id: int, bill_nos=(), refs=(), zohos=()):
     for m in pf.manual_active:
         pf.manual_by_txn.setdefault((str(m.gateway).lower(), m.transaction_ref), m)
         pf.manual_by_key.setdefault(m.bill_key, m)
+        if m.transaction_ref_2:
+            pf.manual_by_txn.setdefault((str(m.gateway_2).lower(), m.transaction_ref_2), m)
     timed("manual_matches", t)
 
     t = time.perf_counter()

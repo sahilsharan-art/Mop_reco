@@ -148,13 +148,15 @@ def with_bill_mapping(session, pool: pd.DataFrame) -> pd.DataFrame:
             system[(str(gw).lower(), str(ref).strip())] = bill_no
 
     manual = {}
-    for gw, ref, bill_no in (
-        session.query(ManualMatch.gateway, ManualMatch.transaction_ref,
-                      ManualMatch.bill_no)
+    for gw, ref, gw2, ref2, bill_no in (
+        session.query(ManualMatch.gateway, ManualMatch.transaction_ref, ManualMatch.gateway_2,
+                      ManualMatch.transaction_ref_2, ManualMatch.bill_no)
         .filter(ManualMatch.lifecycle == "active").all()
     ):
         if gw and ref:
             manual[(str(gw).lower(), str(ref).strip())] = bill_no
+        if gw2 and ref2:
+            manual[(str(gw2).lower(), str(ref2).strip())] = bill_no
 
     keys = list(zip(out["gateway"].astype(str).str.lower(), out["txn_ref"].astype(str)))
     matched_bill_no, match_source = [], []

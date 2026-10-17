@@ -297,7 +297,15 @@ class ManualMatch(Base):
     lifecycle_at = Column(DateTime, nullable=True)
     reversed_by = Column(String, nullable=True)
 
+    # A SPLIT payment (2026-10-17): one bill paid by TWO transactions whose amounts sum to the bill. The bill
+    # closes once (one row), and the second transaction is held here so it is consumed too.
+    gateway_2 = Column(String, nullable=True)
+    transaction_ref_2 = Column(String, nullable=True)
+    amount_2 = Column(Numeric, nullable=True)
+
     __table_args__ = (
+        Index("ux_manual_txn2_active", "gateway_2", "transaction_ref_2",
+              unique=True, sqlite_where=text("lifecycle = 'active' AND transaction_ref_2 IS NOT NULL")),
         # A transaction may back at most ONE active manual match. Assigning one
         # transaction to two bills double-counts revenue and hides a genuine
         # shortfall, so it is refused in the validator AND unique here — the
@@ -910,6 +918,9 @@ _ADDED_COLUMNS = [
     ("txn_day_agg", "consumed_n", "INTEGER"),
     ("txn_day_agg", "consumed_v", "NUMERIC"),
     ("manual_matches", "source", "TEXT"),
+    ("manual_matches", "gateway_2", "TEXT"),
+    ("manual_matches", "transaction_ref_2", "TEXT"),
+    ("manual_matches", "amount_2", "NUMERIC"),
     ("transaction_refunds", "source", "TEXT"),
 ]
 
@@ -936,6 +947,10 @@ def _add_missing_columns(engine):
                 conn.exec_driver_sql(
                     f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
                 conn.commit()
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_manual_txn2_active ON manual_matches (gateway_2, transaction_ref_2) "
+            "WHERE lifecycle = 'active' AND transaction_ref_2 IS NOT NULL")
+        conn.commit()
 
 
 def get_session(engine=None, db_path: Path = DEFAULT_DB_PATH):

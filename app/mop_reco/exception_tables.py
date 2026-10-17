@@ -191,7 +191,8 @@ def manual_bill_frame(session, run_id: int, date_from=None, date_to=None, store=
             "date": m.business_date, "time": blank(t), "store": m.store, "bill_no": m.bill_no, "mop": m.mop,
             "amount": float(m.amount or 0), "created_by": blank(by),
             "status": exc[m.bill_key].status if m.bill_key in exc else "closed",
-            "Txn 1": m.transaction_ref, "Amount 1": txn.get("amount"), "Txn 2": "", "Amount 2": None,
+            "Txn 1": m.transaction_ref, "Amount 1": txn.get("amount"), "Txn 2": m.transaction_ref_2 or "",
+            "Amount 2": (float(m.amount_2) if m.amount_2 is not None else None),
             "remark": rk[0], "remark_by": rk[1] or "", "remark_at": _fmt_at(rk[2]),
             "matched_txn": m.transaction_ref, "matched_by": m.operator, "matched_at": _fmt_at(m.created_at),
             "source": m.source or ("upload" if m.batch_id else "inline"), KEY: m.bill_key, "id": m.id})
@@ -219,6 +220,14 @@ def manual_txn_frame(session, date_from=None, date_to=None, store=None) -> pd.Da
             txn = {}
         items.append(("match", m, txn, m.gateway, m.transaction_ref, str(txn.get("business_date") or m.business_date),
                       txn.get("store") or m.store, float(txn.get("amount") or m.amount or 0), m.created_at))
+        if m.transaction_ref_2:                      # the second leg of a split is a transaction of its own
+            try:
+                txn2 = (json.loads(m.validation_detail) if m.validation_detail else {}).get("txn2") or {}
+            except ValueError:
+                txn2 = {}
+            items.append(("match", m, txn2, m.gateway_2, m.transaction_ref_2,
+                          str(txn2.get("business_date") or m.business_date), txn2.get("store") or m.store,
+                          float(txn2.get("amount") or m.amount_2 or 0), m.created_at))
     for r in refunds:
         items.append(("refund", r, {}, r.gateway, r.transaction_ref, str(r.business_date), r.store,
                       float(r.amount or 0), r.uploaded_at))

@@ -43,6 +43,9 @@ def unmapped_pool(session) -> pd.DataFrame:
                     Exception_.status.in_(("open", "under_investigation"))).all())
     taken = {(g.lower(), r) for g, r in session.query(ManualMatch.gateway, ManualMatch.transaction_ref)
              .filter(ManualMatch.lifecycle == "active", ManualMatch.status == "matched_manual").all()}
+    taken |= {(g.lower(), r) for g, r in session.query(ManualMatch.gateway_2, ManualMatch.transaction_ref_2)
+              .filter(ManualMatch.lifecycle == "active", ManualMatch.status == "matched_manual",
+                      ManualMatch.transaction_ref_2.isnot(None)).all()}
     taken |= {(g.lower(), r) for g, r in session.query(TransactionRefund.gateway,
                                                        TransactionRefund.transaction_ref).all()}
     out = []

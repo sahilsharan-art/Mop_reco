@@ -3880,6 +3880,32 @@ which stays the truth until September is reconciled, then is extended to APR_SEP
   Measured on Run #15 with a 4,769-row export: 20 typed rows 16.3 s -> 2.1 s; 3,000 filled rows ~18 s -> 8.4 s; refunds 200 rows previously loaded the
   whole 4.38M-row pool (7.2 s) before touching a row.
 
+### 6.26 Bulk accept of the system's own suggestions (2026-10-17)
+
+* **Two buttons above the Exception bills table, two separate rules, never mixed** (`mop_reco/bulk_accept.py`). EXACT: one candidate (Txn 1
+  filled, Txn 2 empty), Amount 1 equals the bill to the paisa, same store, the transaction still unmapped. SPLIT: Amount 1 + Amount 2 equal the
+  bill exactly, both same store, both unmapped, the two different; both transactions are consumed and the bill closes ONCE (one `ManualMatch` row
+  carrying `gateway_2` / `transaction_ref_2` / `amount_2`, a second partial unique index `ux_manual_txn2_active`). Never bulk-accepted: an ambiguous
+  cluster, an amount mismatch, a candidate already claimed - they stay in the table, and the page says how many and why.
+* **Click -> preview (the full list, exportable) -> confirm -> apply.** `apply` does NOT trust the cached suggestion: it re-reads the bill and every
+  transaction at that moment and validates each row as an inline match is (`manual_match.validate` / `validate_split`, set-based through
+  `upload_prefetch`). A row whose transaction was claimed since, or that is offered to two bills in the set, is refused and reported; the rest are
+  recorded in ONE database transaction as manual matches with source `bulk accept`, reason `bulk_accept`, matched_by, matched_at, batch row
+  (`ManualMatchBatch.source = "bulk accept"`). A button applies only its own rule's rows.
+* **Cascade and reversal are manual matching's own**: the bill leaves Exception bills, its transaction(s) leave Exception transactions, both appear in
+  Manual match bills / transactions, the open-bill store task closes, Summary / digital receivable / the strips read the overlay live (no re-run).
+  `mm.reverse_batch` now reverses a whole batch in ONE transaction and re-raises the store tasks in one pass (it used to commit and rescan per row).
+  Both transactions of a split are read as consumed everywhere a transaction is (`consumed_transactions`, `unmapped_pool`, `gateway_txns`,
+  `lifecycle.sync_closures`, `_manual_txn_facts`, the manual match frames).
+* **Rehearsed on a copy of Run #15** (`scripts/bulk_accept_rehearsal.py`): eligible EXACT 3,098 bills / Rs 31,00,284 (3,085 same day, 11 next day, 2 two
+  days; only 32 within 10 minutes - the rest are decided by store + amount alone, no clock); SPLIT 245 / Rs 4,04,423; left 1,742 / Rs 15,21,539 (532
+  ambiguous Rs 1,99,235 in 242 clusters; 1,210 with no candidate Rs 13,22,304). Applying at the moment refused 4 exact and 23 split (a bill whose OTHER
+  line the engine already matched, or a merged multi-line bill whose first line differs): applied 3,094 / Rs 30,95,077 and 222 / Rs 3,70,920 (444
+  transactions), 3,316 store tasks closed. Digital receivable Rs 50,26,246 -> Rs 15,60,249 (the difference is exactly the amount applied). Both
+  two-sided controls and both register agreements held after, and after reversing both batches every figure returned to the byte.
+* **Open question (not acted on):** if single-candidate same-store same-amount matching proves reliable in bulk it may belong in the matcher as a tier.
+  Decide from the proportion accepted UNCHANGED once a few thousand are accepted - record how many were later reversed.
+
 ## 7. Acceptance numbers
 
 Every stage is proved against these. They come from the two workbooks already

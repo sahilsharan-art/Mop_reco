@@ -771,7 +771,7 @@ def close_bill_tasks(session, bill_no: str, reason: str = "bill matched manually
     return len(tasks)
 
 
-def reopen_bill_tasks(session, run_id: int, bill_no: str, config_raw: dict = None, today: date = None,
+def reopen_bill_tasks(session, run_id: int, bill_no, config_raw: dict = None, today: date = None,
                       operator: str = "system", commit: bool = True) -> int:
     """A manual match was reversed: the bill is open again, so a NEW open-bill task is raised for it
     (generation + 1 - a closed task is never reopened in place, the history stays as it was)."""
@@ -779,8 +779,9 @@ def reopen_bill_tasks(session, run_id: int, bill_no: str, config_raw: dict = Non
     config_raw = config_raw or {}
     made = 0
     now = datetime.now()
+    wanted = {bill_no} if isinstance(bill_no, str) else set(bill_no)      # one bill, or a whole batch in one pass
     for c in open_bill_candidates(session, run_id).active:
-        if c.bill_no != bill_no:
+        if c.bill_no not in wanted:
             continue
         key = _stored_key(c)
         if session.query(StoreTask.id).filter(StoreTask.task_key == key, StoreTask.status.in_(LIVE_STATUSES)).first():
