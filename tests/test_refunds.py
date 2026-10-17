@@ -129,7 +129,7 @@ def test_transaction_refund_zoho_no_must_be_unique(session):
 
 def test_preview_upload_accepts_a_clean_row(session, monkeypatch):
     seed_store_master(session, ["ABD"])
-    monkeypatch.setattr(rf, "gateway_pool_for_date", lambda *a, **kw: CLEAN_POOL)
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: CLEAN_POOL)
 
     preview = rf.preview_upload(session, upload_row())
     assert len(preview.accepted) == 1
@@ -140,7 +140,7 @@ def test_preview_upload_accepts_a_clean_row(session, monkeypatch):
 
 def test_preview_upload_rejects_a_transaction_not_in_any_gateway(session, monkeypatch):
     seed_store_master(session, ["ABD"])
-    monkeypatch.setattr(rf, "gateway_pool_for_date", lambda *a, **kw: CLEAN_POOL)
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: CLEAN_POOL)
 
     preview = rf.preview_upload(session, upload_row(transaction_no="DOES-NOT-EXIST"))
     assert len(preview.accepted) == 0
@@ -150,7 +150,7 @@ def test_preview_upload_rejects_a_transaction_not_in_any_gateway(session, monkey
 
 def test_preview_upload_rejects_a_transaction_already_matched_to_a_bill(session, run, monkeypatch):
     seed_store_master(session, ["ABD"])
-    monkeypatch.setattr(rf, "gateway_pool_for_date", lambda *a, **kw: CLEAN_POOL)
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: CLEAN_POOL)
     session.add(R1BillLine(
         run_id=run.id, business_date="2026-07-20", store="ABD", bill_no="BILL-1",
         line_seq=1, mop="PAYTM EDC", mop_class="digital", amount=500.0,
@@ -165,7 +165,7 @@ def test_preview_upload_rejects_a_transaction_already_matched_to_a_bill(session,
 
 def test_preview_upload_rejects_an_unknown_store_code(session, monkeypatch):
     # No store master seeded at all — every store_code is unknown.
-    monkeypatch.setattr(rf, "gateway_pool_for_date", lambda *a, **kw: CLEAN_POOL)
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: CLEAN_POOL)
     preview = rf.preview_upload(session, upload_row(store_code="ZZZ"))
     assert len(preview.rejected) == 1
     assert "store_code" in preview.rejected[0].why[0]
@@ -175,7 +175,7 @@ def test_preview_upload_flags_a_store_mismatch_showing_both(session, monkeypatch
     """The upload names one store, the transaction itself belongs to
     another — flagged and BOTH shown, never silently accepted either way."""
     seed_store_master(session, ["ABD", "XYZ"])
-    monkeypatch.setattr(rf, "gateway_pool_for_date", lambda *a, **kw: CLEAN_POOL)
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: CLEAN_POOL)
 
     preview = rf.preview_upload(session, upload_row(
         store_code="ABD", transaction_no="TXN-WRONG-STORE"))
@@ -186,7 +186,7 @@ def test_preview_upload_flags_a_store_mismatch_showing_both(session, monkeypatch
 
 def test_preview_upload_rejects_a_zoho_no_already_used(session, monkeypatch):
     seed_store_master(session, ["ABD"])
-    monkeypatch.setattr(rf, "gateway_pool_for_date", lambda *a, **kw: CLEAN_POOL)
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: CLEAN_POOL)
     session.add(TransactionRefund(
         gateway="paytm", transaction_ref="SOME-OTHER-TXN", business_date="2026-07-19",
         store="ABD", amount=500.0, zoho_no="ZOHO-1", refund_status="pending",
@@ -204,7 +204,7 @@ def test_preview_upload_rejects_a_zoho_no_duplicated_within_the_same_file(sessio
         ("paytm", "TXN-1", "2026-07-20", "ABD", 500.0, "SUCCESS", "ACQUIRING", "UPI"),
         ("paytm", "TXN-2", "2026-07-20", "ABD", 300.0, "SUCCESS", "ACQUIRING", "UPI"),
     ])
-    monkeypatch.setattr(rf, "gateway_pool_for_date", lambda *a, **kw: pool)
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: pool)
     frame = pd.DataFrame([
         {"date": "2026-07-20", "store_code": "ABD", "transaction_no": "TXN-1",
          "zoho_no": "DUPE", "customer_name": "A", "status": "pending"},
@@ -213,14 +213,14 @@ def test_preview_upload_rejects_a_zoho_no_duplicated_within_the_same_file(sessio
     ], columns=rf.UPLOAD_COLUMNS)
 
     preview = rf.preview_upload(session, frame)
-    assert len(preview.accepted) == 1
-    assert len(preview.rejected) == 1
-    assert "row 2" in preview.rejected[0].why[0]
+    assert len(preview.accepted) == 0     # BOTH rows share the Zoho number - neither is more right
+    assert len(preview.rejected) == 2
+    assert "row 3" in preview.rejected[0].why[0] and "row 2" in preview.rejected[1].why[0]
 
 
 def test_preview_upload_rejects_an_unrecognised_status(session, monkeypatch):
     seed_store_master(session, ["ABD"])
-    monkeypatch.setattr(rf, "gateway_pool_for_date", lambda *a, **kw: CLEAN_POOL)
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: CLEAN_POOL)
     preview = rf.preview_upload(session, upload_row(status="maybe"))
     assert len(preview.rejected) == 1
     assert "status" in preview.rejected[0].why[0]
@@ -239,7 +239,7 @@ def test_preview_upload_raises_on_missing_columns(session):
 
 def test_apply_upload_writes_only_accepted_rows(session, monkeypatch):
     seed_store_master(session, ["ABD"])
-    monkeypatch.setattr(rf, "gateway_pool_for_date", lambda *a, **kw: CLEAN_POOL)
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: CLEAN_POOL)
 
     preview = rf.preview_upload(session, upload_row())
     applied, rejected = rf.apply_upload(session, preview, "tester")
@@ -256,7 +256,7 @@ def test_apply_upload_writes_only_accepted_rows(session, monkeypatch):
 
 def test_apply_upload_requires_an_operator(session, monkeypatch):
     seed_store_master(session, ["ABD"])
-    monkeypatch.setattr(rf, "gateway_pool_for_date", lambda *a, **kw: CLEAN_POOL)
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: CLEAN_POOL)
     preview = rf.preview_upload(session, upload_row())
     with pytest.raises(ValueError):
         rf.apply_upload(session, preview, "")

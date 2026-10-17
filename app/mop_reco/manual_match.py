@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 import pandas as pd
+from types import SimpleNamespace
 
 from . import io_
 from .db import ManualMatch, ManualMatchBatch, ManualMatchEvent, R1BillLine
@@ -162,6 +163,17 @@ def find_transaction(gateway_pool: pd.DataFrame, gateway: str,
     ref = _clean_ref(transaction_ref)
     if not ref:
         return None
+    if len(gateway_pool) <= 8:
+        # a one-reference pool (every upload row): plain Python is ~100x cheaper than four pandas boolean masks
+        wanted = gateway.lower()
+        rows = [r for r in gateway_pool.to_dict("records")
+                if str(r.get("gateway")).lower() == wanted and _clean_ref(r.get("txn_ref")) == ref]
+        if not rows:
+            return None
+        if len(rows) > 1 and business_date is not None:
+            center = _as_date(business_date)
+            rows.sort(key=lambda r: abs((_as_date(r["business_date"]) - center).days))
+        return rows[0]
     hit = gateway_pool[
         gateway_pool["gateway"].astype(str).str.lower().eq(gateway.lower())
         & gateway_pool["txn_ref"].map(lambda v: _clean_ref(v)).eq(ref)
@@ -212,6 +224,43 @@ def targeted_pool(transaction_ref: str, warehouse=None) -> pd.DataFrame:
             try:
                 raw = pd.read_parquet(path, filters=[(ref_col, "==", ref)])
             except Exception:  # noqa: BLE001 - a file without the column cannot hold the id
+                continue
+            if raw.empty:
+                continue
+            mapping = {src: dst for src, dst in POOL_COLUMNS[name].items() if src in raw.columns}
+            frame = raw[list(mapping)].rename(columns=mapping)
+            frame["gateway"] = name
+            if "business_date" not in frame.columns:
+                frame["business_date"] = path.stem
+            for column in ("status", "txn_type", "store", "payment_mode"):
+                if column not in frame.columns:
+                    frame[column] = None
+            frames.append(frame[columns])
+    if not frames:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(frames, ignore_index=True)
+
+
+def targeted_pool_many(transaction_refs, warehouse=None) -> pd.DataFrame:
+    """`targeted_pool` for MANY references in ONE pass over the warehouse: each parquet file is read once with an
+    `in` predicate instead of once per id (1.5-2 s per id becomes ~2 s for the whole file of ids)."""
+    from pathlib import Path as _Path
+
+    refs = sorted({_clean_ref(r) for r in transaction_refs if _clean_ref(r)})
+    root = _Path(warehouse) if warehouse else _Path(__file__).resolve().parents[2] / "warehouse"
+    columns = ["gateway", "txn_ref", "business_date", "store", "amount", "status", "txn_type", "payment_mode"]
+    frames = []
+    for name, source in POOL_SOURCE.items():
+        folder = root / source
+        if not folder.exists() or not refs:
+            continue
+        ref_col = next(src for src, dst in POOL_COLUMNS[name].items() if dst == "txn_ref")
+        for path in sorted(folder.glob("*.parquet")):
+            if path.stem.startswith("_"):
+                continue
+            try:
+                raw = pd.read_parquet(path, filters=[(ref_col, "in", refs)])
+            except Exception:  # noqa: BLE001 - a file without the column cannot hold the ids
                 continue
             if raw.empty:
                 continue
@@ -383,11 +432,16 @@ def validate(session, bill: dict, gateway: str, transaction_ref: str,
     # Already used by ANOTHER active manual match? This is checked first
     # because it is the answer that matters most, and it is true regardless of
     # whether the transaction is otherwise clean.
-    existing = (session.query(ManualMatch)
-                .filter(ManualMatch.gateway == gateway,
-                        ManualMatch.transaction_ref == ref,
-                        ManualMatch.lifecycle == ACTIVE)
-                .first())
+    from . import upload_prefetch as _up
+    pf = _up.current()
+    if pf is not None and ref in pf.requested_refs:
+        existing = pf.manual_by_txn.get((gateway, ref))
+    else:
+        existing = (session.query(ManualMatch)
+                    .filter(ManualMatch.gateway == gateway,
+                            ManualMatch.transaction_ref == ref,
+                            ManualMatch.lifecycle == ACTIVE)
+                    .first())
     if existing and existing.bill_key != bill_key_of(bill):
         problems.append(
             f"Transaction {ref} is already matched manually to bill "
@@ -434,10 +488,14 @@ def validate(session, bill: dict, gateway: str, transaction_ref: str,
         )
 
     # Already consumed by the ENGINE on this run?
-    engine_owner = (session.query(R1BillLine)
-                    .filter(R1BillLine.matched_txn_ref == ref,
-                            R1BillLine.matched.is_(True))
-                    .first())
+    if pf is not None and ref in pf.requested_refs:
+        owner = pf.engine_owner.get(ref)
+        engine_owner = SimpleNamespace(**owner) if owner else None
+    else:
+        engine_owner = (session.query(R1BillLine)
+                        .filter(R1BillLine.matched_txn_ref == ref,
+                                R1BillLine.matched.is_(True))
+                        .first())
     if engine_owner:
         problems.append(
             f"Transaction {ref} is already matched by the engine to bill "
@@ -504,25 +562,35 @@ def find_bill_for_match(session, run_id: int, bill_no: str):
     if not bill_no:
         return None, False, "no bill number was given"
 
-    row = (session.query(R1BillLine)
-          .filter(R1BillLine.run_id == run_id, R1BillLine.bill_no == bill_no)
-          .first())
-    if row is None:
-        return None, False, f"bill {bill_no!r} was not found in the loaded data"
+    from . import upload_prefetch as _up
+    pf = _up.current()
+    if pf is not None and pf.run_id == run_id and bill_no in pf.requested_bills:
+        row = pf.bills.get(bill_no)                 # set-based path: one query for the whole file, not one per row
+        if row is None:
+            return None, False, f"bill {bill_no!r} was not found in the loaded data"
+        bill = {k: row[k] for k in ("business_date", "store", "bill_no", "mop", "amount")}
+        matched, mt_ref, mt_gw = row["matched"], row["matched_txn_ref"], row["matched_gateway"]
+        existing = pf.manual_by_key.get(bill_key_of(bill))
+    else:
+        line = (session.query(R1BillLine)
+                .filter(R1BillLine.run_id == run_id, R1BillLine.bill_no == bill_no)
+                .first())
+        if line is None:
+            return None, False, f"bill {bill_no!r} was not found in the loaded data"
+        bill = {"business_date": line.business_date, "store": line.store,
+                "bill_no": line.bill_no, "mop": line.mop,
+                "amount": float(line.amount or 0)}
+        matched, mt_ref, mt_gw = line.matched, line.matched_txn_ref, line.matched_gateway
+        existing = (session.query(ManualMatch)
+                    .filter(ManualMatch.bill_key == bill_key_of(bill),
+                            ManualMatch.lifecycle == ACTIVE).first())
 
-    bill = {"business_date": row.business_date, "store": row.store,
-           "bill_no": row.bill_no, "mop": row.mop,
-           "amount": float(row.amount or 0)}
-
-    if row.matched:
+    if matched:
         return bill, False, (
             f"bill {bill_no!r} is already matched by the engine to transaction "
-            f"{row.matched_txn_ref} ({row.matched_gateway})"
+            f"{mt_ref} ({mt_gw})"
         )
 
-    existing = (session.query(ManualMatch)
-               .filter(ManualMatch.bill_key == bill_key_of(bill),
-                       ManualMatch.lifecycle == ACTIVE).first())
     if existing is not None:
         return bill, False, (
             f"bill {bill_no!r} is already matched manually to transaction "
@@ -543,10 +611,41 @@ def bill_key_of(bill: dict) -> str:
 # Recording
 # ---------------------------------------------------------------------------
 
+def _txn_exception(session, gateway, transaction_ref):
+    from .db import Exception_
+    from .exceptions import txn_exception_key
+    return session.query(Exception_).filter_by(
+        exception_key=txn_exception_key(str(gateway).lower(), _clean_ref(transaction_ref))).one_or_none()
+
+
+def close_txn_exception(session, gateway, transaction_ref, operator: str, reason: str) -> bool:
+    """The transaction leaves the exception register's open list (2026-10-16). No commit - the caller's
+    transaction decides, so a batch is all-or-nothing."""
+    row = _txn_exception(session, gateway, transaction_ref)
+    if row is None or row.status not in ("open", "under_investigation"):
+        return False
+    set_status(session, row.exception_key, "closed", operator, reason_code=reason, commit=False)
+    return True
+
+
+def reopen_txn_exception(session, gateway, transaction_ref, operator: str, reason: str) -> bool:
+    row = _txn_exception(session, gateway, transaction_ref)
+    if row is None or row.status != "closed":
+        return False
+    set_status(session, row.exception_key, "open", operator, reason_code=reason, commit=False)
+    return True
+
+
+def latest_completed_run_id(session):
+    from .db import Run
+    return session.query(Run.id).filter(Run.status == "completed").order_by(Run.id.desc()).limit(1).scalar()
+
+
 def record(session, bill: dict, gateway, transaction_ref: str,
            reason_code: str, operator: str, validation: Validation,
            note: str = None, override_reason: str = None,
-           batch: ManualMatchBatch = None) -> ManualMatch:
+           batch: ManualMatchBatch = None, source: str = None,
+           commit: bool = True) -> ManualMatch:
     """Write the overlay row, close the bill's exception, and log the event.
 
     Refuses a case (b) submission with no written override reason: the whole
@@ -602,6 +701,7 @@ def record(session, bill: dict, gateway, transaction_ref: str,
         operator=operator,
         created_at=now,
         batch_id=batch.id if batch else None,
+        source=source,
         lifecycle=ACTIVE,
     )
     session.add(entry)
@@ -622,20 +722,26 @@ def record(session, bill: dict, gateway, transaction_ref: str,
     if validation.status == STATUS_MATCHED_MANUAL:
         try:
             set_status(session, key, "closed", operator,
-                       reason_code="matched manually")
+                       reason_code="matched manually", commit=False)
         except (ValueError, LookupError) as exc:
             # No exception row for this bill (it may never have been
             # registered). Not fatal, but not silent either.
             logger.info(f"manual_match: no exception to close for {key} ({exc})")
+        # Both sides close together (2026-10-16): the transaction leaves Exception transactions and
+        # the bill's open-bill store task closes as resolved by the data - no re-run, no waiting.
+        close_txn_exception(session, gateway, transaction_ref, operator, "matched manually")
+        from . import store_tasks
+        store_tasks.close_bill_tasks(session, bill.get("bill_no"), commit=False)
 
-    session.commit()
+    if commit:
+        session.commit()
     logger.info(f"manual_match: {entry.status} case={entry.validation_case} "
                 f"bill={entry.bill_no} txn={entry.transaction_ref} by {operator}")
     return entry
 
 
 def reverse(session, manual_match_id: int, operator: str,
-            reason: str) -> ManualMatch:
+            reason: str, commit: bool = True) -> ManualMatch:
     """Undo a manual match: the bill returns to unmatched and the transaction
     is released. The record itself is kept (rule 4)."""
     entry = session.get(ManualMatch, manual_match_id)
@@ -657,10 +763,19 @@ def reverse(session, manual_match_id: int, operator: str,
                                  detail=json.dumps({"reason": _clean(reason)})))
     try:
         set_status(session, entry.bill_key, "open", operator,
-                   reason_code="manual match reversed")
+                   reason_code="manual match reversed", commit=False)
     except (ValueError, LookupError) as exc:
         logger.info(f"manual_match: no exception to reopen for {entry.bill_key} ({exc})")
-    session.commit()
+    if entry.status == STATUS_MATCHED_MANUAL:
+        # Both return: the transaction to Exception transactions, the bill's task re-opened.
+        reopen_txn_exception(session, entry.gateway, entry.transaction_ref, operator, "manual match reversed")
+        run_id = latest_completed_run_id(session)
+        if run_id is not None:
+            session.flush()
+            from . import store_tasks
+            store_tasks.reopen_bill_tasks(session, run_id, entry.bill_no, operator=operator, commit=False)
+    if commit:
+        session.commit()
     logger.info(f"manual_match: reversed #{entry.id} by {operator}")
     return entry
 

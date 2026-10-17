@@ -39,7 +39,7 @@ APP_DIR = Path(__file__).resolve().parent
 # listed - `exception_pairing as ep` was never checked, and a stale process served a page that
 # called `ep.open_population`, which the module it had loaded did not have. Now ANY alias or name
 # imported from one of these roots is checked, in pages and in the modules that call each other.
-PROJECT_ROOTS = ("mop_reco", "dashboard_common", "inline_match", "run_panel")
+PROJECT_ROOTS = ("mop_reco", "dashboard_common", "inline_match", "run_panel", "match_strip")
 
 
 def _is_project(dotted: str) -> bool:

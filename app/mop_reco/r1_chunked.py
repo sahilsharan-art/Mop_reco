@@ -164,6 +164,21 @@ class _PoolStore:
         out = total.merge(mapped, on=["business_date", "store", "gateway"], how="left")
         out["mapped_n"] = out["mapped_n"].fillna(0).astype("int64")
         out["mapped_v"] = out["mapped_v"].fillna(0.0)
+        # The SALE population and what the engine PHYSICALLY consumed of it (2026-10-16): pool rows
+        # (SUCCESS / ACQUIRING) and, of those, the rows a bill actually took. A duplicate line that
+        # shares a matched reference is a pool row that was NOT consumed, so it is unmapped here - as
+        # the exception register lists it. pool_n - consumed_n is exactly the engine's unmapped set.
+        prow = self.db.execute(
+            "select bdate, store, gateway, count(*), coalesce(sum(amt), 0.0), coalesce(sum(used), 0), "
+            "coalesce(sum(case when used=1 then amt else 0.0 end), 0.0) from pool "
+            "group by bdate, store, gateway").fetchall()
+        pooled = pd.DataFrame(prow, columns=["business_date", "store", "gateway", "pool_n", "pool_v",
+                                             "consumed_n", "consumed_v"])
+        out = out.merge(pooled, on=["business_date", "store", "gateway"], how="left")
+        for c in ("pool_n", "consumed_n"):
+            out[c] = out[c].fillna(0).astype("int64")
+        for c in ("pool_v", "consumed_v"):
+            out[c] = out[c].fillna(0.0)
         return out
 
     def matching_pool_rows(self) -> int:

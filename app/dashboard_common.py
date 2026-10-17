@@ -23,6 +23,7 @@ import selfcheck
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from mop_reco.config import load_config
 from mop_reco.db import Exception_, R1BillLine, Run, get_session, init_db
 from mop_reco.export import XLSX_ROW_LIMIT, ExportMeta, build_export
 from mop_reco.formatting import count as fmt_count
@@ -734,6 +735,7 @@ def sidebar(session, run, show_store: bool = True):
     store = st.session_state[K_STORE]
     _write_range_label(date_from, date_to, None if store == "All stores" else store)
     _write_status_pill(run, date_from, date_to, None if store == "All stores" else store)
+    _coverage_notices(run, first, last, date_from, date_to)
     return date_from, date_to, (None if store == "All stores" else store)
 
 
@@ -766,6 +768,26 @@ def no_run_yet():
     st.stop()
 
 
+def _coverage_notices(run, first, last, date_from, date_to):
+    """Say plainly what is NOT reconciled, on every page (2026-10-17): a period that reaches outside the run's
+    range, and source files the run never read. An empty grid or a row of zeros reads as a real answer; this does
+    not let it. A period wholly outside the run is remembered so `stop_if_no_dates` shows nothing but this."""
+    from mop_reco import run_coverage as rc
+
+    st.session_state["_period_outside_run"] = rc.entirely_outside(first, last, date_from, date_to)
+    message = rc.period_message(run.id, first, last, date_from, date_to)
+    if message:
+        st.warning(message)
+    try:
+        unread = rc.unread_source_files(db_session(), load_config(), run.id)
+    except Exception:  # noqa: BLE001 - a notice must never take a page down
+        logging.getLogger("mop_reco").warning("source coverage check failed", exc_info=True)
+        unread = []
+    source_note = rc.source_message(run.id, unread)
+    if source_note:
+        st.info(source_note)
+
+
 def stop_if_no_dates(date_from, run):
     """A run row EXISTS (latest_run() didn't return None) but has produced
     no reconciled dates yet — sidebar() returns (None, None, None) in that
@@ -784,6 +806,8 @@ def stop_if_no_dates(date_from, run):
     one (e.g. `date_from.isoformat()`) and raises AttributeError instead of
     showing something sensible."""
     if date_from is not None:
+        if st.session_state.get("_period_outside_run"):
+            st.stop()           # the notice above already says why; no grid of zeros under it
         return
     st.info(
         f"Run #{run.id} completed but produced no reconciled dates for this "

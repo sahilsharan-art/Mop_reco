@@ -32,7 +32,7 @@ def _d(iso: str) -> date:
 
 def build_workbook(m: cb.Model, date_from: str, date_to: str, remarks: dict, later: pd.DataFrame,
                    unresolved: pd.DataFrame, excluded: pd.DataFrame, controls: list, diffs: pd.DataFrame,
-                   meta: dict) -> bytes:
+                   meta: dict, overrides: pd.DataFrame = None) -> bytes:
     a, b = m.window(date_from, date_to)
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(buf, {"in_memory": True})
@@ -43,6 +43,12 @@ def build_workbook(m: cb.Model, date_from: str, date_to: str, remarks: dict, lat
     f_totl = wb.add_format({"bold": True, "top": 1})
     f_bold = wb.add_format({"bold": True})
     f_text = wb.add_format({"num_format": "@"})
+    f_over = wb.add_format({"num_format": NUM, "bg_color": "#FDE9C8", "border": 1, "border_color": "#E8962E"})
+    over_note = {}
+    if overrides is not None and len(overrides):
+        for o in overrides[overrides["status"] == "active"].itertuples(index=False):
+            over_note[(o.store, o.dep_date, o.col)] = (f"Bank reported {o.computed:,.2f}, overridden to "
+                                                       f"{o.override:,.2f} by {o.entered_by}: {o.reason}")
 
     ws = wb.add_worksheet("CMS Reco")
     ws.write(2, 0, "STORE NAME", f_head)
@@ -80,8 +86,13 @@ def build_workbook(m: cb.Model, date_from: str, date_to: str, remarks: dict, lat
                 ws.write_formula(r, c0, "=" + xl_rowcol_to_cell(r, col_of[k - 1] + 4), f_num,
                                  float(m.opening[k][i]))
             ws.write_number(r, c0 + 1, float(m.deposit[k][i]), f_num)
-            ws.write_number(r, c0 + 2, float(m.cms1[k][i]), f_num)
-            ws.write_number(r, c0 + 3, float(m.cms2[k][i]), f_num)
+            for off, name, arr in ((2, 'same_day', m.cms1), (3, 'next_day', m.cms2)):
+                note = over_note.get((m.stores[i], m.dates[k], name))
+                if note:
+                    ws.write_number(r, c0 + off, float(arr[k][i]), f_over)
+                    ws.write_comment(r, c0 + off, note, {'x_scale': 3})
+                else:
+                    ws.write_number(r, c0 + off, float(arr[k][i]), f_num)
             o, d_, c1, c2 = (xl_rowcol_to_cell(r, c0 + j) for j in range(4))
             ws.write_formula(r, c0 + 4, f"={o}+{d_}-{c1}-{c2}", f_num, float(m.closing[k][i]))
         for j in range(5):
@@ -170,5 +181,12 @@ def build_workbook(m: cb.Model, date_from: str, date_to: str, remarks: dict, lat
     sheet("Unresolved stores", unresolved, id_cols=("pickup_code",))
     sheet("Excluded types", excluded, widths={"Note": 70})
     sheet("Deposit vs CMS by store", diffs)
+    if overrides is not None:
+        ov = overrides.copy()
+        if len(ov):
+            ov["entered_at"] = ov["entered_at"].astype(str)
+            ov["reverted_at"] = ov["reverted_at"].astype(str).replace({"NaT": ""})
+        sheet("CMS overrides", ov.rename(columns={"dep_date": "deposit_date", "col": "column", "computed": "bank (computed)",
+                                                   "override": "override"}), id_cols=(), widths={"reason": 60})
     wb.close()
     return buf.getvalue()

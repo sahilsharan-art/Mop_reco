@@ -609,34 +609,34 @@ def test_inline_match_surfaces_the_date_lag_note_on_a_discrepant_case_too():
 
 
 def test_exceptions_show_dropdown_offers_only_open_and_under_investigation():
-    """The standalone Exceptions page is gone (2026-09-17) - this is Summary's own Exceptions
-    section. Since 2026-10-13 the choice is a persisted select (it survives navigation)."""
+    """The Show choice is still Open / Under investigation (a persisted select - it survives navigation).
+    Closed work is reached with the separate Status filter beside it (2026-10-16), never as a Show option."""
     source = (APP / "pages" / "8_Exceptions.py").read_text(encoding="utf-8")
-    section = source[source.index('_section_toggle(\n    "exceptions"'):]
+    section = source[source.index("# --- Exceptions: ONE header line"):]
     assert '_persisted_select("Show", ["Open", "Under investigation"]' in section
     assert '"Everything"' not in section
     assert '"Auto-resolved"' not in section
-    assert '"Closed"' not in section
 
 
-def test_exceptions_section_keeps_closed_and_auto_resolved_reachable_but_lazy():
-    """Bills and transactions are never merged into one count (2026-09-17). Closed and
-    auto-resolved stay reachable (rule 4) - since 2026-10-13 behind their own lazy +/- section,
-    read only when opened - as two separate tables with two separate exports."""
+def test_exceptions_has_one_header_line_and_an_open_closed_all_status_filter():
+    """One line carries both populations; Status (Open / Closed / All) applies to both tables at once;
+    closed and auto-resolved stay reachable (rule 4) as the Closed view, read-only; and the caption that
+    described the editable remark cell is gone."""
     source = (APP / "pages" / "8_Exceptions.py").read_text(encoding="utf-8")
-    section = source[source.index('_section_toggle(\n    "exceptions"'):]
-    assert '_section_toggle(\n        "closed_exceptions", "Closed and auto-resolved"' in section
+    section = source[source.index("# --- Exceptions: ONE header line"):]
+    assert '_persisted_select("Status", ["Open", "Closed", "All"]' in section
     assert 'CLOSED_STATUSES = ("closed", "auto_resolved")' in source
-    assert '"closed_exceptions": False' in source          # collapsed by default: nothing is fetched
-    # one block per kind (bills / txns), each with its own export key
-    assert '_exception_table_block("bills", CLOSED_STATUSES' in section
-    assert '_exception_table_block("txns", CLOSED_STATUSES' in section
-    assert "key=f\"dl_exc_{kind}{'' if editable else '_closed'}\"" in source
+    assert "**Exception bills {fmt_count(_hb_n)}" in section and "**Exception transactions {fmt_count(_ht_n)}" in section
+    assert '_exception_table_block("bills", status_wanted' in section
+    assert '_exception_table_block("txns", status_wanted' in section
+    assert "The remark cell is editable" not in source
+    assert "Bills with no matching transaction. " not in source
+    assert 'key=f"dl_exc_{kind}_{scope_label.replace' in source        # one export key per kind and view
 
 
 def test_exception_tables_are_paged_server_side_and_never_load_the_whole_list():
     source = (APP / "pages" / "8_Exceptions.py").read_text(encoding="utf-8")
-    section = source[source.index('_section_toggle(\n    "exceptions"'):]
+    section = source[source.index("# --- Exceptions: ONE header line"):]
     assert "q.exception_page(" in source and "q.exception_export(" in source
     assert "q.exception_rows(" not in section          # the load-everything call is gone from the page
     assert "_pager(" in source
@@ -739,7 +739,7 @@ def test_summary_no_longer_carries_the_exceptions_section_and_the_page_does():
     summary = (APP / "Summary.py").read_text(encoding="utf-8")
     assert "_exception_table_block" not in summary and "exception_page" not in summary
     page = (APP / "pages" / "8_Exceptions.py").read_text(encoding="utf-8")
-    assert "_exception_table_block" in page and "manual_matching_section" in page
+    assert "_exception_table_block" in page and "Manual match bills" in page and "Manual match transactions" in page
 
 
 def test_navigation_order_and_removed_tabs():

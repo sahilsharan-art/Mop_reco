@@ -250,13 +250,58 @@ def _resolve_key_overlaps(df: pd.DataFrame, key_col: str, source: str, key_label
             logger.warning(
                 f"ingest[{source}]: {len(dropped)} row(s) across {len(report)} {key_label}(s) "
                 f"dropped as superseded — a more-recently-modified file carries the same "
-                f"{key_label}. Detail: {report}"
+                f"{key_label}. First 3 of {len(report)}: {report[:3]} (full list in the load report)"
             )
     else:
         kept_with_key = with_key
 
     kept = pd.concat([kept_with_key, without_key], ignore_index=False).sort_index()
     return kept.drop(columns=["_src_file", "_src_mtime"]), report
+
+
+# Sources that DELIBERATELY read only the newest file, and why. Every other source reads every discovered file
+# through `read_source_files` below; tests/test_all_sources_overlap.py fails if a reader calls
+# `io_.latest_file` without being listed here, so "newest only" can never happen by accident again (it did,
+# one reader at a time: POS, Axis, Bajaj, CMS, then PTC on 2026-10-17).
+NEWEST_ONLY_SOURCES = {
+    "opening_cash": "a Tally ledger summary is a point-in-time snapshot (one as-at date); an older snapshot "
+                    "is superseded, not complementary - summing or merging two would double-count the balance",
+    "bank_statement": "reserved for R2's bank leg, not yet supplied; a statement re-export supersedes the "
+                      "earlier one for the same period",
+}
+
+
+def read_source_files(config: Config, source: str, file_path_override, read_one, key_col: str = None,
+                      key_label: str = None, make_key=None):
+    """THE default way to read a source: every discovered file, concatenated, with a row present in more than
+    one file resolved to the most recently modified file on its natural key, and every superseded row reported.
+
+    `read_one(path, mtime)` parses ONE file and returns a DataFrame (or None for a file with no data rows).
+    `key_col` is the natural key column on the combined frame; `make_key(combined)` builds it first when it is
+    composite. Returns (frame, files, supersede_report): `frame` is None when no file held any rows; `files`
+    is [(path, mtime), ...] for every file discovered, so a caller can report all of them.
+    """
+    files = _discover_files_for_source(config, source, file_path_override)
+    parts = []
+    for fp, mt in files:
+        part = read_one(fp, mt)
+        if part is None:
+            continue
+        if "_src_file" not in part.columns:
+            part["_src_file"] = str(fp)
+            part["_src_mtime"] = mt
+        parts.append(part)
+    if not parts:
+        return None, files, []
+    combined = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
+    if make_key is not None:
+        make_key(combined)
+    if key_col is None:
+        return combined.drop(columns=["_src_file", "_src_mtime"]), files, []
+    df, report = _resolve_key_overlaps(combined, key_col, source, key_label=key_label)
+    if make_key is not None and key_col in df.columns:
+        df = df.drop(columns=[key_col])
+    return df, files, report
 
 
 # ---------------------------------------------------------------------------
@@ -653,13 +698,9 @@ def ingest_axis_edc(config: Config, session, file_path: Path = None) -> tuple:
     # only the single most-recently-modified one across the whole tree
     # would silently drop every other month (see the comment above
     # _discover_files_for_source).
-    files = _discover_files_for_source(config, "axis_edc", file_path)
-    parts = [_read_axis_edc_file(fp, mt) for fp, mt in files]
-    combined = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
-    # RRN is the natural key — two files sharing an RRN are the same
-    # transaction re-exported, never two different transactions sharing a
-    # date (see _resolve_key_overlaps' own docstring for why date was wrong).
-    df, supersede_report = _resolve_key_overlaps(combined, "RRN", "axis_edc")
+    # RRN is the natural key - two files sharing an RRN are the same transaction re-exported, never two
+    # different transactions sharing a date (see _resolve_key_overlaps' own docstring for why date was wrong).
+    df, files, supersede_report = read_source_files(config, "axis_edc", file_path, _read_axis_edc_file, "RRN")
 
     stores, rows_with_store, rows_without_date, unmapped_agg = _resolve_store_column(
         session, "axis_mid", df["MID"], df["GROSS_AMT"], df["business_date"]
@@ -798,28 +839,20 @@ def ingest_axis_cms(config: Config, session, file_path: Path = None) -> tuple:
 
     # Every discovered file is read (2026-09-24) — see the comment above
     # _discover_files_for_source. CMS now arrives as one file per month.
-    files = _discover_files_for_source(config, "axis_cms", file_path)
-    parts = [_read_axis_cms_file(config, fp, mt) for fp, mt in files]
-    combined = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
+    # The natural key for a CMS pickup is (pickup_code, deposit_date, slip_no) - CLAUDE.md 6.9's own exception
+    # key for this source - never the deposit date alone. A row missing any component (a ZPO row with no
+    # DEPDATE) gets a blank composite key and is always kept, never compared.
+    def _key(c):
+        has_all_parts = (c["PICKUPPOINTCODE"].notna() & c["DEPDATE"].notna() & c["SLIPNO"].notna())
+        c["_cms_key"] = None
+        c.loc[has_all_parts, "_cms_key"] = (
+            c.loc[has_all_parts, "PICKUPPOINTCODE"].astype(str).str.strip() + "|"
+            + c.loc[has_all_parts, "DEPDATE"].astype(str) + "|"
+            + c.loc[has_all_parts, "SLIPNO"].astype(str).str.strip())
 
-    # The natural key for a CMS pickup is (pickup_code, deposit_date, slip_no)
-    # — CLAUDE.md section 6.9's own exception key for this source — never
-    # the deposit date alone, for the identical reason business_date alone
-    # is wrong for Bajaj (see _resolve_key_overlaps' docstring): two
-    # DIFFERENT pickups sharing a deposit date must never compete with each
-    # other just because one file happens to be marginally newer. A row
-    # missing any one component (e.g. a ZPO row with no DEPDATE) gets a
-    # blank composite key and is always kept, never compared.
-    has_all_parts = (combined["PICKUPPOINTCODE"].notna() & combined["DEPDATE"].notna()
-                      & combined["SLIPNO"].notna())
-    combined["_cms_key"] = None
-    combined.loc[has_all_parts, "_cms_key"] = (
-        combined.loc[has_all_parts, "PICKUPPOINTCODE"].astype(str).str.strip() + "|"
-        + combined.loc[has_all_parts, "DEPDATE"].astype(str) + "|"
-        + combined.loc[has_all_parts, "SLIPNO"].astype(str).str.strip()
-    )
-    df, supersede_report = _resolve_key_overlaps(combined, "_cms_key", "axis_cms", key_label="pickup_key")
-    df = df.drop(columns=["_cms_key"])
+    df, files, supersede_report = read_source_files(
+        config, "axis_cms", file_path, lambda fp, mt: _read_axis_cms_file(config, fp, mt), "_cms_key",
+        key_label="pickup_key", make_key=_key)
 
     # CLAUDE.md section 6.7 TYPE handling.
     def _credit_amount(row):
@@ -956,19 +989,14 @@ def ingest_bajaj(config: Config, session, file_path: Path = None) -> tuple:
     # (today: June, July, August — April and May genuinely have no file at
     # all, which the caller reports as NOT SUPPLIED for those two months,
     # distinct from a file that exists but holds zero transactions).
-    files = _discover_files_for_source(config, "bajaj", file_path)
-    parts = [p for p in (_read_bajaj_file(fp, mt) for fp, mt in files) if p is not None]
-    if not parts:
+    # Transaction Id is the natural key - the join key back to the bill's own rrn (CLAUDE.md 5).
+    df, files, supersede_report = read_source_files(config, "bajaj", file_path, _read_bajaj_file, "Transaction Id")
+    if df is None:
         return pd.DataFrame(), LoadReport(
             source="bajaj", status="no_source_report",
             files=[FileRead(path=str(fp), mtime=mt) for fp, mt in files],
-            notes=[f"Every discovered Bajaj file contains zero data rows — no Bajaj settlement data has been supplied for {[fp.name for fp, _ in files]}."],
+            notes=[f"Every discovered Bajaj file contains zero data rows - no Bajaj settlement data has been supplied for {[fp.name for fp, _ in files]}."],
         )
-    combined = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
-    # Transaction Id is the natural key — CLAUDE.md documents it as the join
-    # key back to the bill's own rrn, so a shared Transaction Id genuinely is
-    # the same transaction re-exported, never a coincidence.
-    df, supersede_report = _resolve_key_overlaps(combined, "Transaction Id", "bajaj")
 
     status_counts = df["Transaction Status"].value_counts().to_dict()
     warehouse_paths, rows_without_date = _write_parquet_by_date(df, "bajaj", "business_date")
@@ -1011,6 +1039,7 @@ def ingest_bank_statement(config: Config, session) -> tuple:
             notes=["Source not configured — no bank statement file has been supplied yet."],
         )
 
+    # NEWEST ONLY, deliberately - see NEWEST_ONLY_SOURCES["bank_statement"] for the reason.
     file_path, mtime = io_.latest_file(config, "bank_statement")
     result = io_.read_any(file_path)
     data_rows = [r for r in result.grid[1:] if r and any(v is not None for v in r)]
@@ -1724,21 +1753,8 @@ def _ptc_columns(header: list, file_label: str) -> dict:
     return resolved
 
 
-def ingest_ptc(config: Config, session, file_path: Path = None) -> tuple:
-    """PTC vouchers: the income/expense movements and the cash deposits.
-
-    net_ptc is ONE netted column by decision (§6.6): PAYMENT rows arrive
-    negative and RECEIVE rows positive, so the net is simply the sum. The
-    income/expense split is reported for information, never emitted as two
-    output columns.
-    """
-    if file_path is None:
-        file_path, mtime = io_.latest_file(config, "ptc")
-    else:
-        file_path = Path(file_path)
-        mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
-
-    encoding = config.encoding_for("ptc") or "cp1252"
+def _read_ptc_file(file_path: Path, encoding: str) -> pd.DataFrame:
+    """ONE PTC file, parsed and typed (the per-file part of `ingest_ptc`)."""
     result = io_.read_any(file_path, encoding=encoding)
 
     # Header is on row 3 of the supplied CSV (row 1 a Cube Name title, row 2
@@ -1761,6 +1777,42 @@ def ingest_ptc(config: Config, session, file_path: Path = None) -> tuple:
     # Drop wholly blank trailing rows the CSV pads with, without touching a row
     # that merely has a blank optional field.
     df = df[df["store"].ne("") & df["store"].ne("nan")].reset_index(drop=True)
+    df.attrs["layout_columns"] = dict(cols)
+    return df
+
+
+def ingest_ptc(config: Config, session, file_path: Path = None) -> tuple:
+    """PTC vouchers: the income/expense movements and the cash deposits.
+
+    net_ptc is ONE netted column by decision (§6.6): PAYMENT rows arrive
+    negative and RECEIVE rows positive, so the net is simply the sum. The
+    income/expense split is reported for information, never emitted as two
+    output columns.
+
+    EVERY discovered file is read (2026-10-17), not just the most recently modified one. PTC arrives
+    as one file per period - April-August, then September - and picking the newest alone silently
+    dropped April-August the moment September's file landed (every store's deposits for five months
+    vanished and each closing balance ballooned: Run #14 first showed Rs 318 Cr). The same class of
+    bug CLAUDE.md 6.14 records for POS, Axis, Bajaj and CMS. A voucher present in more than one file
+    (July is in three) resolves to the most recently modified file, on the natural key
+    store + voucher number; the superseded rows are reported, never silent.
+    """
+    encoding = config.encoding_for("ptc") or "cp1252"
+    layout = {}
+
+    def _read(fp, mt):
+        part = _read_ptc_file(fp, encoding)
+        layout.update(part.attrs.get("layout_columns", {}))
+        return part
+
+    def _key(c):
+        c["_ptc_key"] = c["store"] + "|" + c["voucher_no"].astype(str).str.strip()
+
+    df, files, supersede_report = read_source_files(config, "ptc", file_path, _read, "_ptc_key",
+                                                    key_label="voucher_key", make_key=_key)
+    cols = layout
+    df = df.reset_index(drop=True)
+    mtime = max(mt for _, mt in files)
 
     by_head = df["head"].eq(PTC_DEPOSIT_HEAD)
     by_ledger = df["ledger"].eq(PTC_DEPOSIT_LEDGER)
@@ -1788,7 +1840,7 @@ def ingest_ptc(config: Config, session, file_path: Path = None) -> tuple:
     report = LoadReport(
         source="ptc",
         status="ok",
-        files=[FileRead(path=str(file_path), mtime=mtime, encoding=encoding)],
+        files=[FileRead(path=str(fp), mtime=mt, encoding=encoding) for fp, mt in files],
         business_dates=sorted(str(d) for d in df["business_date"].dropna().unique()),
         rows_read=len(df),
         rows_with_store=int(df["store"].ne("").sum()),
@@ -1806,6 +1858,8 @@ def ingest_ptc(config: Config, session, file_path: Path = None) -> tuple:
         warehouse_paths=warehouse_paths,
         notes=notes,
     )
+    if supersede_report:
+        report.notes.append(f"superseded_by_more_recent_file: {len(supersede_report)} voucher(s) in more than one file")
     return df, report
 
 
@@ -1841,6 +1895,7 @@ def ingest_opening_cash(config: Config, session, file_path: Path = None,
     load_master(config, session, "store")
 
     if file_path is None:
+        # NEWEST ONLY, deliberately - see NEWEST_ONLY_SOURCES["opening_cash"] for the reason.
         file_path, mtime = io_.latest_file(config, "opening_cash")
     else:
         file_path = Path(file_path)

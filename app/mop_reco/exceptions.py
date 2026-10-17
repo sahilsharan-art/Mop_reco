@@ -326,7 +326,7 @@ def add_remark(session, exception_key: str, text: str, operator: str) -> Remark:
 
 
 def set_status(session, exception_key: str, status: str, operator: str,
-               reason_code: str = None) -> Exception_:
+               reason_code: str = None, commit: bool = True) -> Exception_:
     """`reason_code` records WHY the status changed — e.g. 'matched manually'.
     The remark history is never touched by a status change (rule 4)."""
     valid = ("open", "under_investigation", "closed")
@@ -344,7 +344,8 @@ def set_status(session, exception_key: str, status: str, operator: str,
     else:
         row.closed_on = None
         row.closed_by = None
-    session.commit()
+    if commit:
+        session.commit()
     return row
 
 

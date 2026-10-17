@@ -168,3 +168,91 @@ def test_one_bad_master_does_not_stop_the_others(monkeypatch):
     assert set(failed) == {"pickup_location"}
     assert failed["pickup_location"].startswith("Pickup location master cannot be loaded - LOCATION column missing")
     assert "pickup_location" not in loaded and len(loaded) == len(masters.MASTER_SPECS) - 1
+
+
+# --- an operator may authorise ONE run to use the stored version of a broken master (2026-10-17) -------------
+
+def _stored_pickup_location(tmp_path, patched):
+    """Load the good files once so a stored version exists, then break the file on disk."""
+    engine = get_engine(tmp_path / "t.sqlite")
+    init_db(engine)
+    session = get_session(engine)
+    masters.load_all_masters(load_config(), session)
+    patched["pickup_location_master"] = make_xlsx(tmp_path / "bad.xlsx", {"Sheet1": [
+        ("PICKCODE", "CODE", "PICKUP CODE"), ("AX29035", "AGT", "AX29035")]})
+    return session
+
+
+def test_stored_version_is_used_only_when_authorised_and_is_recorded(patched, tmp_path):
+    session = _stored_pickup_location(tmp_path, patched)
+    with pytest.raises(masters.MasterPreflightError):                      # not authorised: still blocks
+        masters.preflight_masters(load_config(), session)
+    checks = masters.preflight_masters(load_config(), session,
+                                       use_stored={"pickup_location": "file lost LOCATION; operator said so"})
+    check = next(c for c in checks if c.master == "pickup_location")
+    assert check.ok and check.problems == []
+    f = check.stored_in_force
+    assert f["reason"] == "file lost LOCATION; operator said so" and f["header_seen"] == ["PICKCODE", "CODE", "PICKUP CODE"]
+    assert f["file_modified"] and f["stored_rows"] == 2 and "bad.xlsx" in f["file"]
+    assert any("USES THE STORED VERSION" in w for w in check.warnings)
+    summary = masters.preflight_summary(checks)
+    assert summary["pickup_location"]["stored_in_force"]["stored_version"] == f["stored_version"]
+    assert summary["pickup_code"]["stored_in_force"] is None               # only the named master
+
+
+def test_a_master_with_no_stored_version_cannot_be_overridden(patched, tmp_path):
+    patched["pickup_location_master"] = make_xlsx(tmp_path / "bad.xlsx", {"Sheet1": [("PICKCODE", "CODE")]})
+    engine = get_engine(tmp_path / "empty.sqlite")
+    init_db(engine)
+    with pytest.raises(masters.MasterPreflightError):
+        masters.preflight_masters(load_config(), get_session(engine), use_stored={"pickup_location": "x"})
+
+
+def test_load_master_falls_back_to_the_stored_version_only_while_in_force(patched, tmp_path):
+    session = _stored_pickup_location(tmp_path, patched)
+    with pytest.raises(masters.MasterLoadError):
+        masters.load_master(load_config(), session, "pickup_location")
+    masters.set_stored_masters_in_force({"pickup_location": "x"})
+    try:
+        version, created = masters.load_master(load_config(), session, "pickup_location")
+        assert created is False and version.row_count == 2 and version.is_current
+    finally:
+        masters.clear_stored_masters_in_force()
+    with pytest.raises(masters.MasterLoadError):                          # one run only: blocking again
+        masters.load_master(load_config(), session, "pickup_location")
+
+
+def test_master_gaps_are_listed_with_whether_the_current_master_now_holds_them(patched, tmp_path):
+    import pandas as pd
+
+    from mop_reco import master_gaps as mg
+    from mop_reco.db import CmsSlip
+    engine = get_engine(tmp_path / "g.sqlite")
+    init_db(engine)
+    session = get_session(engine)
+    session.add(Run(id=1, started_at=datetime(2026, 10, 1), business_dates="[]", status="completed"))
+    session.commit()
+    masters.load_all_masters(load_config(), session)           # P1 -> AAA, M1 -> AAA, AX1 -> AAA are now in the masters
+    pfiles = {}
+    for day, mid in (("2026-09-02", "P1"), ("2026-09-05", "PX"), ("2026-10-01", "PX")):
+        d = tmp_path / f"p{day}.parquet"
+        pd.DataFrame({"original_mid": [mid], "store": [None], "amount": [100.0]}).to_parquet(d)
+        pfiles[day] = str(d)
+    session.add_all([
+        CmsSlip(run_id=1, row_type="COL", dep_date="2026-09-03", cr_date="2026-09-03", store="UNRESOLVED",
+                pickup_code="AX1", location="CBRAL", slip_no="1", amount=500),
+        CmsSlip(run_id=1, row_type="COL", dep_date="2026-09-04", cr_date="2026-09-04", store="UNRESOLVED",
+                pickup_code="ZZZ", location="CBRAL", slip_no="2", amount=700),
+        CmsSlip(run_id=1, row_type="COL", dep_date="2026-09-04", cr_date="2026-09-04", store="BNK",
+                pickup_code="BNK1", location=None, slip_no="3", amount=50)])
+    session.commit()
+    report = mg.persist(session, 1, "2026-09-01", "2026-09-30", pfiles, {})
+    assert report["rows"] == 5
+    df = mg.frame(session, 1).set_index(["source", "code"])
+    p1 = df.loc[("Paytm MID", "P1")]
+    assert p1["in_current_master"] == "yes" and p1["rows"] == 1 and p1["first_seen"] == "2026-09-02"
+    px = df.loc[("Paytm MID", "PX")]
+    assert px["in_current_master"] == "no" and px["rows"] == 1       # the 1 Oct row is outside the range
+    assert df.loc[("CMS pickup code", "AX1")]["in_current_master"] == "yes"
+    assert df.loc[("CMS pickup code", "ZZZ")]["in_current_master"] == "no"
+    assert df.loc[("CMS - BNK pseudo-store", "BNK1")]["rows"] == 1

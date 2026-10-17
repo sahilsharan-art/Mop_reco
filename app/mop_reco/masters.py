@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -31,6 +32,9 @@ import openpyxl
 
 from .config import Config
 from .db import MasterRow, MasterVersion
+
+
+logger = logging.getLogger("mop_reco")
 
 
 class MasterLoadError(ValueError):
@@ -244,6 +248,9 @@ class MasterCheck:
     remapped: int = None
     warnings: list = field(default_factory=list)
     problems: list = field(default_factory=list)
+    # Set when the operator has authorised THIS run to use the stored version of a master whose file on disk
+    # is unusable (2026-10-17): {"reason", "file_modified", "header_seen", "stored_version", "stored_loaded_at"}.
+    stored_in_force: dict = None
 
     @property
     def ok(self) -> bool:
@@ -346,19 +353,54 @@ def preflight_master(config: Config, master_name: str, stored_rows: list = None)
     return check
 
 
-def preflight_masters(config: Config, session=None, raise_on_failure: bool = True) -> list:
+# A master named here is read from its STORED version instead of its file, for the duration of one run - and only
+# because an operator said so, with a reason (2026-10-17). Masters are effective-dated by design (6.12), so the stored
+# version is a legitimate thing to use; the file on disk is what is broken. The preflight goes back to blocking the
+# moment a run is started without this.
+_STORED_IN_FORCE: dict = {}
+
+
+def set_stored_masters_in_force(mapping: dict):
+    """{master_name: reason}. Cleared with an empty dict (or `clear_stored_masters_in_force`)."""
+    _STORED_IN_FORCE.clear()
+    _STORED_IN_FORCE.update(mapping or {})
+
+
+def clear_stored_masters_in_force():
+    _STORED_IN_FORCE.clear()
+
+
+def preflight_masters(config: Config, session=None, raise_on_failure: bool = True, use_stored: dict = None) -> list:
     """Check every master. Returns the list of MasterCheck; raises
-    MasterPreflightError (naming every problem) unless raise_on_failure=False."""
+    MasterPreflightError (naming every problem) unless raise_on_failure=False.
+
+    `use_stored` ({master_name: reason}) authorises a master whose FILE fails the check to be replaced, for this run
+    only, by the version already stored in the database - recorded on the check (file, modified date, header seen,
+    stored version) so the run's notes and the Masters page say so. A master with no stored version still fails."""
+    use_stored = use_stored or {}
     checks = []
     for name in MASTER_SPECS:
         stored = None
+        version = None
         if session is not None:
             version = (session.query(MasterVersion)
                        .filter_by(master_name=name, is_current=True).first())
             if version is not None:
                 stored = [json.loads(r.row_json) for r in
                           session.query(MasterRow).filter_by(master_version_id=version.id).all()]
-        checks.append(preflight_master(config, name, stored))
+        check = preflight_master(config, name, stored)
+        if name in use_stored and check.problems and version is not None:
+            check.stored_in_force = {
+                "reason": use_stored[name], "file": check.file, "file_modified": check.modified,
+                "header_seen": check.columns_found, "problems": list(check.problems),
+                "stored_version": version.id, "stored_loaded_at": str(version.loaded_at),
+                "stored_rows": version.row_count}
+            check.warnings.append(
+                f"{name}: the file on disk is unusable ({'; '.join(check.problems)}) - THIS RUN USES THE STORED "
+                f"VERSION #{version.id} (loaded {version.loaded_at:%Y-%m-%d %H:%M}, {version.row_count} rows) by "
+                f"instruction: {use_stored[name]}")
+            check.problems = []
+        checks.append(check)
     problems = [p for c in checks for p in c.problems]
     if problems and raise_on_failure:
         raise MasterPreflightError(problems, checks)
@@ -369,7 +411,8 @@ def preflight_summary(checks: list) -> dict:
     """A JSON-safe summary for Run.notes."""
     return {c.master: {"file": c.file, "modified": c.modified, "sheet": c.sheet, "rows": c.rows,
                        "stored_rows": c.stored_rows, "added": c.added, "removed": c.removed,
-                       "remapped": c.remapped, "warnings": c.warnings, "problems": c.problems}
+                       "remapped": c.remapped, "warnings": c.warnings, "problems": c.problems,
+                       "stored_in_force": c.stored_in_force}
             for c in checks}
 
 
@@ -446,7 +489,18 @@ def load_master(config: Config, session, master_name: str):
     """Read the real file for `master_name` and version it. Returns (MasterVersion, created)."""
     if master_name not in MASTER_SPECS:
         raise MasterLoadError(f"Unknown master '{master_name}'")
-    rows, file_path, mtime = _read_master_rows(config, master_name)
+    try:
+        rows, file_path, mtime = _read_master_rows(config, master_name)
+    except MasterLoadError:
+        if master_name not in _STORED_IN_FORCE:
+            raise
+        current = (session.query(MasterVersion).filter_by(master_name=master_name, is_current=True)
+                   .order_by(MasterVersion.loaded_at.desc()).first())
+        if current is None:
+            raise
+        logger.warning(f"{master_name}: file unusable - using stored version #{current.id} "
+                       f"(authorised for this run: {_STORED_IN_FORCE[master_name]})")
+        return current, False
     return _upsert_master_version(session, master_name, rows, str(file_path), mtime)
 
 
@@ -589,6 +643,7 @@ class ResolveResult:
     store: Optional[str]
     status: str  # "resolved" | "unmapped" | "store_ambiguous" | "location_unresolved"
     candidates: tuple = ()  # populated only when status == "store_ambiguous"
+    via_later_version: Optional[str] = None  # set when the identifier was absent as at the date (see below)
 
 
 def resolve_store(
@@ -626,12 +681,48 @@ def resolve_store(
     matches = grouped.get(lookup, set())
 
     if not matches:
+        # ABSENCE only (2026-10-17): an identifier the as-at version has never heard of may be one the master
+        # learned about later (a store that opened after the last file was loaded, so its September MID is only
+        # in an October file). A transaction under that identifier exists, so the store traded; refusing to map it
+        # until the next month's master arrives is the bug. A CORRECTION - the identifier present in both
+        # versions but mapped to a different store - is never touched by this: the as-at version still wins, so
+        # 6.12's rule (a later correction must not rewrite a past resolution) holds.
+        later = _first_later_match(session, master_name, key_field, business_date, lookup)
+        if later is not None:
+            stores, loaded = later
+            if len(stores) == 1:
+                return ResolveResult(source, identifier_str, next(iter(stores)), "resolved",
+                                     via_later_version=loaded)
+            return ResolveResult(source, identifier_str, None, "store_ambiguous", tuple(sorted(stores)))
         return ResolveResult(source, identifier_str, None, "unmapped")
     if len(matches) > 1:
         return ResolveResult(
             source, identifier_str, None, "store_ambiguous", tuple(sorted(matches))
         )
     return ResolveResult(source, identifier_str, next(iter(matches)), "resolved")
+
+
+_LATER_CACHE: dict = {}
+
+
+def _first_later_match(session, master_name: str, key_field: str, as_of, lookup: str):
+    """The earliest version loaded AFTER `as_of` that holds `lookup`, as ({stores}, loaded_at iso), else None."""
+    if isinstance(as_of, date) and not isinstance(as_of, datetime):
+        as_of = datetime.combine(as_of, datetime.max.time())
+    ck = (str(session.bind.url), master_name, key_field, as_of)
+    if ck not in _LATER_CACHE:
+        normalise = (master_name, key_field) in NORMALISED_KEYS
+        merged: dict = {}
+        versions = (session.query(MasterVersion)
+                    .filter(MasterVersion.master_name == master_name, MasterVersion.loaded_at > as_of)
+                    .order_by(MasterVersion.loaded_at.asc()).all())
+        for v in versions:
+            for r in session.query(MasterRow).filter_by(master_version_id=v.id).all():
+                row = json.loads(r.row_json)
+                key = (normalise_name(row[key_field]) if normalise else str(row[key_field]).strip())
+                merged.setdefault(key, (set(), v.loaded_at.isoformat()))[0].add(str(row["store"]).strip())
+        _LATER_CACHE[ck] = merged
+    return _LATER_CACHE[ck].get(lookup)
 
 
 # ---------------------------------------------------------------------------

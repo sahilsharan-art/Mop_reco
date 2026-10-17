@@ -741,6 +741,20 @@ def unmatched_bill_facts(session, run_id: int, bill_nos=None) -> dict:
     return out
 
 
+def matched_bill_facts(session, run_id: int, bill_nos) -> dict:
+    """{(business_date, store, bill_no, mop): (bill_time, created_by)} for the given bills whether the
+    engine left them open or a person closed them - the lookup `unmatched_bill_facts` does for open ones."""
+    wanted = sorted({str(b) for b in bill_nos if b})
+    out = {}
+    for i in range(0, len(wanted), 900):
+        rows = (session.query(R1BillLine.business_date, R1BillLine.store, R1BillLine.bill_no, R1BillLine.mop,
+                              R1BillLine.bill_time, R1BillLine.created_by)
+                .filter(R1BillLine.run_id == run_id, R1BillLine.bill_no.in_(wanted[i:i + 900])).all())
+        for d, st, b, m, t, c in rows:
+            out[(str(d), str(st), str(b), str(m))] = (t, c)
+    return out
+
+
 def _exception_records(session, rows) -> pd.DataFrame:
     """Readable exception columns for the given Exception_ ORM rows (and only those):
     severity, dates not run numbers, the JSON `detail` parsed. Shared by the whole-list
@@ -1105,7 +1119,9 @@ def date_lag_matches(session, run_id, date_from=None, date_to=None,
 # ---------------------------------------------------------------------------
 
 def _active_manual_bill_nos(session, date_from=None, date_to=None, store=None) -> set:
-    query = session.query(ManualMatch.bill_no).filter(ManualMatch.lifecycle == "active")
+    # Only an ACCEPTED match closes a bill: an assertion with no transaction behind it is an open item.
+    query = session.query(ManualMatch.bill_no).filter(ManualMatch.lifecycle == "active",
+                                                      ManualMatch.status == "matched_manual")
     if date_from is not None:
         query = query.filter(ManualMatch.business_date >= str(date_from))
     if date_to is not None:
@@ -1589,8 +1605,15 @@ class TransactionResolution:
     across this line and "unmapped"; `refund_pending_*` /
     `refund_released_*` are the sub-counts within it, always shown together,
     never merged into one figure (the operator's own instruction)."""
-    mapped_n: int = 0
+    mapped_n: int = 0               # auto + manual
     mapped_v: float = 0.0
+    auto_n: int = 0                 # mapped to a bill by the engine
+    auto_v: float = 0.0
+    manual_n: int = 0               # mapped to a bill by a person
+    manual_v: float = 0.0
+    not_sale_n: int = 0             # refund / chargeback / failed rows - outside the sale population
+    not_sale_v: float = 0.0
+    sale_basis: bool = False        # total is the SALE population (SUCCESS/ACQUIRING), engine-consumed basis
     refunded_n: int = 0
     refunded_v: float = 0.0
     refund_pending_n: int = 0
@@ -1629,29 +1652,45 @@ def _manual_txn_facts(session) -> list:
 
 
 def _transaction_resolution_from_agg(session, run_id, date_from, date_to, store):
-    """The Mapped / Refunded / Unmapped strip from the run's persisted `txn_day_agg`, with the
-    live things applied on top - never the 3.7M-row pool. A manual match moves one transaction
-    from unmapped to mapped; a customer refund moves one from unmapped to refunded. Returns None
-    when the run has no aggregate (an older run) so the caller falls back to the pool read."""
+    """The mapped / refunded / unmapped strip from the run's persisted `txn_day_agg`, with the live
+    things applied on top - never the 3.7M-row pool. A manual match moves one transaction from
+    unmapped to mapped-manual; a customer refund moves one from unmapped to refunded.
+
+    SALE BASIS (2026-10-16, runs aggregated with `pool_n`): the population is the SALE rows (SUCCESS /
+    ACQUIRING - what a bill can map to), `auto` is what the engine physically consumed of them, so
+    unmapped is exactly the engine's own exception population. Refund / chargeback / failed rows are
+    not sales; they are reported as `not_sale`. An older aggregate (no pool_n) falls back to the
+    original by-reference basis. Returns None when the run has no aggregate at all."""
     from .db import TransactionRefund, TxnDayAgg
 
     if session.query(TxnDayAgg.id).filter(TxnDayAgg.run_id == run_id).first() is None:
         return None
     query = session.query(func.sum(TxnDayAgg.total_n), func.sum(TxnDayAgg.total_v),
-                          func.sum(TxnDayAgg.mapped_n), func.sum(TxnDayAgg.mapped_v)).filter(
+                          func.sum(TxnDayAgg.mapped_n), func.sum(TxnDayAgg.mapped_v),
+                          func.sum(TxnDayAgg.pool_n), func.sum(TxnDayAgg.pool_v),
+                          func.sum(TxnDayAgg.consumed_n), func.sum(TxnDayAgg.consumed_v),
+                          func.count(TxnDayAgg.pool_n), func.count(TxnDayAgg.id)).filter(
         TxnDayAgg.run_id == run_id,
         TxnDayAgg.business_date >= str(date_from), TxnDayAgg.business_date <= str(date_to))
     if store:
         query = query.filter(TxnDayAgg.store == store)
-    tn, tv, mn, mv = query.one()
+    tn, tv, mn, mv, pn, pv, cn, cv, with_pool, rows = query.one()
     out = TransactionResolution()
-    out.total_n, out.total_v = int(tn or 0), float(tv or 0.0)
-    out.mapped_n, out.mapped_v = int(mn or 0), float(mv or 0.0)
+    sale_basis = bool(rows) and with_pool == rows
+    if sale_basis:
+        out.sale_basis = True
+        out.total_n, out.total_v = int(pn or 0), float(pv or 0.0)
+        out.auto_n, out.auto_v = int(cn or 0), float(cv or 0.0)
+        out.not_sale_n, out.not_sale_v = int(tn or 0) - int(pn or 0), float(tv or 0.0) - float(pv or 0.0)
+    else:
+        out.total_n, out.total_v = int(tn or 0), float(tv or 0.0)
+        out.auto_n, out.auto_v = int(mn or 0), float(mv or 0.0)
 
     for _gateway, day, txn_store, amount in _manual_txn_facts(session):
         if str(date_from) <= day <= str(date_to) and (not store or txn_store == store):
-            out.mapped_n += 1
-            out.mapped_v += amount
+            out.manual_n += 1
+            out.manual_v += amount
+    out.mapped_n, out.mapped_v = out.auto_n + out.manual_n, out.auto_v + out.manual_v
 
     refunds = session.query(TransactionRefund).filter(
         TransactionRefund.business_date >= str(date_from), TransactionRefund.business_date <= str(date_to))
@@ -1718,6 +1757,13 @@ def transaction_resolution_summary(session, date_from=None, date_to=None,
     unmapped = frame["resolution"] == "unmapped"
     out.unmapped_n = int(unmapped.sum())
     out.unmapped_v = float(amounts[unmapped].sum())
+
+    # The slow path's `mapped` already includes what a person matched; split it.
+    for _gateway, day, txn_store, amount in _manual_txn_facts(session):
+        if str(date_from) <= day <= str(date_to) and (not store or txn_store == store):
+            out.manual_n += 1
+            out.manual_v += amount
+    out.auto_n, out.auto_v = out.mapped_n - out.manual_n, out.mapped_v - out.manual_v
     return out
 
 
@@ -1764,3 +1810,95 @@ def manual_match_bill_report(session, date_from=None, date_to=None,
             "reason": r.reason_code, "status": r.lifecycle,
         })
     return pd.DataFrame(records, columns=_MANUAL_BILL_REPORT_COLUMNS)
+
+
+# ---------------------------------------------------------------------------
+# The match overview - ONE source for every tile and table that shows bills / transactions split by
+# who matched them (2026-10-16). The Exceptions tiles and the Summary strip both read this, so they
+# can never disagree.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MatchOverview:
+    bills: dict                 # open / auto / manual / total -> {"count", "value"}   (bill LINES)
+    exception_bills_n: int      # open + under-investigation bill exceptions (one per date|store|bill|mop)
+    exception_bills_v: float
+    txns: TransactionResolution
+    exception_txns_n: int       # open + under-investigation unmapped-transaction exceptions (sale rows)
+    exception_txns_v: float
+    merged_bill_lines: int = 0  # extra bill LINES folded into those exceptions (same date, store, bill, MOP)
+    merged_txn_rows: int = 0    # extra gateway ROWS folded into those exceptions (same gateway + reference)
+
+    @property
+    def bills_ok(self) -> bool:
+        b = self.bills
+        return (b["open"]["count"] + b["auto"]["count"] + b["manual"]["count"] == b["total"]["count"]
+                and abs(b["open"]["value"] + b["auto"]["value"] + b["manual"]["value"] - b["total"]["value"]) <= 0.01)
+
+    @property
+    def bills_difference(self) -> int:
+        b = self.bills
+        return b["total"]["count"] - (b["open"]["count"] + b["auto"]["count"] + b["manual"]["count"])
+
+    @property
+    def bills_agree_with_exceptions(self) -> bool:
+        """Open bill lines = exception bills + the lines the register folded into another exception of the
+        same date, store, bill and MOP. Two independent sources (results aggregate / exception register)."""
+        return self.bills["open"]["count"] == self.exception_bills_n + self.merged_bill_lines
+
+    @property
+    def txns_ok(self) -> bool:
+        t = self.txns
+        return t.auto_n + t.manual_n + t.refunded_n + t.unmapped_n == t.total_n
+
+    @property
+    def txns_difference(self) -> int:
+        t = self.txns
+        return t.total_n - (t.auto_n + t.manual_n + t.refunded_n + t.unmapped_n)
+
+    @property
+    def unmapped_agrees_with_exceptions(self) -> bool:
+        """Two independent sources: the engine's own consumption (aggregate) against the exception
+        register. Only meaningful on the sale basis; an older run cannot be asserted."""
+        return (not self.txns.sale_basis) or self.txns.unmapped_n == self.exception_txns_n + self.merged_txn_rows
+
+
+def bill_split(session, run_id, date_from=None, date_to=None, store=None) -> dict:
+    """Open / closed-by-engine / closed-by-person / total, in bill LINES with value."""
+    base = bill_match_summary(session, run_id, date_from, date_to, store)
+    manual_nos = _active_manual_bill_nos(session, date_from, date_to, store)
+    mn, mv = 0, 0.0
+    if manual_nos:
+        n, v = _apply_bill_filters(
+            session.query(func.count(R1BillLine.id), func.sum(R1BillLine.amount)),
+            run_id, date_from, date_to, store,
+        ).filter(R1BillLine.matched.is_(False), R1BillLine.bill_no.in_(manual_nos)).one()
+        mn, mv = int(n or 0), float(v or 0.0)
+    return {"open": base["open"],
+            "auto": {"count": base["closed"]["count"] - mn, "value": base["closed"]["value"] - mv},
+            "manual": {"count": mn, "value": mv},
+            "total": base["total"]}
+
+
+def match_overview(session, run_id, date_from, date_to, store=None) -> MatchOverview:
+    bills = bill_split(session, run_id, date_from, date_to, store)
+    live = ("open", "under_investigation")
+    bn, bv, _, _ = exception_counts(session, date_from, date_to, store, NOT_RECEIVED_TYPES, (), statuses=live)
+    _, _, tn, tv = exception_counts(session, date_from, date_to, store, (), RECEIVED_NOT_BILLED_TYPES, statuses=live)
+    txns = transaction_resolution_summary(session, date_from, date_to, store, run_id=run_id)
+    return MatchOverview(bills, bn, bv, txns, tn, tv,
+                         merged_extra_rows(session, date_from, date_to, store, NOT_RECEIVED_TYPES, live),
+                         merged_extra_rows(session, date_from, date_to, store, RECEIVED_NOT_BILLED_TYPES, live))
+
+
+def merged_extra_rows(session, date_from, date_to, store, types, statuses) -> int:
+    """How many source rows the exception register folded into another exception of the same key
+    (`detail.merged_line_seqs`): the whole difference between a count of lines and a count of
+    exceptions. Summed in SQL over only the rows that carry the marker."""
+    query = _apply_exception_filters(
+        session.query(func.coalesce(func.sum(func.json_array_length(
+            func.json_extract(Exception_.detail, "$.merged_line_seqs")) - 1), 0)),
+        date_from, date_to, store, open_only=False)
+    query = query.filter(Exception_.type.in_(types), Exception_.status.in_(statuses),
+                         Exception_.detail.like('%merged_line_seqs%'))
+    return int(query.scalar() or 0)

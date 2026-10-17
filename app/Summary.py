@@ -30,6 +30,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import match_strip
 from dashboard_common import (
     db_session,
     export_all_button,
@@ -800,57 +801,15 @@ if store_detail_open:
 # query fresh every render, so a manual match or a refund shows up
 # immediately with no re-run.
 # ===========================================================================
-bill_summary = q.bill_match_summary(session, run.id, date_from, date_to, store)
-txn_summary = q.transaction_resolution_summary(session, date_from, date_to, store,
-                                                run_id=run.id)
-
-bills_closed_n, bills_closed_v = bill_summary["closed"]["count"], bill_summary["closed"]["value"]
+overview = q.match_overview(session, run.id, date_from, date_to, store)
+bill_summary = overview.bills
+bills_closed_n = bill_summary["auto"]["count"] + bill_summary["manual"]["count"]
+bills_closed_v = bill_summary["auto"]["value"] + bill_summary["manual"]["value"]
 bills_open_n, bills_open_v = bill_summary["open"]["count"], bill_summary["open"]["value"]
-bills_sum_n, bills_sum_v = bills_closed_n + bills_open_n, bills_closed_v + bills_open_v
-bills_ok = (bills_sum_n == bill_summary["total"]["count"]
-           and abs(bills_sum_v - bill_summary["total"]["value"]) <= 0.01)
 
 st.markdown("##### Bills and transactions")
-bcol, tcol = st.columns(2)
-with bcol:
-    st.markdown("**BILLS**")
-    st.dataframe(pd.DataFrame([
-        {"": "Closed (matched)", "Count": fmt_count(bills_closed_n),
-         "Value (Rs Cr)": money_cr(bills_closed_v)},
-        {"": "Open (unmatched)", "Count": fmt_count(bills_open_n),
-         "Value (Rs Cr)": money_cr(bills_open_v)},
-        {"": "Total", "Count": fmt_count(bills_sum_n),
-         "Value (Rs Cr)": money_cr(bills_sum_v)},
-    ]), hide_index=True, width="stretch")
-    if not bills_ok:
-        st.error(
-            f"**MISMATCH** — closed + open = {fmt_count(bills_sum_n)} "
-            f"(Rs {money_table(bills_sum_v)}) but the independently-queried "
-            f"total is {fmt_count(bill_summary['total']['count'])} "
-            f"(Rs {money_table(bill_summary['total']['value'])})."
-        )
-with tcol:
-    st.markdown("**TRANSACTIONS**")
-    st.dataframe(pd.DataFrame([
-        {"": "Mapped to bill", "Count": fmt_count(txn_summary.mapped_n),
-         "Value (Rs Cr)": money_cr(txn_summary.mapped_v)},
-        {"": "Refunded to customer", "Count": fmt_count(txn_summary.refunded_n),
-         "Value (Rs Cr)": money_cr(txn_summary.refunded_v)},
-        {"": "Unmapped (open)", "Count": fmt_count(txn_summary.unmapped_n),
-         "Value (Rs Cr)": money_cr(txn_summary.unmapped_v)},
-        {"": "Total", "Count": fmt_count(txn_summary.total_n),
-         "Value (Rs Cr)": money_cr(txn_summary.mapped_v + txn_summary.refunded_v + txn_summary.unmapped_v)},
-    ]), hide_index=True, width="stretch")
-    # The footnote sentence is removed (2026-09-30, on instruction) — the
-    # RULE it described is untouched: refunds still sit on their own
-    # "Refunded to customer" line above, never folded into Mapped or
-    # counted as revenue. pending/released stay available to anyone who
-    # needs them via Manual matches → By transaction → Refund upload.
-    if not txn_summary.ok:
-        st.error(
-            f"**MISMATCH** — mapped + refunded + unmapped differs from the "
-            f"independently-queried total by {txn_summary.difference}."
-        )
+# The same MatchOverview the Exceptions tiles read (match_strip.py) - tiles and table cannot disagree.
+match_strip.render_table(overview)
 
 st.divider()
 

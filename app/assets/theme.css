@@ -857,3 +857,17 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-topnav) {
 .st-key-st-filters [data-baseweb="input"] > div { background: transparent; }
 .st-key-st-filters input { background: transparent; font-size: 14px; }
 .st-key-st-filters label p { font-size: 11px; color: var(--ink-soft); }
+
+/* CMS Reco filter row (2026-10-16): same look as the sidebar and Store Task filters - labelled,
+   40px, 10px radius, white, 1px --border - on one row that wraps on a narrow window. */
+.st-key-cms-filters [data-baseweb="select"] > div,
+.st-key-cms-filters [data-baseweb="input"] {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  min-height: 40px;
+  box-sizing: border-box;
+}
+.st-key-cms-filters [data-baseweb="input"] > div { background: transparent; }
+.st-key-cms-filters input { background: transparent; font-size: 14px; }
+.st-key-cms-filters label p { font-size: 11px; color: var(--ink-soft); }

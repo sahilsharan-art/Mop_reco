@@ -47,18 +47,36 @@ def _run_in_progress() -> bool:
     return session.query(Run).filter(Run.status == "running").first() is not None
 
 
+def _add_months(year: int, month: int, n: int) -> tuple:
+    index = year * 12 + (month - 1) + n
+    return index // 12, index % 12 + 1
+
+
 def _available_months() -> list:
-    """Months with loaded data, plus the current and next calendar month —
-    never a hardcoded list (rule 8)."""
-    months = set()
-    if run is not None:
-        for d in loaded_dates(run.id):
-            months.add(d[:7])
+    """EVERY calendar month from the first loaded one to three months past the current month - contiguous, so a
+    month between the last reconciled one and today (September, when only April-August are loaded) is never
+    missing from the list. Computed from the data and the clock, never a hardcoded list (rule 8)."""
+    loaded = sorted({d[:7] for d in loaded_dates(run.id)}) if run is not None else []
     today = date.today()
-    months.add(f"{today.year:04d}-{today.month:02d}")
-    nxt_year, nxt_month = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
-    months.add(f"{nxt_year:04d}-{nxt_month:02d}")
-    return sorted(months)
+    first = (int(loaded[0][:4]), int(loaded[0][5:7])) if loaded else (today.year, today.month)
+    last = _add_months(today.year, today.month, 3)
+    last_loaded = (int(loaded[-1][:4]), int(loaded[-1][5:7])) if loaded else first
+    last = max(last, _add_months(last_loaded[0], last_loaded[1], 1))
+    months, (y, m) = [], first
+    while (y, m) <= last:
+        months.append(f"{y:04d}-{m:02d}")
+        y, m = _add_months(y, m, 1)
+    return months
+
+
+def _next_to_reconcile(months: list) -> int:
+    """The month right after the last loaded one - the one most likely being supplied."""
+    loaded = sorted({d[:7] for d in loaded_dates(run.id)}) if run is not None else []
+    if not loaded:
+        return 0
+    y, m = _add_months(int(loaded[-1][:4]), int(loaded[-1][5:7]), 1)
+    target = f"{y:04d}-{m:02d}"
+    return months.index(target) if target in months else 0
 
 
 def _month_label(m: str) -> str:
@@ -80,7 +98,7 @@ spec = next(s for s in up.SOURCE_REGISTRY if s.display_name == report_name)
 months = _available_months()
 month_labels = [_month_label(m) for m in months]
 if spec.month_specific:
-    month_label = c2.selectbox("Month", month_labels, key="up_month")
+    month_label = c2.selectbox("Month", month_labels, index=_next_to_reconcile(months), key="up_month")
     month = months[month_labels.index(month_label)]
 else:
     c2.selectbox("Month", ["not month-specific"], key="up_month_disabled", disabled=True)

@@ -50,11 +50,20 @@ def _lookup(session, exception_key: str):
     return session.query(Exception_).filter_by(exception_key=exception_key).one_or_none()
 
 
-def _validate_one(session, exception_key: str, remark: str):
+def _preload(session, keys) -> dict:
+    """{exception_key: Exception_} for every key in the file, in a few IN queries instead of one per row."""
+    keys, found = sorted({k for k in keys if k}), {}
+    for i in range(0, len(keys), 500):
+        found.update({e.exception_key: e for e in session.query(Exception_)
+                      .filter(Exception_.exception_key.in_(keys[i:i + 500])).all()})
+    return found
+
+
+def _validate_one(session, exception_key: str, remark: str, preloaded: dict = None):
     """Returns (ok, reason) — the three checks the operator specified:
     the row exists, it is currently an open exception, the remark is not
     empty. Never guessed, never partially accepted (rule 5)."""
-    row = _lookup(session, exception_key)
+    row = preloaded.get(exception_key) if preloaded is not None else _lookup(session, exception_key)
     if row is None:
         return False, "no exception with this key"
     if row.status not in OPEN_STATUSES:
@@ -68,6 +77,9 @@ def validate_bill_remarks(session, df: pd.DataFrame) -> list:
     """`df` columns: business_date, store, bill_no, mop, remark (any case/
     order — see `_read_upload`). One RemarkRow per input row, in order."""
     results = []
+    preloaded = _preload(session, [bill_exception_key(str(r.get("business_date", "")).strip(), str(r.get("store", "")).strip(),
+                                                      str(r.get("bill_no", "")).strip(), str(r.get("mop", "")).strip())
+                                   for _, r in df.iterrows()])
     for i, r in df.iterrows():
         business_date = str(r.get("business_date", "")).strip()
         store = str(r.get("store", "")).strip()
@@ -75,7 +87,7 @@ def validate_bill_remarks(session, df: pd.DataFrame) -> list:
         mop = str(r.get("mop", "")).strip()
         remark = str(r.get("remark", "") or "").strip()
         key = bill_exception_key(business_date, store, bill_no, mop)
-        ok, reason = _validate_one(session, key, remark)
+        ok, reason = _validate_one(session, key, remark, preloaded)
         results.append(RemarkRow(
             i, key, remark, ok, reason,
             fields={"business_date": business_date, "store": store,
@@ -89,12 +101,15 @@ def validate_txn_remarks(session, df: pd.DataFrame) -> list:
     text, exactly like every other reference id in this app
     (`io_.clean_ref()`, already used for this same reason elsewhere)."""
     results = []
+    preloaded = _preload(session, [txn_exception_key(str(r.get("gateway", "")).strip(),
+                                                     io_.clean_ref(r.get("transaction_id")) or "")
+                                   for _, r in df.iterrows()])
     for i, r in df.iterrows():
         gateway = str(r.get("gateway", "")).strip()
         transaction_id = io_.clean_ref(r.get("transaction_id")) or ""
         remark = str(r.get("remark", "") or "").strip()
         key = txn_exception_key(gateway, transaction_id)
-        ok, reason = _validate_one(session, key, remark)
+        ok, reason = _validate_one(session, key, remark, preloaded)
         results.append(RemarkRow(
             i, key, remark, ok, reason,
             fields={"gateway": gateway, "transaction_id": transaction_id}))

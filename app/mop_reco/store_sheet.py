@@ -337,6 +337,17 @@ def build_sheet(opening: pd.DataFrame, digital: pd.DataFrame,
 
     grid = grid.sort_values(["store", "date"]).reset_index(drop=True)
 
+    # A store that did not trade has NO row for those dates. A store the balance file knows is active from the
+    # first date (as before); a store only the sale / PTC / CMS data knows (a store opened mid-range) starts on
+    # its first date with any movement - never earlier. Nothing is dropped from a date the store was active.
+    in_opening = (set(opening["store"].dropna()) if opening is not None and not opening.empty else set())
+    moved = grid[["digital_sale", "digital_received", "cash_sale", "cash_deposit", "cash_expense_income",
+                  "cash_received"]].abs().sum(axis=1) > 0
+    first_active = grid.loc[moved].groupby("store")["date"].min().to_dict()
+    started = (grid["store"].isin(in_opening)
+               | (grid["date"] >= grid["store"].map(first_active).fillna("9999-12-31")))
+    grid = grid[started].reset_index(drop=True)
+
     # The carry-forward. opening(first date) comes from the balance file;
     # opening(D) = closing(D-1) thereafter.
     seed = (opening.set_index("store")["opening_cash"].to_dict()

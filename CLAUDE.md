@@ -3767,6 +3767,119 @@ which stays the truth until September is reconciled, then is extended to APR_SEP
   column J is shown as a MISMATCH with a full bridge (credited later, credits after the run's last date, unmapped stores,
   ADJ net). Column J is NOT redefined; awaiting a ruling. Remarks are keyed on store + period, with append-only history.
 
+### 6.23 Closing an exception: the lifecycle, the shared columns, the tiles (2026-10-17)
+
+* **Why the tiles said 4,806 and the header 4,769 (and 6,729 against 6,725).** Different units, not an error.
+  Bills: 4,806 open bill LINES = 4,769 exception bills + 37 lines that share date, store, bill and MOP with another line
+  (the exception key is coarser than a line, 6.9) - same Rs 46,85,928. Transactions: the Summary strip counted a row
+  "mapped" when its reference was matched (80 duplicate Axis lines + 2 Paytm Rs 5 lines counted mapped although the
+  register lists them) and counted 77 refund / chargeback / reversal / "Refunded" rows as unmapped although they are not
+  sales: 6,729 - 82 + 77 + 1 (a duplicate reference counted twice) = 6,725.
+* **The transaction strip is now on the SALE basis** (supersedes 6.16's by-reference "mapped"): Total = SUCCESS/ACQUIRING
+  rows (what a bill can map to); Auto = rows the engine physically consumed; Manual = active accepted manual matches;
+  Refunded = refunds; Unmapped = the rest, which is exactly the engine's exception population. `txn_day_agg` gained
+  `pool_n/pool_v/consumed_n/consumed_v` (run 11 re-aggregated by `scripts/backfill_txn_day_agg.py`, 151 s; an older
+  aggregate falls back to the old basis). Non-sale rows are reported as a caption (77 on Apr-Aug), outside the count.
+  Run 11: total 3,705,992 = auto 3,699,262 + manual 2 + refunded 0 + unmapped 6,728.
+* **Two independent agreements are asserted and shown** (`queries.MatchOverview`, `match_strip.py`): open bill lines =
+  exception bills + lines folded into another exception; unmapped transactions = exception transactions + rows folded
+  into one (`detail.merged_line_seqs`). Plus the two sums: open + auto + manual = total (bills); auto + manual + refunded +
+  unmapped = total (transactions). Any break shows MISMATCH in --bad with the difference. The Exceptions tiles and the
+  Summary "Bills and transactions" table both read the one `MatchOverview`, so they cannot disagree.
+* **One column definition** (`exception_tables.py`) drives the screen, the export and the upload template. Bills: date, time,
+  store, bill_no, mop, amount, created_by, status, Txn 1, Amount 1, Txn 2, Amount 2, remark, remark_by, remark_at (More and
+  Match are screen-only and never exported). Transactions: gateway, transaction_id, date, time, store, amount,
+  payment_mode, status, **matched_bill, customer_name, zoho_no, refund_date**, remark, remark_by, remark_at. The template is
+  these columns and nothing else; the reader finds the header row under the export's header block. A test asserts it.
+* **Closing.** A bill and its transaction close together: `manual_match.record()` closes the bill exception, the
+  transaction exception and the bill's open-bill store task ("resolved by the data"), in the caller's transaction
+  (`commit=False` makes a batch all-or-nothing). A customer refund (`refunds.record_refund`: customer_name, zoho_no and
+  refund_date ALL required; a refund never closes a bill and is never revenue) closes the transaction exception only.
+  `lifecycle.sync_closures()` runs after every re-run (and `scripts/sync_closures.py` once) so a re-run never re-lists
+  what a person resolved. `ManualMatch.source` / `TransactionRefund.source` = inline | upload.
+* **Reversal** (`manual_match.reverse`, `refunds.reverse_refund`, with a reason, who and when): both return to the exception
+  tables and a NEW open-bill task (generation + 1) is raised. A reversed match keeps its row (lifecycle reversed); a
+  reversed refund leaves `transaction_refunds` (freeing the transaction and its Zoho number) and survives in the append-only
+  `refund_events`.
+* **Upload = the table's own export, filled in** (`table_upload.py`). A row acts on Txn 1 (bills), on matched_bill or the
+  refund trio (transactions - never both), and/or on a changed remark. Validated exactly as an inline row: bill exists and
+  open; transaction exists and unmapped; amount, store, SUCCESS/ACQUIRING; any date allowed (lag recorded); a transaction
+  already mapped elsewhere is REFUSED naming the bill; Txn 2 filled = refused (a split is decided by hand); the same
+  transaction, bill or Zoho number twice in a file = refused. Preview, confirm, then ONE database transaction: any rejected
+  row applies nothing. NOTE an export carries the system's own suggestions in Txn 1 - uploading it untouched matches them
+  (3,086 on Run #11), which the preview states before anything is applied.
+* **Open finding - duplicate-reference lines (82 on Apr-Aug).** A line that shares a reference a bill already holds is listed
+  as an unmapped transaction but can be neither matched (the reference is owned) nor refunded (refused, naming the bill).
+  They need a decision (probably a "duplicate line in the gateway file" resolution) - not invented here.
+* **Index** `ix_r1_matched_txn` (r1_bill_lines.matched_txn_ref): "which bill holds this transaction?" scanned 3.7M rows per
+  row (an upload of thousands never finished). `db._ADDED_INDEXES`; `scripts/add_indexes.py` (74 s on the real file).
+* **Rehearsal**: `MOP_RECO_DB` points the whole app at a COPY of the database; `scripts/round_trip_rehearsal.py` refuses
+  db/reco.sqlite and performs the download / fill / upload / apply / trace / reverse flow for a match and for a refund.
+* **Removed from the Exceptions page** (the functions stay): By bill / By transaction modes, the two bulk-upload expanders
+  with their own different templates, the remark-only bulk upload, the "Closed and auto-resolved" section (now the Status =
+  Closed view), the Manual match bill report and Refund report (superseded by Manual match bills / transactions; the
+  register remains).
+
+### 6.24 "Not reconciled" is said, never shown as zeros (2026-10-17)
+
+* **Incident (twice):** September's files were in the folders, nobody had run September, and every page showed an empty grid
+  or zeros - which reads as a real answer. Run #13 (Apr-Sep) had started on 2026-10-09 and been killed 4 seconds in
+  (marked failed 2026-10-13), so the latest COMPLETED run stayed #11 (01/04-31/08).
+* **Two statements on every page** (`dashboard_common._coverage_notices`, pure logic in `mop_reco/run_coverage.py`):
+  1. the filtered period reaches outside the run -> "Run #11 covers 01/04 to 31/08. September is not reconciled - go to
+     Upload and run it." A period wholly outside the run STOPS the page there (`stop_if_no_dates`): no grid, no zeros.
+  2. source files in the folders that the run never read (by path and modified time, from `run_files`; POS, Paytm, Axis and
+     Bajaj - the sources a run records per file; PTC and CMS are not recorded per run, so nothing is said for them) -> "Run #11
+     has not read N source file(s) ... go to Upload and run it." Gone once a completed run has read them.
+* **A run is the whole range, not an increment.** Every table is keyed by `run_id` and the pages follow the latest COMPLETED
+  run, so a September-only run would blank April-August on the pages; and a gateway reference is date-agnostic (6.3), so
+  September's gateway rows can legitimately settle August bills. The cost of "re-running everything" is small since the
+  warehouse cache means only changed files are parsed (R1 over five months ~100 s, `docs/PERF_BASELINE.md`). Any month that moves
+  between runs is reported, never absorbed.
+* **A run still cannot start while a master is broken** (6.16's pre-flight): `PICKUP LOCATION MASTER.xlsx` had lost LOCATION
+  (header seen: PICKCODE, CODE, PICKUP CODE) on 2026-10-17. Nothing is inferred; the file has to be restored.
+* `scripts/inspect_period.py "<folder hint>"` reads a period's files with the project's own ingest into a throw-away warehouse
+  and reports rows, the date range INSIDE each file, schema and any MOP / payment_mode / CMS TYPE / pickup code the code does
+  not know - before the period is run.
+
+### 6.25 September, the stored-master override, active-date store-days, effective dating, one reader, set-based uploads (2026-10-17)
+
+* **September (Run #15, 01/04-30/09 as one run, 2,402 s).** Apr-Aug is identical to Run #11 on every bill and cash figure: open lines 4,808 /
+  Rs 46,85,938, no bill opened or closed; 0 of 29,144 shared store-day rows differ on any money column; the five R3a controls are identical month
+  by month; sale-basis unmapped transactions identical (570 / 4,220 / 603 / 547 / 790). Only two things differ and both are explained: store-day
+  count (below) and by-reference unmapped July 573->576, Aug 721->722 (four CHARGEBACK_REVERSAL rows dated July/Aug inside September's Paytm file).
+  September: 661,431 bill lines, total sale Rs 1,001,896,656, digital 523,883,320.56, cash 478,013,335.44, matched 661,115, open bills 316,
+  unmapped 963 by reference / 935 sale basis, opening 01/09 Rs 19,332,560.60 (= August closing, 0 breaks), closing 30/09 Rs 13,533,516.65, identity
+  difference 0.00. `docs/BASELINE_APR_SEP.md` is the new baseline. September findings: KGP has NO POS sales from 01/09 yet keeps depositing (28
+  negative-closing days, low Rs -22.9 L); NLD is new with no POS sales and Rs 28.7 L of deposits from 16/09 (17 negative days); GPB and LBL_DUMMY are
+  the chronic ones. Nothing inferred - these need the stores / POS to explain.
+* **Stored-master override, per run only.** `PICKUP LOCATION MASTER.xlsx` (modified 2026-10-08) lost its LOCATION column. With the operator's
+  written authorisation a run may use the STORED version of a named master (`run_reconciliation(use_stored_masters={name: reason})`,
+  `scripts/run_range.py --use-stored`). It is recorded in the run notes and on the Masters page (file, modified date, header seen, stored version,
+  reason) and cleared when the run ends; the next run's pre-flight blocks again. Never inferred, never sticky.
+* **Rows outside the run.** Unmapped gateway transactions dated after the run's last date (15,797 Paytm/Bajaj rows, Rs 1,25,48,249.70, all 01/10) stay in
+  the pool for reference matching but are not exceptions; counted in run notes `unmapped_outside_range`.
+* **ONE reader for multi-file sources.** `ingest.read_source_files()` is the default: every discovered file, concatenated, overlap resolved to the most
+  recently modified file on the natural key, superseded rows reported. PTC, Axis EDC, Axis CMS and Bajaj use it; POS (date-scoped cache) and Paytm (zip
+  parts, dedupe on transaction_id) keep their own loops but read every file. A reader that deliberately takes only the newest file must be in
+  `ingest.NEWEST_ONLY_SOURCES` with its reason (today `opening_cash`, `bank_statement`); `tests/test_all_sources_overlap.py` fails otherwise and
+  asserts two overlapping files load as the UNION. Audit: Paytm, Axis EDC, Bajaj, CMS and POS were correct (fixed 24 Sep, one at a time); PTC was
+  correct only by accident (newest-only until 17 Oct - the Run #14 defect); opening cash and bank statement are newest-only by design.
+* **Store-days exist only from a store's first active date.** A store the balance file knows keeps every day; a store only the sale / PTC / CMS data
+  knows starts on its first day with any movement (`store_sheet.build_sheet`). The active-site master has no dates, so activity is the evidence.
+  Apr-Aug store-days 31,671 -> 29,144 (2,527 all-zero rows, 33 stores incl. the ten CHB CPA CTA MKG NEG SBW AAC DLT KDR NLD); September 6,391.
+* **Effective dating (6.12) is by LOAD date, not store-opening date** (`MasterVersion.loaded_at`; the active-site master carries no dates). That made
+  every store opened after the last master load unmapped until the next month's file. Fix: an identifier ABSENT from the as-at version falls back to the
+  earliest LATER version that holds it (`ResolveResult.via_later_version`); an identifier present in both with different stores keeps the as-at
+  mapping, so a later correction never rewrites a past resolution. Applies to the next ingest (the warehouse caches by file mtime, so a forced
+  re-ingest of Paytm/Axis/CMS is needed to re-resolve September). Value it would resolve on September: Paytm Rs 2.37 Cr, Axis Rs 27.1 L, CMS Rs 2.49 Cr.
+* **Uploads are validated set-based** (`upload_prefetch.py`): the bills, active manual matches, engine owners and refunds a file needs are loaded once
+  and the validators read them while a `prefetch()` context (a ContextVar) is active; unknown transaction ids are looked up in ONE warehouse pass
+  (`manual_match.targeted_pool_many`). Rows with nothing to act on are skipped and counted ("N of M rows carry a transaction or a change; K skipped as
+  unchanged"). A transaction, bill or Zoho number named by two rows of one file rejects BOTH rows. Progress is a real bar.
+  Measured on Run #15 with a 4,769-row export: 20 typed rows 16.3 s -> 2.1 s; 3,000 filled rows ~18 s -> 8.4 s; refunds 200 rows previously loaded the
+  whole 4.38M-row pool (7.2 s) before touching a row.
+
 ## 7. Acceptance numbers
 
 Every stage is proved against these. They come from the two workbooks already

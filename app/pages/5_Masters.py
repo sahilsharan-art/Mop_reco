@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import zipfile
 from datetime import date
@@ -12,10 +13,11 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from dashboard_common import db_session, latest_run, page, sidebar
-from mop_reco import cms_blocks as cb
+from dashboard_common import db_session, frame_export_button, latest_run, page, sidebar
+from mop_reco import master_gaps as mg
+from mop_reco.export import ExportMeta
 from mop_reco.config import load_config
-from mop_reco.formatting import money_table
+from mop_reco.formatting import display_date, money_table
 from mop_reco.masters import (
     MASTER_SPECS,
     build_unmapped_report,
@@ -51,15 +53,43 @@ for _name, _message in load_failures.items():
              "restore the file and reload.")
 _run = latest_run(session)
 if _run is not None:
-    _slips, _deps = cb.load(session, _run.id)
-    _unmapped = cb.unresolved_rows(_slips, "0000-01-01", "9999-12-31")
-    if len(_unmapped):
-        st.error(f"**Pickup codes with no store mapping: {len(_unmapped)} code(s), "
-                 f"{int(_unmapped['rows'].sum())} CMS row(s), Rs {money_table(_unmapped['amount'].sum())}.** "
-                 "Shown until fixed. No store is guessed for these; they sit as UNRESOLVED on CMS Reco.")
-        st.dataframe(_unmapped.rename(columns={"pickup_code": "Pickup code", "location": "Location",
-                                               "rows": "Rows", "amount": "Value"}),
-                     hide_index=True, width="stretch")
+    _notes = json.loads(_run.notes or "{}")
+
+    # A run that used a STORED master because its file on disk was unusable says so here, with the file's own facts.
+    for _name, _check in (_notes.get("masters_preflight") or {}).items():
+        _f = (_check or {}).get("stored_in_force")
+        if _f:
+            st.warning(
+                f"**Run #{_run.id} used the stored {master_label(_name)}** (version #{_f['stored_version']}, loaded "
+                f"{str(_f['stored_loaded_at'])[:16]}, {_f['stored_rows']} rows) instead of the file on disk, because "
+                f"the file was unusable: {Path(_f['file']).name}, modified {_f['file_modified']}, header "
+                f"{', '.join(map(str, _f['header_seen']))}. Reason on record: {_f['reason']}. The next run reads the "
+                "file normally and the pre-flight blocks again until it is restored.")
+
+    # The standing list for whoever owns the masters: everything a run could not resolve to a store.
+    _gaps = mg.frame(session, _run.id)
+    st.header("Unmapped - awaiting Axis")
+    if _gaps.empty:
+        st.caption(f"Run #{_run.id} left no identifier unresolved.")
+    else:
+        _in = _gaps[_gaps["in_current_master"] == "yes"]
+        _out = _gaps[_gaps["in_current_master"] == "no"]
+        st.markdown(
+            f"**Run #{_run.id}: {len(_gaps)} identifier(s), {int(_gaps['rows'].sum()):,} row(s), "
+            f"Rs {money_table(_gaps['value'].sum())} unresolved.** "
+            f"**{len(_out)}** are absent from the current master ({int(_out['rows'].sum()):,} rows, "
+            f"Rs {money_table(_out['value'].sum())}); **{len(_in)}** are already in the current master "
+            f"({int(_in['rows'].sum()):,} rows, Rs {money_table(_in['value'].sum())}) but were loaded after the "
+            "dates they appear on, and masters apply from the date they were loaded (never rewriting an earlier "
+            "date) - so they stay unresolved for those dates. Nothing is guessed.")
+        _show = _gaps.assign(value=_gaps["value"].map(money_table), first_seen=_gaps["first_seen"].map(display_date),
+                             last_seen=_gaps["last_seen"].map(display_date))
+        st.dataframe(_show, hide_index=True, width="stretch")
+        frame_export_button(
+            _gaps, ExportMeta(run_id=_run.id, run_timestamp=_run.started_at, value_column="value",
+                              title="Unmapped - awaiting Axis"),
+            key="dl_master_gaps", noun="unmapped identifiers")
+
 rows = []
 for master_name, (version, created) in load_results.items():
     rows.append(

@@ -952,3 +952,17 @@ def test_other_type_summary_never_includes_COL():
 def test_other_type_summary_on_empty_input_is_empty_not_a_crash():
     assert ss.other_type_summary(pd.DataFrame()).columns.tolist() == [
         "type", "rows", "value", "feeds_J"]
+
+
+def test_a_store_that_did_not_trade_has_no_row_before_its_first_active_date():
+    import pandas as pd
+    from datetime import date
+    from mop_reco import store_sheet as ss
+    opening = pd.DataFrame({"store": ["OLD"], "opening_cash": [100.0]})
+    cash = pd.DataFrame({"date": ["2026-04-03", "2026-04-01"], "store": ["NEW", "OLD"], "cash_sale": [50.0, 10.0]})
+    empty = pd.DataFrame(columns=["date", "store"])
+    sheet = ss.build_sheet(opening, empty, cash, empty, empty, date(2026, 4, 1), date(2026, 4, 4))
+    new = sheet[sheet["store"] == "NEW"]
+    assert list(new["date"]) == ["2026-04-03", "2026-04-04"]          # nothing before it opened
+    assert len(sheet[sheet["store"] == "OLD"]) == 4                    # a store in the balance file keeps every day
+    assert float(new[new["date"] == "2026-04-03"]["opening_balance"].iloc[0]) == 0.0

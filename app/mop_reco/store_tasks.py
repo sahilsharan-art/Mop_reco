@@ -642,11 +642,16 @@ def preview_replies(session, frame: pd.DataFrame) -> ReplyPreview:
                          + ". Expected: " + ", ".join(TEMPLATE_COLUMNS))
     seen: set = set()
     rows = []
-    for i, rec in enumerate(frame.to_dict("records"), start=2):
+    records = frame.to_dict("records")
+    wanted = sorted({parse_id(r.get("task_id")) for r in records if parse_id(r.get("task_id"))})
+    tasks = {}
+    for k in range(0, len(wanted), 500):
+        tasks.update({t.id: t for t in session.query(StoreTask).filter(StoreTask.id.in_(wanted[k:k + 500])).all()})
+    for i, rec in enumerate(records, start=2):
         tid = parse_id(rec.get("task_id"))
         store, reply, by = _cell(rec.get("store")).upper(), _cell(rec.get("reply")), _cell(rec.get("replied_by"))
         why = []
-        task = session.get(StoreTask, tid) if tid else None
+        task = tasks.get(tid) if tid else None
         if tid is None:
             why.append("task_id is missing or not a task id")
         elif task is None:
@@ -744,3 +749,52 @@ def close_task(session, task_id: int, reason: str, operator: str, today: date, n
     t.status, t.closed_on, t.closed_by, t.close_reason = CLOSED, today.isoformat(), operator, reason
     _event(session, t.id, "closed", operator, reason, now)
     session.commit()
+
+
+# ---------------------------------------------------------------------------
+# Immediate cascade from a manual match or its reversal (2026-10-16)
+# ---------------------------------------------------------------------------
+
+def close_bill_tasks(session, bill_no: str, reason: str = "bill matched manually", today: date = None,
+                     commit: bool = True) -> int:
+    """A bill was closed by a person: its open-bill task closes at once, recorded as resolved by the
+    data - exactly what the next sync would have done, without waiting for it."""
+    today = today or date.today()
+    tasks = (session.query(StoreTask).filter(StoreTask.task_type == OPEN_BILL, StoreTask.bill_no == bill_no,
+                                             StoreTask.status.in_(LIVE_STATUSES)).all())
+    now = datetime.now()
+    for t in tasks:
+        t.status, t.closed_on, t.closed_by, t.close_reason = CLOSED, today.isoformat(), RESOLVED_BY_DATA, reason
+        _event(session, t.id, "auto_closed", "system", reason, now)
+    if commit:
+        session.commit()
+    return len(tasks)
+
+
+def reopen_bill_tasks(session, run_id: int, bill_no: str, config_raw: dict = None, today: date = None,
+                      operator: str = "system", commit: bool = True) -> int:
+    """A manual match was reversed: the bill is open again, so a NEW open-bill task is raised for it
+    (generation + 1 - a closed task is never reopened in place, the history stays as it was)."""
+    today = today or date.today()
+    config_raw = config_raw or {}
+    made = 0
+    now = datetime.now()
+    for c in open_bill_candidates(session, run_id).active:
+        if c.bill_no != bill_no:
+            continue
+        key = _stored_key(c)
+        if session.query(StoreTask.id).filter(StoreTask.task_key == key, StoreTask.status.in_(LIVE_STATUSES)).first():
+            continue
+        gen = max([g for (g,) in session.query(StoreTask.generation).filter(StoreTask.task_key == key).all()] or [0])
+        task = StoreTask(
+            task_key=key, generation=gen + 1, task_type=c.task_type, store=c.store, business_date=c.business_date,
+            bill_no=c.bill_no, mop=c.mop, amount=c.amount, detail=json.dumps(c.detail), raised_on=today.isoformat(),
+            due_by=add_working_days(today, sla_days(config_raw, c.task_type)).isoformat(), status=OPEN,
+            first_seen_run_id=run_id, last_seen_run_id=run_id)
+        session.add(task)
+        session.flush()
+        _event(session, task.id, "raised", operator, "bill is open again - its manual match was reversed", now)
+        made += 1
+    if commit:
+        session.commit()
+    return made

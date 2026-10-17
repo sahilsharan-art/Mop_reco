@@ -70,3 +70,62 @@ def test_remarks_survive_and_keep_history():
     assert len(cb.remark_history(s, "AAA", "2026-08-01", "2026-08-31")) == 2
     with pytest.raises(ValueError):
         cb.set_remark(s, "AAA", "2026-08-01", "2026-08-31", " ", "Aditi")
+
+
+def _session():
+    from sqlalchemy import create_engine
+    eng = create_engine("sqlite://")
+    Base.metadata.create_all(eng)
+    return sessionmaker(bind=eng)()
+
+
+def _model():
+    slips = _slips([("COL", "2026-04-01", "2026-04-01", "AAA", "P1", "1", 60.0)])
+    dep = _dep([("2026-04-01", "AAA", 100.0)])
+    return cb.build_model(slips, dep, "2026-04-01", "2026-04-03")
+
+
+def test_override_changes_closing_but_keeps_the_banks_figure():
+    s, m = _session(), _model()
+    acc, rej = cb.validate_overrides(m, [{"store": "AAA", "deposit_date": "2026-04-01", "column": "same_day",
+                                          "amount": 100, "reason": "slip found"}], "2026-04-01", "2026-04-03")
+    assert not rej and acc[0]["computed_amount"] == 60.0
+    cb.record_overrides(s, acc, "Aditi")
+    m2 = cb.apply_overrides(m, cb.active_overrides(s))
+    assert m2.cms1[0][0] == 100 and m2.cms1_computed[0][0] == 60
+    assert m2.closing[0][0] == 0 and m2.opening[1][0] == 0          # downstream uses the override
+    assert m.closing[0][0] == 40                                      # the original model is untouched
+    assert cb.override_headline(cb.active_overrides(s)) == (1, 40.0, 40.0)
+    assert all(c.ok for c in cb.block_controls(m2, "2026-04-01", "2026-04-03"))
+
+
+def test_override_revert_restores_and_history_is_kept():
+    s, m = _session(), _model()
+    acc, _ = cb.validate_overrides(m, [{"store": "AAA", "deposit_date": "2026-04-01", "column": "same_day",
+                                        "amount": 5, "reason": "x"}], "2026-04-01", "2026-04-03")
+    cb.record_overrides(s, acc, "Aditi")
+    cb.revert_override(s, int(cb.active_overrides(s)["id"].iloc[0]), "Aditi")
+    assert cb.active_overrides(s).empty
+    assert cb.apply_overrides(m, cb.active_overrides(s)).closing[0][0] == 40
+    full = cb.all_overrides(s)
+    assert len(full) == 1 and full.iloc[0]["status"] == "reverted" and full.iloc[0]["computed"] == 60.0
+
+
+def test_override_validation_rejects_bad_rows_with_reasons():
+    m = _model()
+    rows = [{"store": "ZZZ", "deposit_date": "2026-04-01", "column": "same_day", "amount": 1, "reason": "r"},
+            {"store": "AAA", "deposit_date": "2026-05-01", "column": "same_day", "amount": 1, "reason": "r"},
+            {"store": "AAA", "deposit_date": "2026-04-01", "column": "third", "amount": 1, "reason": "r"},
+            {"store": "AAA", "deposit_date": "2026-04-01", "column": "next_day", "amount": 1, "reason": ""},
+            {"store": "AAA", "deposit_date": "2026-04-01", "column": "next_day", "amount": "abc", "reason": "r"}]
+    acc, rej = cb.validate_overrides(m, rows, "2026-04-01", "2026-04-03")
+    assert not acc and len(rej) == 5 and all(r["problems"] for r in rej)
+
+
+def test_override_bridge_still_uses_the_banks_figure():
+    s, m = _session(), _model()
+    acc, _ = cb.validate_overrides(m, [{"store": "AAA", "deposit_date": "2026-04-01", "column": "same_day",
+                                        "amount": 100, "reason": "x"}], "2026-04-01", "2026-04-03")
+    cb.record_overrides(s, acc, "Aditi")
+    m2 = cb.apply_overrides(m, cb.active_overrides(s))
+    assert float((m2.cms1_computed + m2.cms2_computed).sum()) == 60.0

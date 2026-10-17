@@ -46,20 +46,20 @@ def test_a_missing_function_is_caught_and_named():
     """The exact reported failure: the page calls a function the loaded module
     does not have.
 
-    `bill_match_summary` is called from `Summary.py` itself (2026-09-17 —
+    `match_overview` is called from `Summary.py` itself (2026-09-17 —
     Summary now imports `queries` directly, for the Matched/Exceptions
     sections folded in from the removed Bill match, Transactions,
     Exceptions and Digital sale pages)."""
     from mop_reco import queries as q
 
-    saved = q.bill_match_summary
-    del q.bill_match_summary
+    saved = q.match_overview
+    del q.match_overview
     try:
         result = selfcheck.run_check()
         assert not result.ok
         missing = [p for p in result.problems
                    if p.kind == "missing_attribute"
-                   and p.name == "bill_match_summary"]
+                   and p.name == "match_overview"]
         assert missing, [p.message() for p in result.problems]
         problem = missing[0]
         assert problem.page == "Summary.py"
@@ -69,7 +69,7 @@ def test_a_missing_function_is_caught_and_named():
         assert problem.resolved_path.endswith("queries.py")
         assert "resolved file" in problem.message()
     finally:
-        q.bill_match_summary = saved
+        q.match_overview = saved
 
 
 def test_a_missing_imported_name_is_caught():

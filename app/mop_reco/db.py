@@ -41,7 +41,11 @@ from sqlalchemy.pool import NullPool
 
 from .config import PROJECT_ROOT
 
-DEFAULT_DB_PATH = PROJECT_ROOT / "db" / "reco.sqlite"
+# MOP_RECO_DB points the whole application at another database file - a COPY, to rehearse a workflow
+# end to end (a second dashboard on another port, a script) without touching db/reco.sqlite.
+import os as _os
+
+DEFAULT_DB_PATH = Path(_os.environ["MOP_RECO_DB"]) if _os.environ.get("MOP_RECO_DB") else PROJECT_ROOT / "db" / "reco.sqlite"
 
 Base = declarative_base()
 
@@ -285,6 +289,9 @@ class ManualMatch(Base):
     #   superseded — the engine later matched the same bill to the SAME txn
     #   conflicted — the engine later matched that bill to a DIFFERENT txn
     #   orphaned   — the bill no longer exists in the dump (IT deleted it)
+    # How it was recorded (2026-10-16): "inline" (typed or chosen on the table) or "upload" (a file).
+    # NULL on a match recorded before this existed - read as inline, or as upload for a bulk batch.
+    source = Column(String, nullable=True)
     lifecycle = Column(String, nullable=False, default="active", index=True)
     lifecycle_note = Column(Text, nullable=True)
     lifecycle_at = Column(DateTime, nullable=True)
@@ -484,6 +491,65 @@ class CmsRecoRemarkEvent(Base):
     remark_at = Column(DateTime, nullable=False)
 
 
+class CmsOverride(Base):
+    """A hand correction of one CMS Report cell - an OVERLAY, never an edit of the bank's figure.
+
+    Keyed on store | deposit date | column (same_day / next_day). Keeps the computed value, the override,
+    the reason and who/when; a revert marks the row 'reverted' (never deletes it). Survives every re-run."""
+    __tablename__ = "cms_overrides"
+
+    id = Column(Integer, primary_key=True)
+    store = Column(String, nullable=False)
+    dep_date = Column(String, nullable=False)
+    col = Column(String, nullable=False)                   # same_day | next_day
+    computed_amount = Column(Numeric(18, 2), nullable=False)
+    override_amount = Column(Numeric(18, 2), nullable=False)
+    reason = Column(Text, nullable=False)
+    entered_by = Column(String, nullable=False)
+    entered_at = Column(DateTime, nullable=False)
+    status = Column(String, nullable=False, default="active")     # active | reverted
+    reverted_by = Column(String)
+    reverted_at = Column(DateTime)
+    batch_id = Column(String)                               # one bulk upload = one batch
+
+    __table_args__ = (Index("ux_cms_override_active", "store", "dep_date", "col", unique=True,
+                            sqlite_where=text("status = 'active'")),)
+
+
+class CmsOverrideEvent(Base):
+    """Append-only history of every override, change and revert (rule 4)."""
+    __tablename__ = "cms_override_events"
+
+    id = Column(Integer, primary_key=True)
+    store = Column(String, nullable=False, index=True)
+    dep_date = Column(String, nullable=False)
+    col = Column(String, nullable=False)
+    action = Column(String, nullable=False)                 # set | revert
+    computed_amount = Column(Numeric(18, 2))
+    override_amount = Column(Numeric(18, 2))
+    reason = Column(Text)
+    by = Column(String, nullable=False)
+    at = Column(DateTime, nullable=False)
+
+
+class MasterGap(Base):
+    """An identifier the run could not resolve to a store (a Paytm MID, an Axis MID, a CMS pickup code - and the BNK
+    pseudo-store's slips), with the run's own facts about it (2026-10-17). One row per run x source x identifier x
+    location. Rows and value are the run's range only; first/last seen are over that range too. Whether the identifier
+    is in the CURRENT master is read live by the Masters page, not stored here - a master is updated after a run."""
+    __tablename__ = "master_gaps"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=False, index=True)
+    source = Column(String, nullable=False)          # paytm_mid | axis_mid | pickup_code | cms_bnk
+    identifier = Column(String, nullable=False)
+    location = Column(String, nullable=True)
+    rows = Column(Integer, nullable=False)
+    value = Column(Numeric, nullable=False)
+    first_seen = Column(String, nullable=True)
+    last_seen = Column(String, nullable=True)
+
+
 # ---------------------------------------------------------------------------
 # Store-day and date-total aggregates (2026-09-20) — precomputed at RUN time,
 # not view time (CLAUDE.md's performance rework: "the Run stage must write
@@ -557,6 +623,12 @@ class TxnDayAgg(Base):
     total_v = Column(Numeric, nullable=False)
     mapped_n = Column(Integer, nullable=False)
     mapped_v = Column(Numeric, nullable=False)
+    # 2026-10-16: the SALE population (SUCCESS / ACQUIRING rows a bill can map to) and how many of
+    # those rows the engine physically consumed. NULL on a run aggregated before this existed.
+    pool_n = Column(Integer, nullable=True)
+    pool_v = Column(Numeric, nullable=True)
+    consumed_n = Column(Integer, nullable=True)
+    consumed_v = Column(Numeric, nullable=True)
 
     __table_args__ = (Index("ix_txn_day_agg_run_date_store", "run_id", "business_date", "store"),)
 
@@ -690,11 +762,34 @@ class TransactionRefund(Base):
     uploaded_by = Column(String, nullable=False)
     uploaded_at = Column(DateTime, nullable=False)
     batch_id = Column(Integer, nullable=True, index=True)
+    source = Column(String, nullable=True)                # "inline" | "upload" (2026-10-16)
 
     __table_args__ = (
         Index("ux_refund_txn", "gateway", "transaction_ref", unique=True),
         Index("ux_refund_zoho", "zoho_no", unique=True),
     )
+
+
+class RefundEvent(Base):
+    """Append-only history of every refund recorded and every refund reversed (rule 4). A reversal
+    removes the live row from `transaction_refunds` (so the transaction and its Zoho number are free
+    again) but the full record survives here."""
+    __tablename__ = "refund_events"
+
+    id = Column(Integer, primary_key=True)
+    action = Column(String, nullable=False)               # recorded | reversed
+    gateway = Column(String, nullable=False)
+    transaction_ref = Column(String, nullable=False, index=True)
+    business_date = Column(String, nullable=True)
+    store = Column(String, nullable=True)
+    amount = Column(Numeric, nullable=True)
+    zoho_no = Column(String, nullable=True)
+    customer_name = Column(String, nullable=True)
+    refund_date = Column(String, nullable=True)
+    source = Column(String, nullable=True)
+    reason = Column(Text, nullable=True)
+    by = Column(String, nullable=False)
+    at = Column(DateTime, nullable=False)
 
 
 class UploadedFile(Base):
@@ -810,11 +905,30 @@ _ADDED_COLUMNS = [
     ("runs", "current_stage", "TEXT"),
     ("runs", "heartbeat_at", "TIMESTAMP"),
     ("runs", "progress_detail", "TEXT"),
+    ("txn_day_agg", "pool_n", "INTEGER"),
+    ("txn_day_agg", "pool_v", "NUMERIC"),
+    ("txn_day_agg", "consumed_n", "INTEGER"),
+    ("txn_day_agg", "consumed_v", "NUMERIC"),
+    ("manual_matches", "source", "TEXT"),
+    ("transaction_refunds", "source", "TEXT"),
+]
+
+
+# Indexes added to an existing table after it was first created (`create_all` never adds an index to a table
+# that already exists). `IF NOT EXISTS`, so a fresh database and an upgraded one end up the same.
+#   ix_r1_matched_txn (2026-10-16): "which bill already holds this transaction?" is asked for every pasted or
+#   uploaded match and every refund. With no index it scanned the 3.7M-row table (seconds PER ROW - an upload
+#   of a few thousand rows did not finish); with it, it is a seek.
+_ADDED_INDEXES = [
+    ("ix_r1_matched_txn", "CREATE INDEX IF NOT EXISTS ix_r1_matched_txn ON r1_bill_lines (matched_txn_ref)"),
 ]
 
 
 def _add_missing_columns(engine):
     with engine.connect() as conn:
+        for _name, ddl in _ADDED_INDEXES:
+            conn.exec_driver_sql(ddl)
+            conn.commit()
         for table, column, ddl_type in _ADDED_COLUMNS:
             existing = {row[1] for row in
                        conn.exec_driver_sql(f"PRAGMA table_info({table})")}

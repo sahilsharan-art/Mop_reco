@@ -37,7 +37,8 @@ import numpy as np
 import pandas as pd
 
 from . import masters
-from .db import (CmsPtcDeposit, CmsRecoRemark, CmsRecoRemarkEvent, CmsSlip, StoreDayAgg)
+from .db import (CmsOverride, CmsOverrideEvent, CmsPtcDeposit, CmsRecoRemark, CmsRecoRemarkEvent, CmsSlip,
+                 StoreDayAgg)
 
 UNRESOLVED = "UNRESOLVED"
 PSEUDO_STORES = ("BNK", UNRESOLVED)          # shown after the real stores, never merged into one
@@ -234,6 +235,9 @@ class Model:
     opening: np.ndarray
     closing: np.ndarray
     first_opening: dict = field(default_factory=dict)
+    cms1_computed: np.ndarray = None     # the bank's figures, before any override
+    cms2_computed: np.ndarray = None
+    overridden: list = field(default_factory=list)   # [(date_idx, store_idx, column)]
 
     def idx(self, d: str) -> int:
         return self.dates.index(d)
@@ -281,7 +285,8 @@ def build_model(slips: pd.DataFrame, deposits: pd.DataFrame, first: str, last: s
         opening[i] = prev
         closing[i] = np.round(opening[i] + deposit[i] - cms1[i] - cms2[i], 2)
         prev = closing[i]
-    return Model(dates, stores, deposit, cms1, cms2, opening, closing, dict(zip(stores, first_open)))
+    return Model(dates, stores, deposit, cms1, cms2, opening, closing, dict(zip(stores, first_open)),
+                 cms1.copy(), cms2.copy(), [])
 
 
 def summary_frame(m: Model, date_from: str, date_to: str) -> pd.DataFrame:
@@ -392,7 +397,7 @@ def bridge_to_j(session, run_id: int, m: Model, slips: pd.DataFrame, date_from: 
     from sqlalchemy import func
     _lo, cutoff = run_range(session, run_id)
     a, b = m.window(date_from, date_to)
-    page_cms = float((m.cms1[a:b] + m.cms2[a:b]).sum())
+    page_cms = float((m.cms1_computed[a:b] + m.cms2_computed[a:b]).sum())      # the bank's figures, never overrides
     w = slips[(slips["dep_date"] >= date_from) & (slips["dep_date"] <= date_to)] if not slips.empty else slips
     col = w[w["row_type"] == "COL"] if not w.empty else w
     all_col = float(col["amount"].sum()) if not col.empty else 0.0
@@ -514,3 +519,158 @@ def remark_history(session, store: str, date_from: str, date_to: str) -> pd.Data
             .order_by(CmsRecoRemarkEvent.remark_at.asc(), CmsRecoRemarkEvent.id.asc()).all())
     return pd.DataFrame([{"When": r.remark_at.strftime("%d/%m/%Y %H:%M"), "By": r.remark_by, "Remark": r.remark}
                          for r in rows], columns=["When", "By", "Remark"])
+
+
+# ---------------------------------------------------------------------------
+# Overrides - a hand correction of one CMS Report cell, as an overlay (2026-10-16)
+# ---------------------------------------------------------------------------
+
+COLS = {"same_day": "cms1", "next_day": "cms2"}
+COL_LABEL = {"same_day": "CMS Report (same day)", "next_day": "CMS Report (next day)"}
+
+
+def active_overrides(session) -> pd.DataFrame:
+    cols = ["id", "store", "dep_date", "col", "computed_amount", "override_amount", "difference", "reason",
+            "entered_by", "entered_at"]
+    rows = session.query(CmsOverride).filter(CmsOverride.status == "active").order_by(
+        CmsOverride.dep_date, CmsOverride.store, CmsOverride.col).all()
+    return pd.DataFrame([{"id": r.id, "store": r.store, "dep_date": r.dep_date, "col": r.col,
+                          "computed_amount": float(r.computed_amount), "override_amount": float(r.override_amount),
+                          "difference": round(float(r.override_amount) - float(r.computed_amount), 2),
+                          "reason": r.reason, "entered_by": r.entered_by, "entered_at": r.entered_at} for r in rows],
+                        columns=cols)
+
+
+def all_overrides(session) -> pd.DataFrame:
+    """Every override ever, active and reverted - the full record."""
+    rows = session.query(CmsOverride).order_by(CmsOverride.id).all()
+    cols = ["store", "dep_date", "col", "computed", "override", "difference", "reason", "entered_by", "entered_at",
+            "status", "reverted_by", "reverted_at"]
+    return pd.DataFrame([{"store": r.store, "dep_date": r.dep_date, "col": r.col,
+                          "computed": float(r.computed_amount), "override": float(r.override_amount),
+                          "difference": round(float(r.override_amount) - float(r.computed_amount), 2),
+                          "reason": r.reason, "entered_by": r.entered_by, "entered_at": r.entered_at,
+                          "status": r.status, "reverted_by": r.reverted_by, "reverted_at": r.reverted_at}
+                         for r in rows], columns=cols)
+
+
+def apply_overrides(m: Model, overrides: pd.DataFrame) -> Model:
+    """A copy of the model with every active override in the CMS columns and the chain recomputed from there.
+    The computed figures are kept on the model (`cms1_computed`, `cms2_computed`); nothing is overwritten."""
+    cms1, cms2 = m.cms1_computed.copy(), m.cms2_computed.copy()
+    dx = {d: i for i, d in enumerate(m.dates)}
+    sx = {s: i for i, s in enumerate(m.stores)}
+    marked = []
+    for r in overrides.itertuples(index=False):
+        if r.dep_date in dx and r.store in sx and r.col in COLS:
+            (cms1 if r.col == "same_day" else cms2)[dx[r.dep_date], sx[r.store]] = r.override_amount
+            marked.append((dx[r.dep_date], sx[r.store], r.col))
+    opening, closing = np.zeros_like(m.deposit), np.zeros_like(m.deposit)
+    prev = np.array([m.first_opening.get(s, 0.0) for s in m.stores], dtype=float)
+    for i in range(len(m.dates)):
+        opening[i] = prev
+        closing[i] = np.round(opening[i] + m.deposit[i] - cms1[i] - cms2[i], 2)
+        prev = closing[i]
+    return Model(m.dates, m.stores, m.deposit, cms1, cms2, opening, closing, m.first_opening,
+                 m.cms1_computed, m.cms2_computed, marked)
+
+
+def override_headline(overrides: pd.DataFrame) -> tuple:
+    """(cells overridden, net difference from the bank's figures, gross difference)."""
+    if overrides.empty:
+        return 0, 0.0, 0.0
+    d = overrides["difference"]
+    return int(len(overrides)), round(float(d.sum()), 2), round(float(d.abs().sum()), 2)
+
+
+def override_note(row) -> str:
+    return (f"Bank reported {row.computed_amount:,.2f}, overridden to {row.override_amount:,.2f} by "
+            f"{row.entered_by}: {row.reason}")
+
+
+def validate_overrides(m: Model, rows: list, p0: str, p1: str) -> tuple:
+    """Row by row. Returns (accepted, rejected); each accepted row carries the computed figure it overrides,
+    each rejected row the reasons. A cell may appear once per batch."""
+    accepted, rejected, seen = [], [], set()
+    dx = {d: i for i, d in enumerate(m.dates)}
+    sx = {s: i for i, s in enumerate(m.stores)}
+    for n, r in enumerate(rows, start=1):
+        why = []
+        store = str(r.get("store", "") or "").strip().upper()
+        dep = _iso(r.get("deposit_date", r.get("dep_date")))
+        col = str(r.get("column", r.get("col", "")) or "").strip().lower()
+        reason = str(r.get("reason", "") or "").strip()
+        try:
+            amount = round(float(str(r.get("amount")).replace(",", "")), 2)
+            if np.isnan(amount):
+                raise ValueError
+        except (TypeError, ValueError):
+            amount = None
+            why.append("amount is not a number")
+        if store not in sx:
+            why.append(f"store '{store}' is not a store on this page")
+        if dep is None or dep not in dx:
+            why.append("deposit date is missing or outside the loaded run")
+        elif not (p0 <= dep <= p1):
+            why.append(f"deposit date {dep} is outside the period {p0} to {p1}")
+        if col not in COLS:
+            why.append("column must be same_day or next_day")
+        if not reason:
+            why.append("a reason is required")
+        key = (store, dep, col)
+        if key in seen:
+            why.append("the same cell appears twice in this file")
+        seen.add(key)
+        if why:
+            rejected.append({"row": n, "store": store, "deposit_date": dep, "column": col, "amount": amount,
+                             "reason": reason, "problems": "; ".join(why)})
+            continue
+        computed = float((m.cms1_computed if col == "same_day" else m.cms2_computed)[dx[dep], sx[store]])
+        accepted.append({"row": n, "store": store, "dep_date": dep, "col": col, "computed_amount": computed,
+                         "override_amount": amount, "reason": reason})
+    return accepted, rejected
+
+
+def record_overrides(session, accepted: list, operator: str, now: datetime = None, batch_id: str = None):
+    """All or nothing: either every accepted row is written or none is. An existing active override on the
+    cell is reverted first (kept in history) and replaced; its computed figure is unchanged."""
+    if not operator:
+        raise ValueError("An override must record who made it.")
+    now = now or datetime.now()
+    try:
+        for a in accepted:
+            if not str(a["reason"]).strip():
+                raise ValueError("A reason is required.")
+            old = session.query(CmsOverride).filter_by(store=a["store"], dep_date=a["dep_date"], col=a["col"],
+                                                       status="active").first()
+            if old is not None:
+                old.status, old.reverted_by, old.reverted_at = "reverted", operator, now
+                session.add(CmsOverrideEvent(store=old.store, dep_date=old.dep_date, col=old.col, action="revert",
+                                             computed_amount=old.computed_amount, override_amount=old.override_amount,
+                                             reason="replaced by a new override", by=operator, at=now))
+                session.flush()
+            session.add(CmsOverride(store=a["store"], dep_date=a["dep_date"], col=a["col"],
+                                    computed_amount=a["computed_amount"], override_amount=a["override_amount"],
+                                    reason=a["reason"].strip(), entered_by=operator, entered_at=now, status="active",
+                                    batch_id=batch_id))
+            session.add(CmsOverrideEvent(store=a["store"], dep_date=a["dep_date"], col=a["col"], action="set",
+                                         computed_amount=a["computed_amount"], override_amount=a["override_amount"],
+                                         reason=a["reason"].strip(), by=operator, at=now))
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+
+def revert_override(session, override_id: int, operator: str, now: datetime = None):
+    if not operator:
+        raise ValueError("A revert must record who made it.")
+    now = now or datetime.now()
+    row = session.get(CmsOverride, override_id)
+    if row is None or row.status != "active":
+        raise ValueError("That override is not active.")
+    row.status, row.reverted_by, row.reverted_at = "reverted", operator, now
+    session.add(CmsOverrideEvent(store=row.store, dep_date=row.dep_date, col=row.col, action="revert",
+                                 computed_amount=row.computed_amount, override_amount=row.override_amount,
+                                 reason="reverted to the bank's figure", by=operator, at=now))
+    session.commit()

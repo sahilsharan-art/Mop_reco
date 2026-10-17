@@ -416,3 +416,17 @@ def test_resolve_store_pos_source_uses_provisional_list(config, session, daily_p
 
     result_bad = resolve_store(session, "pos", "NOT-A-STORE", BUSINESS_DATE, pos_store_codes=codes)
     assert result_bad.status == "unmapped"
+
+
+def test_an_identifier_added_by_a_later_master_still_resolves_an_earlier_date_but_a_correction_does_not(session):
+    """Effective dating is by load date, so a September MID only in an October file used to stay unmapped. Absence
+    falls back to the earliest later version; a MID present in both versions keeps the as-at mapping (6.12)."""
+    _upsert_master_version(session, "mid_paytm", [{"mid": "OLD", "store": "AAA"}], "s", None,
+                           loaded_at=datetime(2026, 9, 1))
+    _upsert_master_version(session, "mid_paytm", [{"mid": "OLD", "store": "BBB"}, {"mid": "NEW", "store": "CCC"}],
+                           "s", None, loaded_at=datetime(2026, 10, 9))
+    late = resolve_store(session, "paytm_mid", "NEW", date(2026, 9, 15))
+    assert (late.status, late.store) == ("resolved", "CCC") and late.via_later_version
+    corrected = resolve_store(session, "paytm_mid", "OLD", date(2026, 9, 15))
+    assert corrected.store == "AAA" and corrected.via_later_version is None     # the correction is not back-applied
+    assert resolve_store(session, "paytm_mid", "NOPE", date(2026, 9, 15)).status == "unmapped"

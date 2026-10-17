@@ -23,6 +23,8 @@ from . import ingest as ingest_mod
 from . import store_sheet_source
 from .config import Config
 from . import cms_blocks
+from . import lifecycle
+from . import master_gaps
 from . import store_tasks
 from .db import R1BillLine, ReconciliationResult, Run, RunFile
 from . import manual_match
@@ -120,7 +122,8 @@ def _record_files(session, run_id: int, report):
 
 
 def run_reconciliation(config: Config, session, date_from=None, date_to=None,
-                       triggered_by: str = None, source_file_paths: dict = None) -> dict:
+                       triggered_by: str = None, source_file_paths: dict = None,
+                       use_stored_masters: dict = None) -> dict:
     """Ingest every available source, run R1, persist everything.
 
     `date_from` / `date_to` filter the RESULT to a business-date range; the
@@ -142,6 +145,7 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
     key) for the normal, full auto-discovery behaviour.
     """
     source_file_paths = source_file_paths or {}
+    use_stored_masters = use_stored_masters or {}
 
     # The hard lock (2026-09-24) — checked before anything else, including
     # before the new Run row is even created, so a refused attempt leaves
@@ -169,6 +173,8 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
 
     load_reports = {}
     timings = {}
+    # An operator-authorised use of a STORED master version for this run only (masters.preflight_masters).
+    masters_mod.set_stored_masters_in_force(use_stored_masters)
 
     def _progress(detail: str):
         heartbeat(session, run, detail=detail)
@@ -179,7 +185,7 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         # A master losing a column used to surface only when the CMS stage first
         # loaded it - after R1 had run - or in the test suite days later.
         with _stage(session, run, timings, "masters_preflight"):
-            master_checks = masters_mod.preflight_masters(config, session)
+            master_checks = masters_mod.preflight_masters(config, session, use_stored=use_stored_masters)
         master_preflight = masters_mod.preflight_summary(master_checks)
         for check in master_checks:
             for warning in check.warnings:
@@ -216,6 +222,7 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         # the ingest frames are no longer needed: release them before matching
         # starts. What R1 needs is already on disk - ingest wrote one Parquet
         # per business date per source and named them in its report.
+        paytm_wh, axis_wh = dict(paytm_report.warehouse_paths), dict(axis_report.warehouse_paths)
         bill_files = dict(bills_report.warehouse_paths)
         pool_files = {"paytm": dict(paytm_report.warehouse_paths),
                       "axis": dict(axis_report.warehouse_paths),
@@ -351,6 +358,30 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         # written date by date inside the matcher's loop above - payment_mode
         # only exists after matching, so it cannot be rebuilt later from raw POS.
 
+        # Gateway rows dated OUTSIDE the requested range (a September file carries 1 October rows) took part in
+        # matching - a late bill can match one by reference - but they are not the period's transactions: with no
+        # bills loaded for their date they would all read "unmapped". They are kept out of the exception register
+        # and counted here, by gateway, with their value (2026-10-17).
+        outside_range = {"rows": 0, "value": 0.0, "by_gateway": {}, "dates": []}
+        um = result.unmapped_txns
+        if len(um) and (d_from is not None or d_to is not None):
+            days = pd.to_datetime(um["business_date"]).dt.date
+            inside = pd.Series(True, index=um.index)
+            if d_from is not None:
+                inside &= days >= d_from
+            if d_to is not None:
+                inside &= days <= d_to
+            out_df = um.loc[~inside]
+            if len(out_df):
+                outside_range = {
+                    "rows": int(len(out_df)), "value": round(float(pd.to_numeric(out_df["amount"]).sum()), 2),
+                    "by_gateway": {g: {"rows": int(n), "value": round(float(v), 2)} for g, (n, v) in
+                                   out_df.groupby("gateway")["amount"].agg(["size", "sum"]).iterrows()},
+                    "dates": [str(out_df["business_date"].min()), str(out_df["business_date"].max())]}
+                result.unmapped_txns = um.loc[inside]
+                logger.info(f"run {run.id}: {outside_range['rows']} unmapped gateway row(s) dated outside "
+                            f"{d_from}..{d_to} kept for matching but not registered as exceptions")
+
         with _stage(session, run, timings, "exception_register"):
             exceptions = build_r1_exceptions(bill_lines, result)
             sync_result = sync_exceptions(session, run.id, exceptions)
@@ -374,6 +405,16 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
                 "CONFLICT with the engine — neither was overwritten, both are "
                 "on the Manual matches page for a person to resolve"
             )
+
+        # A transaction a person matched or refunded stays CLOSED in the exception register across a
+        # re-run (a new run rebuilds the register, and must never re-list what a person resolved).
+        # Idempotent; a failure is logged, never fatal.
+        with _stage(session, run, timings, "sync_closures"):
+            try:
+                lifecycle.sync_closures(session)
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                logger.error(f"run {run.id}: closure sync failed: {exc}", exc_info=True)
 
         # Store tasks (2026-10-14): create the new, revise the live, auto-close the ones whose
         # condition has cleared. Derived from this run's own rows and never alters a bill, a
@@ -401,10 +442,24 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
                 logger.error(f"run {run.id}: CMS slips persist failed: {exc}", exc_info=True)
                 cms_report = {"error": f"{type(exc).__name__}: {exc}"}
 
+        # The standing list of identifiers no master resolves (master_gaps.py) - from the data just read.
+        gaps_report = {}
+        with _stage(session, run, timings, "master_gaps"):
+            try:
+                gaps_report = master_gaps.persist(
+                    session, run.id, str(d_from or min(dates_in_range)), str(d_to or max(dates_in_range)),
+                    paytm_wh, axis_wh) if dates_in_range else {}
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                logger.error(f"run {run.id}: master gaps failed: {exc}", exc_info=True)
+                gaps_report = {"error": f"{type(exc).__name__}: {exc}"}
+
         run.finished_at = datetime.now()
         run.status = "completed"
         run.notes = json.dumps({
             "r1": result.summary,
+            "unmapped_outside_range": outside_range,
+            "master_gaps": gaps_report,
             "cms_slips": cms_report,
             "store_tasks": store_task_report,
             "exceptions": sync_result,
@@ -465,6 +520,9 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         logger.error(f"run {run.id}: FAILED at stage '{failed_stage}' — {type(exc).__name__}: {exc}")
         raise
 
+    finally:
+        masters_mod.clear_stored_masters_in_force()      # authorised for ONE run only
+
 
 def _s(v):
     return None if pd.isna(v) else str(v)
@@ -515,6 +573,8 @@ def _persist_txn_day_agg(session, run_id: int, txn_agg) -> int:
         "store": None if pd.isna(r.store) else str(r.store), "gateway": str(r.gateway),
         "total_n": int(r.total_n), "total_v": float(r.total_v),
         "mapped_n": int(r.mapped_n), "mapped_v": float(r.mapped_v),
+        "pool_n": int(r.pool_n), "pool_v": float(r.pool_v),
+        "consumed_n": int(r.consumed_n), "consumed_v": float(r.consumed_v),
     } for r in txn_agg.itertuples(index=False)]
     for i in range(0, len(records), 5000):
         session.execute(TxnDayAgg.__table__.insert(), records[i:i + 5000])
