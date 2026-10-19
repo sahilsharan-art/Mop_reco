@@ -197,8 +197,27 @@ def render(config, session):
         "filtering first would drop them before they can be flagged."
     )
 
+    # A month with no data for a source a reconciliation needs cannot reconcile (2026-10-19): October's Paytm and
+    # Bajaj files arrived with no POS or Axis, and running it would have turned every gateway transaction into a false
+    # unmapped exception. Say so BEFORE the run, and make the person confirm explicitly.
+    from mop_reco import run_coverage as rc
+
+    try:
+        problems = rc.range_problems(rc.all_source_dates(config), date_from, date_to)
+    except Exception as exc:  # noqa: BLE001 - never block the page, but never stay silent about it either
+        problems = []
+        st.warning(f"Could not check that every month in this range has its source files ({type(exc).__name__}: {exc}).")
+    run_anyway = True
+    if problems:
+        for month, missing, present in problems:
+            st.error(rc.range_warning(month, missing, present))
+        run_anyway = st.checkbox(
+            "I understand this range includes month(s) that cannot reconcile, and I want to run it anyway",
+            key=f"run_anyway_{date_from}_{date_to}")
     operator = confirm_with_operator(
-        st.button("Run reconciliation", type="primary"), "running this", key="run")
+        st.button("Run reconciliation", type="primary", disabled=not run_anyway,
+                  help=None if run_anyway else "Tick the confirmation above to run a range that cannot reconcile."),
+        "running this", key="run")
     if operator:
 
         # Live progress: a 16-minute run with no indicator is unusable. The stages

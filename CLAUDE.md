@@ -3906,6 +3906,26 @@ which stays the truth until September is reconciled, then is extended to APR_SEP
 * **Open question (not acted on):** if single-candidate same-store same-amount matching proves reliable in bulk it may belong in the matcher as a tier.
   Decide from the proportion accepted UNCHANGED once a few thousand are accepted - record how many were later reversed.
 
+### 6.27 A month is offered for a run only when it can reconcile (2026-10-19)
+
+* **Incident:** October's Paytm (10-17 Oct) and Bajaj (12-18 Oct) files arrived with NO POS and NO Axis file; the banner said "go to Upload
+  and run it" regardless. Running it would have loaded gateway transactions with no bills, turning every one into a false unmapped
+  exception. (PTC 01-18 Oct and a CMS file 01-17 Oct had also arrived; neither is recorded per run so the old banner never mentioned them.)
+* **Readiness is per month, from the DATA** (`run_coverage.month_statuses`; dates are never taken from a folder or file name). REQUIRED: POS,
+  Paytm, Axis, CMS, petty cash. Bajaj is reported but never blocks (April and May genuinely have none). A source's dates are its warehouse
+  partitions (already ingested) plus the dates inside any file newer than the last ingest (`probe_dates`, cached in
+  `warehouse/_coverage_probe.json` by path + mtime + size - a file is opened once; POS reads one column). Only months AFTER the run's last
+  date are reported; stray rows inside a neighbouring file (Paytm and CMS carry some March rows) are not a month.
+* **Two messages, never an invitation to run an incomplete month:** all required sources present -> "October is ready to run for 01/10-17/10:
+  ..." (the dates every required source covers, and any gaps inside a source named); some missing -> "October is incomplete: Paytm, Bajaj, CMS and
+  petty cash are here (spans, gaps); POS and Axis are not. Running now would create false exceptions - <what each missing source would break>.
+  Do not run October until they arrive." A month nothing has arrived for says only "not reconciled - no source files for it have arrived." The
+  old "has not read N source file(s)" note now appears only for files that hold dates INSIDE the run (a re-dump, where figures may move).
+* **The Run section (Upload page) checks the range it is about to reconcile** (`range_problems`): a month in which a required source holds no data at
+  all shows a red warning naming it, the Run button is DISABLED, and it enables only after an explicit "I understand ... run anyway" tick.
+* Measured on 19 Oct: October = Paytm, Bajaj, CMS, petty cash present; POS and Axis absent (their Oct folders are empty); incomplete. Gaps inside
+  the files that did arrive: Paytm 02-09 Oct, Bajaj 02-11 Oct, CMS 02, 04, 10-11 Oct.
+
 ## 7. Acceptance numbers
 
 Every stage is proved against these. They come from the two workbooks already

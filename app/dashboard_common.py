@@ -775,17 +775,34 @@ def _coverage_notices(run, first, last, date_from, date_to):
     from mop_reco import run_coverage as rc
 
     st.session_state["_period_outside_run"] = rc.entirely_outside(first, last, date_from, date_to)
-    message = rc.period_message(run.id, first, last, date_from, date_to)
+    config = load_config()
+    try:
+        statuses = _month_readiness(run.id, first, last)
+    except Exception:  # noqa: BLE001 - a notice must never take a page down
+        logging.getLogger("mop_reco").warning("month readiness check failed", exc_info=True)
+        statuses = None
+    message = rc.period_message(run.id, first, last, date_from, date_to, statuses)
     if message:
         st.warning(message)
+    for month_status in statuses or []:
+        level, text = rc.month_message(month_status)
+        (st.success if level == "success" else st.warning)(text)
     try:
-        unread = rc.unread_source_files(db_session(), load_config(), run.id)
-    except Exception:  # noqa: BLE001 - a notice must never take a page down
+        unread = rc.unread_inside_run(config, rc.unread_source_files(db_session(), config, run.id), first, last)
+    except Exception:  # noqa: BLE001
         logging.getLogger("mop_reco").warning("source coverage check failed", exc_info=True)
         unread = []
     source_note = rc.source_message(run.id, unread)
     if source_note:
         st.info(source_note)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _month_readiness(run_id: int, first, last):
+    """Which months after the run hold which sources - cached a minute: it lists files and, once per new file, opens it."""
+    from mop_reco import run_coverage as rc
+
+    return rc.readiness_for_run(load_config(), first, last)
 
 
 def stop_if_no_dates(date_from, run):
