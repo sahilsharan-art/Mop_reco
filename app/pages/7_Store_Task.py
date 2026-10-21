@@ -36,6 +36,7 @@ from dashboard_common import (
     stop_if_no_dates,
     tile,
 )
+from mop_reco import store_task_summary as sts
 from mop_reco import store_tasks as stt
 from mop_reco.db import ManualMatch, StoreTask
 from mop_reco.export import ExportMeta
@@ -261,6 +262,21 @@ meta = ExportMeta(run_id=run.id, run_timestamp=run.started_at, date_from=date_fr
                   value_column="Amount", title="Store Task")
 export_all_button(lambda progress: stt.tasks_all(session, today, sort, progress=progress, **filters),
                   total, meta, key="dl_store_task", noun="tasks in this view")
+
+# --- store-wise summary: open tickets and volume (Rs) per store, by task type ---------------
+# Same filters as the grid above (store, search, type, status, business dates), so the file always agrees with the screen.
+_summary = sts.summary_frame(session, today, **filters)
+st.download_button(
+    f"Download store-wise summary ({fmt_count(len(_summary))} stores)",
+    sts.workbook_bytes(_summary, [
+        ("Run", run.id), ("Business dates", f"{display_date(date_from)} to {display_date(date_to)}"),
+        ("Store", store or "All stores"), ("Type", type_pick), ("Status", status_pick),
+        ("Search", search or "-"),
+        ("open ticket", "a count of tasks"), ("Volume", "sum of the tasks' rupee amounts")]),
+    file_name=f"store_task_summary_run{run.id}.xlsx", key="dl_store_summary", disabled=_summary.empty,
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch",
+    help="One row per store: Edc other tranx (open bills), High float and Cms not deposit - open tickets and volume in Rs. "
+         "Follows the filters above.")
 
 # --- replies: send out, bring back -------------------------------------------------------
 st.divider()
