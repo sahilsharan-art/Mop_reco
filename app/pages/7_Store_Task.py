@@ -268,11 +268,7 @@ export_all_button(lambda progress: stt.tasks_all(session, today, sort, progress=
 _summary = sts.summary_frame(session, today, **filters)
 st.download_button(
     f"Download store-wise summary ({fmt_count(len(_summary))} stores)",
-    sts.workbook_bytes(_summary, [
-        ("Run", run.id), ("Business dates", f"{display_date(date_from)} to {display_date(date_to)}"),
-        ("Store", store or "All stores"), ("Type", type_pick), ("Status", status_pick),
-        ("Search", search or "-"),
-        ("open ticket", "a count of tasks"), ("Volume", "sum of the tasks' rupee amounts")]),
+    sts.workbook_bytes(_summary),
     file_name=f"store_task_summary_run{run.id}.xlsx", key="dl_store_summary", disabled=_summary.empty,
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch",
     help="One row per store: Edc other tranx (open bills), High float and Cms not deposit - open tickets and volume in Rs. "

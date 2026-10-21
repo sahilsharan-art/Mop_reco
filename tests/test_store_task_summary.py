@@ -58,16 +58,18 @@ def test_the_page_filters_apply(session):
     assert sts.summary_frame(session, TODAY, statuses=stt.LIVE_STATUSES, date_from=date(2026, 10, 1)).empty
 
 
-def test_the_sheet_has_the_specified_layout(session):
+def test_the_sheet_is_the_operators_own_template_with_the_stores_filled_in(session):
     f = sts.summary_frame(session, TODAY, statuses=stt.LIVE_STATUSES)
-    ws = openpyxl.load_workbook(io.BytesIO(sts.workbook_bytes(f, [("Run", 15)]))).active
+    ws = openpyxl.load_workbook(io.BytesIO(sts.workbook_bytes(f))).active
+    ref = openpyxl.load_workbook(sts.TEMPLATE).active
     assert sorted(str(m) for m in ws.merged_cells.ranges) == ["A1:A2", "B1:C1", "D1:E1", "F1:G1"]
     assert [ws.cell(row=1, column=c).value for c in (1, 2, 4, 6)] == ["Store code", "Edc other tranx", "High float",
                                                                       "Cms not deposit"]
     assert [ws.cell(row=2, column=c).value for c in range(2, 8)] == ["open ticket", "Volume"] * 3
-    assert {k: ws.column_dimensions[k].width for k in "ABCDEFG"} == sts.WIDTHS
-    for cell in (ws["A1"], ws["B1"], ws["B2"], ws["C2"]):
-        assert cell.font.name == "Aptos Narrow" and cell.font.size == 11
-        assert cell.alignment.horizontal == "center" and cell.fill.fill_type is None
-    assert ws["A3"].value == "ABD" and ws["B3"].value == 2 and ws["C3"].value == 750.5
-    assert ws["A5"].value == "Total" and ws["B5"].value == "=SUM(B3:B4)"
+    assert {k: round(ws.column_dimensions[k].width, 2) for k in "ABCDEFG"} == sts.WIDTHS
+    for coord in ("A1", "B1", "D1", "F1", "B2", "C2", "G2"):          # header cells identical to the supplied file
+        a_, b_ = ws[coord], ref[coord]
+        assert (a_.font.name, a_.font.size, a_.font.bold, a_.alignment.horizontal, a_.border.bottom.style) ==                (b_.font.name, b_.font.size, b_.font.bold, b_.alignment.horizontal, b_.border.bottom.style)
+        assert a_.fill.fill_type is None
+    assert ws["A3"].value == "ABD" and ws["B3"].value == 2 and ws["C3"].value == 750.5 and ws["A4"].value == "XYZ"
+    assert ws.max_row == 4 and len(openpyxl.load_workbook(io.BytesIO(sts.workbook_bytes(f))).sheetnames) == 1
