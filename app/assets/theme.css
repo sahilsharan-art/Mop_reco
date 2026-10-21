@@ -671,7 +671,8 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
    invisibly clipped (found live at 1000px: 6 columns of real money don't
    fit uncompressed under about 1150px). */
 .mop-matrix-scroll { overflow-x: auto; }
-.mop-matrix { width: 100%; min-width: 720px; border-collapse: collapse; }
+.mop-matrix { width: auto; border-collapse: collapse; }   /* ends at its last column - never stretched to the page */
+.st-key-matrix-card { width: fit-content; max-width: 100%; }
 .mop-matrix-grouprow th {
   font-family: var(--font-heading);
   font-size: 11px;
@@ -699,6 +700,7 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
    vertical padding, not a fixed height, so a row still grows if a cell
    ever needs two lines (the "% to total" sub-line). */
 .mop-matrix-cell {
+  min-width: 104px;
   padding: 5px 10px;
   text-align: right;
   border-bottom: 1px solid var(--border);
@@ -740,6 +742,35 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
    hairline ahead of them (not the plain per-row one) plus extra padding
    is what reads as "a separate block", never a text-colour change. */
 .mop-matrix-row--first-adjustment td { border-top: 1px solid var(--border); padding-top: 11px; }
+
+/* --- static presentation tables (Bills and transactions): plain HTML, never a data grid ---------------
+   No column menu, no hover toolbar, no index, no resize handles. Same hairline-only look as the matrix; the
+   table ends at its last column. Reserved for blocks nobody sorts, filters or edits. */
+.mop-static-wrap { overflow-x: auto; }
+.mop-static { border-collapse: collapse; width: auto; }
+.mop-static th {
+  font-family: var(--font-heading);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--ink-soft);
+  text-align: right;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.mop-static th:first-child, .mop-static td:first-child { text-align: left; }
+.mop-static td {
+  font-size: 12px;
+  color: var(--ink);
+  text-align: right;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  white-space: nowrap;
+}
+.mop-static tr.mop-static-total td { font-weight: 600; border-top: 1px solid var(--border); }
 
 /* ============================================================================
    Dividers

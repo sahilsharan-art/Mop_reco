@@ -12,7 +12,6 @@ and each side is also checked against the exception register (two independent so
 
 from __future__ import annotations
 
-import pandas as pd
 import streamlit as st
 
 from dashboard_common import tile
@@ -111,31 +110,47 @@ def render_tiles(ov, key: str = "match-ribbon"):
         _controls(ov)
 
 
+def static_table_html(rows: list, columns=("", "Count", "Value (Rs Cr)")) -> str:
+    """A presentation table as plain HTML (no st.dataframe: no column menu, toolbar, index or resize handles).
+    `rows` = [(label, count, value)]; the LAST row is the total and is drawn bold."""
+    head = "".join(f"<th>{c}</th>" for c in columns)
+    body = []
+    for i, (label, count, value) in enumerate(rows):
+        cls = " class='mop-static-total'" if i == len(rows) - 1 else ""
+        body.append(f"<tr{cls}><td>{label}</td><td>{count}</td><td>{value}</td></tr>")
+    return (f"<div class='mop-static-wrap'><table class='mop-static'><thead><tr>{head}</tr></thead>"
+            f"<tbody>{''.join(body)}</tbody></table></div>")
+
+
+def bills_rows(ov) -> list:
+    b = ov.bills
+    return [("Open (unmatched)", fmt_count(b["open"]["count"]), money_cr(b["open"]["value"])),
+            ("Closed - auto matched", fmt_count(b["auto"]["count"]), money_cr(b["auto"]["value"])),
+            ("Closed - manually matched", fmt_count(b["manual"]["count"]), money_cr(b["manual"]["value"])),
+            ("Total", fmt_count(b["total"]["count"]), money_cr(b["total"]["value"]))]
+
+
+def txn_rows(ov) -> list:
+    t = ov.txns
+    return [("Mapped to bill - auto", fmt_count(t.auto_n), money_cr(t.auto_v)),
+            ("Mapped to bill - manual", fmt_count(t.manual_n), money_cr(t.manual_v)),
+            ("Refunded to customer", fmt_count(t.refunded_n), money_cr(t.refunded_v)),
+            ("Unmapped (open)", fmt_count(t.unmapped_n), money_cr(t.unmapped_v)),
+            ("Total", fmt_count(t.total_n), money_cr(t.total_v))]
+
+
 def render_table(ov):
-    """The same figures as a table (Summary page): the Bills and Transactions blocks."""
-    b, t = ov.bills, ov.txns
+    """The same figures as a table (Summary page): the Bills and Transactions blocks. Static HTML, not a data grid -
+    nobody sorts, filters or edits these two small blocks."""
     bcol, tcol = st.columns(2)
     with bcol:
         st.markdown("**BILLS**")
-        st.dataframe(pd.DataFrame([
-            {"": "Open (unmatched)", "Count": fmt_count(b["open"]["count"]), "Value (Rs Cr)": money_cr(b["open"]["value"])},
-            {"": "Closed - auto matched", "Count": fmt_count(b["auto"]["count"]),
-             "Value (Rs Cr)": money_cr(b["auto"]["value"])},
-            {"": "Closed - manually matched", "Count": fmt_count(b["manual"]["count"]),
-             "Value (Rs Cr)": money_cr(b["manual"]["value"])},
-            {"": "Total", "Count": fmt_count(b["total"]["count"]), "Value (Rs Cr)": money_cr(b["total"]["value"])},
-        ]), hide_index=True, width="stretch")
+        st.markdown(static_table_html(bills_rows(ov)), unsafe_allow_html=True)
         for note in _bill_notes(ov):
             st.caption(note)
     with tcol:
         st.markdown("**TRANSACTIONS**")
-        st.dataframe(pd.DataFrame([
-            {"": "Mapped to bill - auto", "Count": fmt_count(t.auto_n), "Value (Rs Cr)": money_cr(t.auto_v)},
-            {"": "Mapped to bill - manual", "Count": fmt_count(t.manual_n), "Value (Rs Cr)": money_cr(t.manual_v)},
-            {"": "Refunded to customer", "Count": fmt_count(t.refunded_n), "Value (Rs Cr)": money_cr(t.refunded_v)},
-            {"": "Unmapped (open)", "Count": fmt_count(t.unmapped_n), "Value (Rs Cr)": money_cr(t.unmapped_v)},
-            {"": "Total", "Count": fmt_count(t.total_n), "Value (Rs Cr)": money_cr(t.total_v)},
-        ]), hide_index=True, width="stretch")
+        st.markdown(static_table_html(txn_rows(ov)), unsafe_allow_html=True)
         for note in _txn_notes(ov):
             st.caption(note)
     _controls(ov)
