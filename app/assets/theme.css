@@ -770,6 +770,11 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
   font-feature-settings: "tnum";
   white-space: nowrap;
 }
+/* The Store Task store-wise summary: scrolls inside its own box with the two header rows kept in view. */
+.mop-sum-scroll { max-height: 420px; overflow: auto; }
+.mop-sum th { text-transform: none; letter-spacing: 0; text-align: center; position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.mop-sum thead tr:nth-child(2) th { top: 28px; }
+.mop-sum th.mop-sum-left, .mop-sum td.mop-sum-left { text-align: left; }
 .mop-static tr.mop-static-total td { font-weight: 600; border-top: 1px solid var(--border); }
 
 /* ============================================================================

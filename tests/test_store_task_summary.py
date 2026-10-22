@@ -73,3 +73,14 @@ def test_the_sheet_is_the_operators_own_template_with_the_stores_filled_in(sessi
         assert a_.fill.fill_type is None
     assert ws["A3"].value == "ABD" and ws["B3"].value == 2 and ws["C3"].value == 750.5 and ws["A4"].value == "XYZ"
     assert ws.max_row == 4 and len(openpyxl.load_workbook(io.BytesIO(sts.workbook_bytes(f))).sheetnames) == 1
+
+
+def test_the_page_table_has_the_same_two_row_header_with_rowspan_and_colspan(session):
+    f = sts.summary_frame(session, TODAY, statuses=stt.LIVE_STATUSES)
+    html = sts.html_table(f)
+    assert "<th rowspan='2' class='mop-sum-left'>Store code</th>" in html
+    for label in ("Edc other tranx", "High float", "Cms not deposit"):
+        assert f"<th colspan='2'>{label}</th>" in html
+    assert html.count("<th>open ticket</th><th>Volume</th>") == 3 and "stDataFrame" not in html
+    assert "<td class='mop-sum-left'>ABD</td><td>2</td><td>751</td><td>1</td><td>20,000</td><td>1</td><td>75,000</td>" in html
+    assert "<tr class='mop-static-total'><td class='mop-sum-left'>Total</td><td>3</td><td>851</td>" in html

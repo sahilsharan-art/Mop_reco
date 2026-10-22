@@ -170,6 +170,15 @@ if st.button("Check tasks against the data now", key="st_resync",
     _sync()
     st.rerun()
 
+# --- store-wise summary on the page: open tickets and volume (Rs), by task type ---------------
+# The same table the download carries (one query, grouped by store and type); follows the filters above.
+_summary = sts.summary_frame(session, today, **filters)
+st.markdown(f"##### Store-wise summary - {fmt_count(len(_summary))} stores")
+if _summary.empty:
+    st.caption("No tasks in this view.")
+else:
+    st.markdown(sts.html_table(_summary), unsafe_allow_html=True)
+
 # --- the grid, one server-side page -----------------------------------------------------
 total = stt._filtered(session, today=today, **filters).count()
 fp = (run.id, date_from, date_to, store, type_pick, status_pick, search)
@@ -265,7 +274,6 @@ export_all_button(lambda progress: stt.tasks_all(session, today, sort, progress=
 
 # --- store-wise summary: open tickets and volume (Rs) per store, by task type ---------------
 # Same filters as the grid above (store, search, type, status, business dates), so the file always agrees with the screen.
-_summary = sts.summary_frame(session, today, **filters)
 st.download_button(
     f"Download store-wise summary ({fmt_count(len(_summary))} stores)",
     sts.workbook_bytes(_summary),

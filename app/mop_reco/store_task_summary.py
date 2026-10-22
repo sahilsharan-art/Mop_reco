@@ -72,3 +72,29 @@ def workbook_bytes(frame: pd.DataFrame, provenance: list = None) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def html_table(frame: pd.DataFrame) -> str:
+    """The same summary drawn on the page as a static HTML table (no data grid): Store code spans both header rows
+    (rowspan 2), each group spans its two columns (colspan 2), and a Total row closes it - so the screen shows the layout
+    of the downloaded sheet. Volumes are whole rupees with Indian grouping."""
+    from .formatting import count as fmt_count
+    from .formatting import indian_group
+
+    def rupees(v) -> str:
+        whole = int(abs(float(v)) + 0.5) * (1 if float(v) >= 0 else -1)      # half-up, not banker's rounding
+        return indian_group(whole).removesuffix(".00") if v else "0"
+
+    head1 = "<tr><th rowspan='2' class='mop-sum-left'>Store code</th>" + "".join(
+        f"<th colspan='2'>{label}</th>" for _t, label in GROUPS) + "</tr>"
+    head2 = "<tr>" + "<th>open ticket</th><th>Volume</th>" * len(GROUPS) + "</tr>"
+    body = []
+    for rec in frame.itertuples(index=False):
+        cells = "".join(f"<td>{fmt_count(rec[i]) if i % 2 == 1 else rupees(rec[i])}</td>" for i in range(1, 7))
+        body.append(f"<tr><td class='mop-sum-left'>{rec[0]}</td>{cells}</tr>")
+    if len(frame):
+        tot = [frame[c].sum() for c in COLUMNS[1:]]
+        cells = "".join(f"<td>{fmt_count(int(v)) if i % 2 == 0 else rupees(v)}</td>" for i, v in enumerate(tot))
+        body.append(f"<tr class='mop-static-total'><td class='mop-sum-left'>Total</td>{cells}</tr>")
+    return ("<div class='mop-static-wrap mop-sum-scroll'><table class='mop-static mop-sum'><thead>"
+            f"{head1}{head2}</thead><tbody>{''.join(body)}</tbody></table></div>")
