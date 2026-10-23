@@ -555,6 +555,8 @@ def ingest_paytm(config: Config, session, file_paths: list = None) -> tuple:
         position = {name: i for i, name in reversed(list(enumerate(header)))}   # first wins, as df[col] did
         kept = [c for c in PAYTM_REQUIRED_COLUMNS if c in position]
         part_df = pd.DataFrame({c: [row[position[c]] for row in part_rows] for c in kept}, columns=kept)
+        part_df["_src_file"] = str(zpath)
+        part_df["_src_mtime"] = mtime
         rows_before += len(part_df)
         parts.append(part_df)
         files_meta.append(FileRead(path=str(zpath), mtime=mtime, encoding=result.encoding_used))
@@ -563,14 +565,30 @@ def ingest_paytm(config: Config, session, file_paths: list = None) -> tuple:
     combined = pd.concat(parts, ignore_index=True)
 
     # Values arrive wrapped in single quotes ('SUCCESS') — strip them everywhere.
-    combined = _strip_quotes_columns(combined)
+    stamp = combined[["_src_file", "_src_mtime"]]
+    combined = _strip_quotes_columns(combined.drop(columns=["_src_file", "_src_mtime"]))
+    combined["_src_file"], combined["_src_mtime"] = stamp["_src_file"].to_numpy(), stamp["_src_mtime"].to_numpy()
 
     combined["transaction_id"] = combined["transaction_id"].map(io_.clean_ref)
     combined["utr_no"] = combined["utr_no"].map(io_.clean_ref)
 
-    rows_after = combined["transaction_id"].nunique()
-    combined = combined.drop_duplicates(subset="transaction_id", keep="first")
-    logger.info(f"ingest_paytm: {rows_before} rows before dedupe, {len(combined)} after")
+    # A transaction present in more than one file is the SAME transaction re-exported (a settlement report is regenerated
+    # and replaced). The MOST RECENTLY MODIFIED file wins, exactly as for every other multi-file source (CLAUDE.md 4 and
+    # 6.25) - never "whichever sorts first by path", which would keep a stale, un-restated row when a corrected file
+    # arrives. Superseded rows are counted and named, never silent. Rows with no transaction id cannot be compared and are
+    # all kept. What is still duplicated INSIDE the winning file (same id twice in one file) is reduced to its first row
+    # and counted separately.
+    combined, supersede_report = _resolve_key_overlaps(combined, "transaction_id", "paytm_settlement",
+                                                       key_label="transaction_id")
+    blank_ids = int((combined["transaction_id"].isna() | (combined["transaction_id"].astype(str).str.strip() == "")).sum())
+    has_id = combined["transaction_id"].notna() & (combined["transaction_id"].astype(str).str.strip() != "")
+    within_file_dupes = int(combined.loc[has_id, "transaction_id"].duplicated().sum())
+    combined = pd.concat([combined[~has_id], combined[has_id].drop_duplicates(subset="transaction_id", keep="first")]
+                         ).sort_index()
+    superseded_rows = sum(r["rows_dropped"] for r in supersede_report)
+    logger.info(f"ingest_paytm: {rows_before} rows read, {superseded_rows} superseded by a more recent file "
+                f"({len(supersede_report)} transaction ids), {within_file_dupes} duplicate(s) inside one file, "
+                f"{blank_ids} row(s) without a transaction id kept, {len(combined)} rows after")
 
     for col in ("amount", "commission", "gst", "settled_amount"):
         combined[col] = _to_float_series(combined[col])
@@ -609,9 +627,20 @@ def ingest_paytm(config: Config, session, file_paths: list = None) -> tuple:
                 "more_fields_than_header": ragged_wide,
                 "fewer_fields_than_header": ragged_narrow,
             },
+            "duplicates": {
+                "key": "transaction_id",
+                "superseded_by_a_more_recent_file": superseded_rows,
+                "transaction_ids_superseded": len(supersede_report),
+                "duplicates_inside_one_file": within_file_dupes,
+                "rows_without_transaction_id_kept": blank_ids,
+            },
         },
         warehouse_paths=warehouse_paths,
+        notes=([f"superseded_by_more_recent_file: {supersede_report[:20]}"
+                + (f" (first 20 of {len(supersede_report)})" if len(supersede_report) > 20 else "")]
+               if supersede_report else []),
     )
+    report.superseded = supersede_report         # full list for a caller that wants to compare / audit
     return combined, report
 
 
