@@ -641,6 +641,27 @@ class TxnDayAgg(Base):
     __table_args__ = (Index("ix_txn_day_agg_run_date_store", "run_id", "business_date", "store"),)
 
 
+class ParkedBillLine(Base):
+    """A digital bill line the run could not judge because the ONLY gateway that could settle it has
+    not delivered its file yet (2026-10-25: Axis for October). It is neither matched nor an
+    exception: it is kept here, row by row, so nothing vanishes (rule 4), and it is excluded from
+    r1_bill_lines, the exception register, store tasks, digital sale and digital receivable until
+    the source arrives and a re-run matches or opens it for real."""
+    __tablename__ = "parked_bill_lines"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("runs.id"), nullable=False, index=True)
+    business_date = Column(String, nullable=False, index=True)
+    store = Column(String, nullable=True, index=True)
+    bill_no = Column(String, nullable=True, index=True)
+    line_seq = Column(Integer, nullable=True)
+    mop = Column(String, nullable=True)
+    amount = Column(Numeric, nullable=True)
+    axis_ref = Column(String, nullable=True)
+    awaiting_source = Column(String, nullable=False)
+    reason = Column(String, nullable=True)
+
+
 class MopDayAgg(Base):
     """One row per store per business date per run per MOP BUCKET (2026-09-18,
     the Summary particulars matrix) — card / upi / cash / gift_voucher /

@@ -237,16 +237,14 @@ def _resolve_key_overlaps(df: pd.DataFrame, key_col: str, source: str, key_label
         dropped = with_key.loc[~is_winner]
         kept_with_key = with_key.loc[is_winner]
         if len(dropped):
-            for k, grp in dropped.groupby(key_col):
-                winning_files = sorted(str(p) for p in kept_with_key.loc[
-                    kept_with_key[key_col] == k, "_src_file"].unique())
-                losing_files = sorted(str(p) for p in grp["_src_file"].unique())
-                report.append({
-                    key_label: str(k),
-                    "winning_file(s)": winning_files,
-                    "superseded_file(s)": losing_files,
-                    "rows_dropped": int(len(grp)),
-                })
+            # Vectorised (2026-10-25): the per-key loop that scanned kept_with_key for every dropped key was
+            # quadratic and hung a 4.4M-row Paytm ingest for 15 minutes with no log line.
+            lost = dropped.groupby(key_col)["_src_file"].agg(lambda s: sorted({str(x) for x in s}))
+            n_lost = dropped.groupby(key_col).size()
+            won = (kept_with_key[kept_with_key[key_col].isin(lost.index)]
+                   .groupby(key_col)["_src_file"].agg(lambda s: sorted({str(x) for x in s})))
+            report = [{key_label: str(k), "winning_file(s)": won.get(k, []), "superseded_file(s)": lost[k],
+                       "rows_dropped": int(n_lost[k])} for k in lost.index]
             logger.warning(
                 f"ingest[{source}]: {len(dropped)} row(s) across {len(report)} {key_label}(s) "
                 f"dropped as superseded — a more-recently-modified file carries the same "
@@ -338,6 +336,11 @@ def _load_manifest_file(source: str) -> dict:
     return raw.get("files", {})
 
 
+# A cached parse is only valid for the parser that produced it. Bump a source's version when what the reader extracts
+# changes, so every cached file of that source is re-read once (the cache is otherwise keyed on mtime and size only).
+PARSER_VERSION = {"pos_bill_wise": "2026-10-26 axis_ref = retrievalReferenceNo whether or not a card is indicated"}
+
+
 def _write_manifest(source: str, file_path, warehouse_paths: dict, extra: dict = None):
     st = Path(file_path).stat()
     files = _load_manifest_file(source)
@@ -345,6 +348,7 @@ def _write_manifest(source: str, file_path, warehouse_paths: dict, extra: dict =
         "mtime": st.st_mtime,
         "size": st.st_size,
         "written_at": datetime.now().isoformat(timespec="seconds"),
+        "parser": PARSER_VERSION.get(source),
         "parquet": warehouse_paths,
         "extra": extra or {},
     }
@@ -365,6 +369,8 @@ def warehouse_manifest(source: str, file_path):
         return None
     st = Path(file_path).stat()
     if entry.get("mtime") != st.st_mtime or entry.get("size") != st.st_size:
+        return None
+    if entry.get("parser") != PARSER_VERSION.get(source):
         return None
     parts = [Path(v) for v in (entry.get("parquet") or {}).values()]
     if not parts or not all(part.exists() for part in parts):
@@ -1104,10 +1110,13 @@ def _extract_pos_refs(raw_json):
       - Paytm/Axis: nested {"head":..., "body":{...}}
       - Bajaj:      FLAT {"rrn":..., "tid":...} with no head/body at all
 
-    `axis_ref` is CARD-CONDITIONAL: retrievalReferenceNo is taken only when the
-    response also carries issuerMaskCardNo. Without that condition, 11,603 of
-    12,424 PAYTM EDC rows on the 20-Jul file would get an Axis reference for
-    UPI/wallet transactions Axis never processed.
+    `axis_ref` is `retrievalReferenceNo` WHETHER OR NOT a card is indicated (changed 2026-10-26). It used to be
+    card-conditional, on the reasoning that 11,603 of 12,424 PAYTM EDC rows on the 20-Jul file would otherwise carry an
+    Axis reference Axis never processed. Real data disproved the premise: Axis's EDC report carries UPI rows too
+    (CARD_TYPE = UPI), so a UPI payment on a Paytm EDC that Axis acquired has a null issuerMaskCardNo and was never
+    matched - bill SB35/013806/0526 (SBM, 04/05/2026, Rs 11,749) carries RRN 973933049280, and Axis holds that RRN for the
+    same store, date and amount. Carrying the reference costs nothing: a bill needs ONE match (6.3), an unresolved
+    reference is information not an exception, and a match needs the exact amount and a SUCCESS row.
 
     A blank/None TPEDCRESPONSE (e.g. every Cash row) is normal, not a parse
     failure. A non-blank value that json.loads chokes on IS a parse failure —
@@ -1134,8 +1143,7 @@ def _extract_pos_refs(raw_json):
     if isinstance(body, dict):
         # Paytm / Axis — nested envelope.
         paytm_ref = body.get("acquirementId") or body.get("txnId")
-        # Card-conditional: only a card transaction carries an Axis reference.
-        axis_ref = body.get("retrievalReferenceNo") if body.get("issuerMaskCardNo") else None
+        axis_ref = body.get("retrievalReferenceNo")
         return io_.clean_ref(paytm_ref), io_.clean_ref(axis_ref), None, False
 
     # Bajaj — flat payload, no head/body. Bill-side key is lowercase `rrn`,

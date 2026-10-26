@@ -443,7 +443,7 @@ def test_the_seven_tile_ribbon_is_gone_replaced_by_the_particulars_matrix():
     assert 'st.container(key="tile-ribbon")' not in source
     assert "tile(row1[" not in source
     assert "tile(row2[" not in source
-    assert "MATRIX_COLUMNS = " in source
+    assert "_MX_COLS = " in source
     assert "matrix = src.mop_particulars_matrix(" in source
 
 
@@ -453,11 +453,11 @@ def test_the_particulars_matrix_has_all_its_rows():
     (`.mop-matrix-pct`), on instruction, "with no full-height row of its
     own." The other six labels are each still their own row."""
     source = (APP / "Summary.py").read_text(encoding="utf-8")
-    matrix_src = source[source.index("MATRIX_COLUMNS = "):source.index("_matrix_failed = ")]
+    matrix_src = source[source.index("_MX_COLS = "):source.index("_matrix_failed = ")]
     for row in ("Sale", "Collected", "Receivable",
                "Gift Voucher Redeemed", "Credit Note Issued", "Credit Note Received"):
         assert f'>{row}<' in matrix_src or f'"{row}"' in matrix_src, row
-    assert "mop-matrix-pct" in matrix_src
+    assert "mx-pct" in matrix_src
 
 
 def test_percent_to_total_is_a_direct_complement_not_independently_rounded():

@@ -726,7 +726,7 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
    inside the SAME cell, never a full-height row of its own. */
 .mop-matrix-pct { font-size: 11px; color: var(--ink-soft); margin-top: 2px; }
 /* The only tint anywhere in the matrix: a non-zero Receivable. */
-.mop-matrix-cell--warn { background: var(--warn-tint); }
+.mop-matrix .mop-matrix-cell--warn { background: var(--warn-tint); }
 .mop-matrix-cell--warn .mop-matrix-figure { color: var(--warn); font-weight: 600; }
 /* Reserved for a future per-cell MISMATCH state — nothing in this table
    sets `mop-matrix-cell--bad` today (every current control failure here
@@ -907,3 +907,77 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-topnav) {
 .st-key-cms-filters [data-baseweb="input"] > div { background: transparent; }
 .st-key-cms-filters input { background: transparent; font-size: 14px; }
 .st-key-cms-filters label p { font-size: 11px; color: var(--ink-soft); }
+
+
+/* --- the particulars matrix, polished (2026-10-26) ------------------------------------------------------------ */
+.st-key-matrix-card { padding: 20px 22px 12px; border-radius: 16px; }
+.mop-matrix { border-collapse: separate; border-spacing: 0; }
+.mop-matrix-grouprow th { border-bottom: 2px solid var(--accent); padding: 0 14px 7px; letter-spacing: .1em; font-size: 11px; }
+.mop-matrix-grouprow th:empty { border-bottom: none; }
+.mop-matrix-headrow th { background: var(--surface-alt, #f4f7fb); padding: 9px 16px; font-size: 11px;
+  border-bottom: 1px solid var(--border); }
+.mop-matrix-headrow th:first-child { border-top-left-radius: 8px; }
+.mop-matrix-headrow th:last-child { border-top-right-radius: 8px; }
+.mop-matrix-cell { min-width: 118px; padding: 9px 16px; }
+.mop-matrix-rowlabel { padding: 9px 18px 9px 10px; font-size: 12.5px; color: var(--ink-soft); font-weight: 500; }
+.mop-matrix-row--sale .mop-matrix-rowlabel { color: var(--ink); font-weight: 700; }
+.mop-matrix-figure { font-size: 13px; }
+.mop-matrix-row--sale .mop-matrix-figure { font-size: 14px; }
+/* Total sale is the anchor every other column is read against */
+.mop-matrix tbody td:nth-child(2) { background: var(--accent-tint, #eef5fb); }
+.mop-matrix tbody .mop-matrix-cell--warn { background: var(--warn-tint); }
+.mop-matrix tbody tr:last-child td { border-bottom: none; }
+.mop-matrix-row--adjustment .mop-matrix-rowlabel { font-weight: 500; }
+/* the small +/- that shows or hides the voucher / credit-note lines */
+.st-key-matrix-adj { margin-top: 6px; }
+.st-key-matrix-adj button { min-height: 22px !important; height: 22px; width: 24px; min-width: 24px; padding: 0 !important;
+  font-size: 14px; line-height: 1; border-radius: 6px; }
+.mop-matrix-adjlabel { font-size: 11.5px; color: var(--ink-soft); }
+
+/* --- the matrix uses the full page width (2026-10-26, on instruction: the blank space to its right was wasted;
+   supersedes the earlier "ends at its last column" rule for THIS table only - the static Bills/Transactions tables keep it) --- */
+.st-key-matrix-card { width: 100% !important; max-width: 100%; }
+.mop-matrix { width: 100%; table-layout: fixed; }
+.mop-matrix .mop-matrix-rowlabel, .mop-matrix .mop-matrix-rowlabel-head { width: 150px; }
+.mop-matrix-cell { min-width: 0; }
+.mop-matrix-figure { font-size: 14px; }
+.mop-matrix-row--sale .mop-matrix-figure { font-size: 16px; }
+.mop-matrix-headrow th, .mop-matrix-grouprow th { font-size: 11.5px; }
+
+/* --- the matrix's row labels match the figures beside them (2026-10-26) --- */
+.mop-matrix .mop-matrix-rowlabel { font-size: 14px; }
+.mop-matrix .mop-matrix-row--sale .mop-matrix-rowlabel { font-size: 16px; }
+.mop-matrix-headrow th, .mop-matrix-grouprow th { font-size: 12.5px; }
+.mop-matrix-pct { font-size: 12px; }
+
+/* --- the clickable matrix (2026-10-26): Streamlit columns and buttons dressed as the table --------------------- */
+.st-key-matrix-card [data-testid="stHorizontalBlock"] { gap: 0 !important; align-items: stretch; }
+.st-key-matrix-card [data-testid="stVerticalBlock"] { gap: 0 !important; }
+.st-key-mx-head { margin-bottom: 0; }
+.mx-group { text-align: center; font-family: var(--font-heading); font-size: 12px; font-weight: 700; letter-spacing: .1em;
+  color: var(--ink); border-bottom: 2px solid var(--accent); padding: 4px 8px 7px; margin: 0 6px; }
+.mx-colhead { text-align: right; font-family: var(--font-heading); font-size: 12.5px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--ink-soft); background: var(--surface-alt); padding: 10px 16px;
+  border-bottom: 1px solid var(--border); }
+.mx-rowlabel { font-size: 14px; color: var(--ink-soft); font-weight: 500; padding: 10px 10px; }
+.mx-rowlabel--sale { font-size: 16px; color: var(--ink); font-weight: 700; padding: 14px 10px; }
+.mx-rowlabel--adj { font-size: 13px; }
+.mx-fig { text-align: right; font-size: 14px; font-variant-numeric: tabular-nums; padding: 10px 16px; color: var(--ink); }
+.mx-fig--warn { background: var(--warn-tint); color: var(--warn); font-weight: 600; }
+.mx-pct { text-align: right; font-size: 12px; color: var(--ink-soft); padding: 0 16px 8px; margin-top: -4px; }
+[class*="st-key-mxr_"] { border-bottom: 1px solid var(--border); }
+[class*="st-key-mxc_"] button { background: transparent !important; border: none !important; box-shadow: none !important;
+  justify-content: flex-end; font-size: 14px; font-weight: 400; font-variant-numeric: tabular-nums; color: var(--ink);
+  padding: 10px 16px; min-height: 0; border-radius: 0; width: 100%; }
+[class*="st-key-mxc_"] button:hover { background: var(--accent-tint) !important; color: var(--accent-deep) !important;
+  text-decoration: underline; }
+.st-key-mxr_sale [class*="st-key-mxc_"] button { font-size: 16px; font-weight: 700; padding: 14px 16px 6px; }
+[class*="st-key-mxc_"][class*="_total"] { background: var(--accent-tint); }
+[class*="st-key-mxc_"][class*="_sel"] button { box-shadow: inset 0 -3px 0 var(--accent) !important; font-weight: 700; }
+.st-key-mx-drill { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+.st-key-mx-drill [data-testid="stHorizontalBlock"] { gap: 1rem !important; }
+.st-key-matrix-card [data-testid="stMarkdownContainer"] { margin-bottom: 0 !important; }
+.st-key-matrix-card [data-testid="stMarkdownContainer"] p { margin: 0; }
+[class*="st-key-mxc_"] button { padding-right: 3px !important; }
+.mx-group { min-height: 28px; box-sizing: border-box; }
+.mx-fig { padding-right: 9px; }

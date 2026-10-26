@@ -210,6 +210,13 @@ manual_match:
     - bulk_upload
 
 # Store Task (2026-10-14) - tasks assigned to stores, tracked to closure.
+# Digital bills that can only settle through a gateway whose file has not arrived are PARKED, not opened as
+# exceptions (CLAUDE.md 6.28). A date counts as awaiting when it is later than the last date the gateway has any row for.
+awaiting_source:
+  axis:
+    # MOPs that only ever go through Axis, so with no Axis file they cannot be judged at all.
+    only_mops: ["EDC OTHER AXIS"]
+
 store_tasks:
   # Due by = raised date + this many WORKING days (weekends and listed holidays skipped).
   sla_working_days:

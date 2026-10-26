@@ -203,7 +203,11 @@ def render(config, session):
     from mop_reco import run_coverage as rc
 
     try:
-        problems = rc.range_problems(rc.all_source_dates(config), date_from, date_to)
+        _dates = rc.all_source_dates(config)
+        problems = rc.range_problems(_dates, date_from, date_to)
+        _axis_note = rc.axis_parking_note(_dates, date_from, date_to)
+        if _axis_note:
+            st.info(_axis_note)
     except Exception as exc:  # noqa: BLE001 - never block the page, but never stay silent about it either
         problems = []
         st.warning(f"Could not check that every month in this range has its source files ({type(exc).__name__}: {exc}).")
@@ -214,9 +218,38 @@ def render(config, session):
         run_anyway = st.checkbox(
             "I understand this range includes month(s) that cannot reconcile, and I want to run it anyway",
             key=f"run_anyway_{date_from}_{date_to}")
+    # A master whose FILE is unusable (e.g. the pickup-location file lost its LOCATION column) blocks the run. The stored
+    # version already in the database may be used for THIS RUN ONLY, and only on an explicit tick with a written reason -
+    # recorded on the run and on the Masters page, and cleared afterwards (CLAUDE.md 6.25). Nothing is inferred.
+    from mop_reco import masters as masters_mod
+    from mop_reco.db import MasterVersion
+
+    use_stored, masters_ok = {}, True
+    try:
+        failing = [c for c in masters_mod.preflight_masters(config, session, raise_on_failure=False) if c.problems]
+    except Exception as exc:  # noqa: BLE001 - the run itself will name it
+        failing = []
+        st.warning(f"Could not pre-check the masters ({type(exc).__name__}: {exc}); the run will check them itself.")
+    for c in failing:
+        have_stored = session.query(MasterVersion.id).filter_by(master_name=c.master, is_current=True).first() is not None
+        st.error(f"**{c.master}**: the file on disk cannot be used - {'; '.join(c.problems)}. "
+                 f"{'A stored version exists.' if have_stored else 'There is NO stored version to fall back on.'}")
+        if not have_stored:
+            masters_ok = False
+            continue
+        ok = st.checkbox(f"Use the STORED version of {c.master} for this run only (the file is not used, nothing is inferred)",
+                         key=f"use_stored_{c.master}")
+        reason = st.text_input(f"Why - recorded on the run and on the Masters page ({c.master})",
+                               key=f"use_stored_reason_{c.master}",
+                               placeholder="e.g. the file lost its LOCATION column; being restored")
+        if ok and reason.strip():
+            use_stored[c.master] = reason.strip()
+        else:
+            masters_ok = False
+    can_run = run_anyway and masters_ok
     operator = confirm_with_operator(
-        st.button("Run reconciliation", type="primary", disabled=not run_anyway,
-                  help=None if run_anyway else "Tick the confirmation above to run a range that cannot reconcile."),
+        st.button("Run reconciliation", type="primary", disabled=not can_run,
+                  help=None if can_run else "Resolve the warnings above first (confirmations and a reason where asked)."),
         "running this", key="run")
     if operator:
 
@@ -243,7 +276,8 @@ def render(config, session):
         try:
             progress.progress(0.05, text="Reading sources — POS bill lines first…")
             outcome = run_reconciliation(config, session, date_from=date_from,
-                                         date_to=date_to, triggered_by=operator)
+                                         date_to=date_to, triggered_by=operator,
+                                         use_stored_masters=use_stored or None)
             progress.progress(1.0, text="Done")
         except RunAlreadyInProgress as exc:
             # The hard lock (2026-09-24) — never queued silently, never started

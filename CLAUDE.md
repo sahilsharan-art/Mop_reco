@@ -560,7 +560,7 @@ paytm_ref = TPEDCRESPONSE.body.acquirementId   (EDC)
           | TPEDCRESPONSE.body.txnId           (DQR / QR)
 
 axis_ref  = TPEDCRESPONSE.body.retrievalReferenceNo
-            ONLY when the response carries issuerMaskCardNo (card-conditional)
+            whether or not issuerMaskCardNo is present (changed 2026-10-26, below)
 
 bajaj_ref = TPEDCRESPONSE.rrn                 (FLAT payload — no head/body)
 ```
@@ -568,14 +568,14 @@ bajaj_ref = TPEDCRESPONSE.rrn                 (FLAT payload — no head/body)
 Normalise: strip leading apostrophes and trailing `.0`. Treat as **blank**:
 `""`, `0`, `nan`, `#N/A`, and `0x2a` (how Excel errors surface from `.xlsb`).
 
-**`axis_ref` is card-conditional (confirmed 2026-08-29).** Extract
-`retrievalReferenceNo` only when the response also carries
-`issuerMaskCardNo`; otherwise leave `axis_ref` blank. On the 20-Jul file, only
-**821** of 12,424 `PAYTM EDC` rows carry a card indicator, yet
-`retrievalReferenceNo` is populated on all 12,424 — so the unconditional rule
-would attach an Axis reference to 11,603 UPI/wallet-on-EDC transactions that
-Axis never processed, and R1 would then hunt for them in a 453-row Axis
-report. This is the user's own workbook rule and is the source of truth.
+**`axis_ref` is NOT card-conditional (changed 2026-10-26; it was, from 2026-08-29).** The old rule took `retrievalReferenceNo` only with an
+`issuerMaskCardNo`, because 11,603 of 12,424 `PAYTM EDC` rows on 20-Jul carry an RRN without one and were assumed to be UPI/wallet payments Axis
+never processed. The data disproved it: **Axis's EDC report carries UPI rows (`CARD_TYPE = UPI`)** - a UPI payment on a Paytm EDC that Axis acquired
+has a null `issuerMaskCardNo`, so the bill was never searched against Axis. Bill `SB35/013806/0526` (SBM, 04/05/2026, Rs 11,749) carries RRN
+`973933049280`, and Axis holds that RRN for the same store, date and amount. Taking the RRN always costs nothing: a bill needs ONE match (6.3), an
+unresolved reference is information not an exception, and a match needs the exact amount and a SUCCESS row. Effect on run #20 (Apr-17 Oct): Axis
+unmapped transactions 3,792 -> 118 (May 3,688 -> 14), open bill lines 12,987-style false opens in May 3,822 -> 145, no previously matched bill lost.
+The POS cache carries `PARSER_VERSION` so every file is re-read once after such a change.
 
 **Bajaj payload is a flat JSON with no `head`/`body` envelope** (confirmed
 2026-09-02 on the July dump). The bill-side key is lowercase `rrn`, and it
@@ -4296,3 +4296,28 @@ Rules that follow from it:
   module as loaded, every `from module import name` must resolve, and any
   module whose file is newer than the process start is reported as stale with
   its resolved path and both timestamps.
+
+### 6.28 A gateway file that has not arrived: parking, not exceptions (2026-10-25)
+
+* **Rule.** October (Paytm, Bajaj, POS, petty cash, CMS present; Axis absent) is run to 17/10 as a PROVISIONAL period rather than refused. The run's date range is the bound
+  (`date_to`); gateway rows dated after it still take part in reference matching and are counted as `unmapped_outside_range`, never registered as exceptions.
+* **Parked lines** (`mop_reco/parking.py`, table `parked_bill_lines`). A digital line is parked when it is unmatched, not an ambiguous EDC OTHER, dated after the last date Axis
+  has ANY row for (derived from the loaded Axis data, never typed), and can only settle through Axis: it carries an Axis (card) reference - a card payment on a Paytm EDC also carries a Paytm acquirementId, but the Paytm file never lists it (October: 12,602 such lines, Rs 2.11 Cr, would have been false open bills) - or its MOP is in
+  config `awaiting_source.axis.only_mops` (`EDC OTHER AXIS`). `EDC OTHER` (any gateway), a bill with only a Paytm reference and no card indication, and a Bajaj bill stay genuine open bills. The split happens in
+  the run's per-date callback, so a parked line is in NONE of: `r1_bill_lines`, the exception register, store tasks (`Edc other tranx` / open bills), digital mode agg, store-day
+  digital sale or receivable. It is also subtracted from the `digital` bucket of `mop_day_agg` so "Card + UPI = Total digital" still holds. It is kept row by row in
+  `parked_bill_lines`, summed on `Run.notes.awaiting_source` (lines, bills, value, by month, by MOP), listed in an expander on Exceptions ("Awaiting Axis - not an exception",
+  exportable) and announced by a banner on every page. The next run, once the Axis file exists, matches or opens each for real. Total sale for the provisional period therefore
+  excludes the parked digital sale, and says so.
+* **CMS days with no data** (`store_tasks.cms_absent_dates`): days in the run's last month with no CMS rows are missing input, not zero-deposit days. A deposit made on or whose
+  credit window touches one is not called uncredited, is excluded from the ledger shortfall, and counts as credited when clearing an earlier no-deposit day. Listed on
+  `Run.notes.missing_input.cms` and in the banner.
+* **Guard.** `run_coverage.range_problems` no longer refuses a range whose only missing required source is Axis; the Run page shows `axis_parking_note` instead and
+  `month_message` calls the month "can be run PROVISIONALLY". Any other missing required source still needs the explicit confirmation.
+
+### 6.29 Summary matrix: full width, adjustments hidden behind a small +/- (2026-10-26)
+
+* The particulars matrix now spans the card and the page (`table-layout: fixed`, 150px label column, the five money columns share the rest). This replaces
+  "the table ends at its last column" for the matrix ONLY; the static Bills / Transactions tables keep their content width.
+* Gift Voucher Redeemed, Credit Note Issued and Credit Note Received are hidden by default; a small +/- under the table (`st.session_state["sm_matrix_adjustments"]`,
+  plain key so it survives filter changes and page switches) shows or hides them. The figures are unchanged either way.

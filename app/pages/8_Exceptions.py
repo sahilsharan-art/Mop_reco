@@ -69,6 +69,37 @@ stop_if_no_dates(date_from, run)
 with CONFIG_PATH.open("r", encoding="utf-8") as _fh:
     CONFIG = yaml.safe_load(_fh)
 
+def _parked_section():
+    """Bills that can only settle through a gateway whose file has not arrived: neither matched nor an exception."""
+    from mop_reco.db import ParkedBillLine
+    rows = (session.query(ParkedBillLine.business_date, ParkedBillLine.store, ParkedBillLine.bill_no,
+                          ParkedBillLine.mop, ParkedBillLine.amount, ParkedBillLine.axis_ref)
+            .filter(ParkedBillLine.run_id == run.id, ParkedBillLine.business_date >= date_from.isoformat(),
+                    ParkedBillLine.business_date <= date_to.isoformat())
+            .order_by(ParkedBillLine.business_date, ParkedBillLine.store, ParkedBillLine.bill_no).all())
+    if store:
+        rows = [r for r in rows if r.store == store]
+    if not rows:
+        return
+    frame = pd.DataFrame(rows, columns=["date", "store", "bill_no", "mop", "amount", "axis_ref"])
+    frame["amount"] = frame["amount"].astype(float)
+    with st.expander(f"Awaiting Axis — not an exception: {frame['bill_no'].nunique():,} bill(s), "
+                     f"Rs {frame['amount'].sum():,.2f}"):
+        st.caption("These bills can only settle through Axis and no Axis file covers their date. They are kept here, "
+                   "not opened as exceptions and not counted in digital receivable or store tasks. When the Axis file "
+                   "arrives, re-run: each is then matched or becomes a real open bill.")
+        shown = frame.copy()
+        shown["date"] = shown["date"].map(display_date)
+        shown["amount"] = shown["amount"].map(money_table)
+        st.dataframe(shown, hide_index=True, width="stretch", height=260)
+        frame_export_button(frame, ExportMeta(run_id=run.id, run_timestamp=run.started_at, date_from=date_from,
+                                              date_to=date_to, filters={"store": store}, value_column="amount",
+                                              title="Awaiting Axis - not an exception"),
+                            key="dl_parked", noun="parked bills")
+
+
+_parked_section()
+
 SECTION_DEFAULTS = {"store_detail": False, "matched": False, "exceptions": True,
                     "closed_exceptions": False}
 

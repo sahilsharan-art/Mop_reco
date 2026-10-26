@@ -38,7 +38,9 @@ def test_the_presentation_blocks_do_not_use_a_data_grid():
     assert "st.dataframe" not in inspect.getsource(match_strip.render_table)
     assert "st.data_editor" not in inspect.getsource(match_strip.render_table)
     summary = (Path(__file__).resolve().parents[1] / "app" / "Summary.py").read_text(encoding="utf-8")
-    block = summary[summary.index("matrix_html = f"):summary.index('with st.container(key="matrix-card")') + 120]
-    assert "st.dataframe" not in block and "st.data_editor" not in block and "<table class='mop-matrix'>" in block
+    # 2026-10-26: the particulars matrix is a clickable grid (every Sale / Collected figure opens its store-wise table), so it
+    # is built from Streamlit columns and buttons - still never a data grid - and spans the page width.
+    block = summary[summary.index("_MX_COLS = "):summary.index("# --- the drill")]
+    assert "st.dataframe" not in block and "st.data_editor" not in block and "st.button(text, key=f\"mxb_" in block
     css = (Path(__file__).resolve().parents[1] / "app" / "assets" / "theme.css").read_text(encoding="utf-8")
-    assert ".mop-matrix { width: auto;" in css and ".st-key-matrix-card { width: fit-content;" in css
+    assert ".st-key-matrix-card { width: 100% !important;" in css

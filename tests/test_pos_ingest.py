@@ -103,16 +103,17 @@ def test_detect_duplicate_candidates_returns_bill_numbers_not_just_counts(config
 # Reference extraction — robust JSON parsing, failures visible
 # ---------------------------------------------------------------------------
 
+AXIS_REF_FOUND_UNCONDITIONAL = 12424   # every PAYTM EDC row of the 20-Jul daily file carries a retrievalReferenceNo
+
+
 def test_reference_extraction_breakdown(config, session, daily_pos_file):
     df, report = ingest_pos_bill_wise(config, session, file_path=daily_pos_file)
     ref = report.breakdown["reference_extraction"]
 
     assert ref["paytm_ref_found"] == 17493
-    # Card-conditional (CLAUDE.md 6.2): only the 821 PAYTM EDC rows that carry
-    # issuerMaskCardNo yield an Axis reference — NOT all 12,424. The other
-    # 11,603 carry a retrievalReferenceNo for a UPI/wallet transaction Axis
-    # never processed.
-    assert ref["axis_ref_found"] == 821
+    # CLAUDE.md 6.2 (changed 2026-10-26): retrievalReferenceNo is the Axis reference whether or not a card is
+    # indicated - Axis's report carries UPI rows too. It was 821 (card-conditional) before.
+    assert ref["axis_ref_found"] == AXIS_REF_FOUND_UNCONDITIONAL
     assert ref["parse_failed"] == 0
     # No Bajaj MOP rows exist on 20-Jul in the daily file.
     assert ref["bajaj_ref_found"] == 0
@@ -140,17 +141,17 @@ def test_extract_pos_refs_picks_acquirementid_or_txnid():
     assert _extract_pos_refs(dqr_json) == ("TXN789", None, None, False)
 
 
-def test_axis_ref_is_card_conditional():
-    """retrievalReferenceNo is taken ONLY when issuerMaskCardNo is present."""
+def test_axis_ref_is_taken_with_or_without_a_card_indication():
+    """retrievalReferenceNo is the Axis reference for a card payment and for a UPI payment Axis acquired."""
     card = ('{"body":{"acquirementId":"ACQ123","retrievalReferenceNo":"RRN456",'
             '"issuerMaskCardNo":"512345XXXXXX1234"}}')
     assert _extract_pos_refs(card) == ("ACQ123", "RRN456", None, False)
 
-    # Same payload, no card indicator — the RRN must NOT be taken.
-    non_card = '{"body":{"acquirementId":"ACQ123","retrievalReferenceNo":"RRN456"}}'
+    # Same payload, no card indicator (UPI on a Paytm EDC, acquired by Axis): the RRN IS taken.
+    non_card = '{"body":{"acquirementId":"ACQ123","retrievalReferenceNo":"RRN456","issuerMaskCardNo":null}}'
     paytm_ref, axis_ref, bajaj_ref, failed = _extract_pos_refs(non_card)
     assert paytm_ref == "ACQ123"
-    assert axis_ref is None
+    assert axis_ref == "RRN456"
     assert failed is False
 
 

@@ -243,6 +243,15 @@ def month_message(st: MonthStatus):
         extra = f" Bajaj is not here, so {name}'s Bajaj bills would be open items." if st.optional_missing else ""
         return ("success", f"{name} is ready to run{tail}: " + "; ".join(spans) + "." + extra + " Go to Upload and run it.")
     here = [s for s in CHECK_ORDER if s in st.present]
+    if st.missing == ["axis_edc"]:
+        others = [s for s in REQUIRED_SOURCES if s != "axis_edc"]
+        a = max(st.present[s]["first"] for s in others)
+        b = min(st.present[s]["last"] for s in others)
+        return ("warning",
+                f"{name} can be run PROVISIONALLY for {_span(a, b)} (Axis is outstanding): " + "; ".join(spans) +
+                ". Bills that can only settle through Axis are parked as 'Awaiting Axis - not an exception' - not "
+                "opened, not counted in receivable or store tasks - and the period is shown as provisional. Choose "
+                "the end date no later than the last day every other source covers; do not run past it.")
     why = "; ".join(dict.fromkeys(CONSEQUENCE[s] for s in st.missing))
     return ("warning",
             f"{name} is incomplete: {_labels(here)} {'is' if len(here) == 1 else 'are'} here "
@@ -378,6 +387,9 @@ def range_problems(dates_by_source: dict, date_from: date, date_to: date) -> lis
         hi = min(date_to, date(month.year, month.month, calendar.monthrange(month.year, month.month)[1]))
         held = lambda s: any(lo <= d <= hi for d in dates_by_source.get(s, set()))  # noqa: E731
         missing = [s for s in REQUIRED_SOURCES if not held(s)]
+        # Axis alone missing is handled by parking (CLAUDE.md 6.28), not a reason to refuse the range.
+        if missing == ["axis_edc"]:
+            continue
         if missing:
             out.append((month, missing, [s for s in CHECK_ORDER if held(s)]))
     return out
@@ -388,3 +400,18 @@ def range_warning(month: date, missing: list, present: list) -> str:
     why = "; ".join(dict.fromkeys(CONSEQUENCE[s] for s in missing))
     have = f"{_labels(present)} {'is' if len(present) == 1 else 'are'} here" if present else "nothing is here"
     return f"{name} has no {_labels(missing)} data ({have}). Running it would create false exceptions - {why}."
+
+
+def axis_parking_note(dates_by_source: dict, date_from: date, date_to: date):
+    """For the Run page: the days of the range that no Axis file covers (after Axis's last date), where Axis-only
+    bills will be parked rather than opened. None when Axis covers the whole range."""
+    axis = dates_by_source.get("axis_edc", set())
+    if not axis:
+        return None
+    last = max(axis)
+    if date_to <= last:
+        return None
+    first_uncovered = max(date_from, date.fromordinal(last.toordinal() + 1))
+    return (f"No Axis file after {last:%d/%m/%Y}. Bills dated {first_uncovered:%d/%m/%Y} to {date_to:%d/%m/%Y} that can "
+            "only settle through Axis will be parked as 'Awaiting Axis - not an exception' and the period shown as "
+            "provisional.")

@@ -246,78 +246,138 @@ receivable_total = ss.net_cash_receivable(shown)
 # ===========================================================================
 matrix = src.mop_particulars_matrix(session, run.id, date_from, date_to, store)
 
-# --- the matrix, restyled as a plain report (hairlines only, no box grid) -
-MATRIX_COLUMNS = ["Total sale", "UPI", "Card", "Total digital", "Total cash"]
-_matrix_cols = [matrix.total_sale, matrix.upi, matrix.card,
-               matrix.total_digital, matrix.total_cash]
+# --- the matrix: every Sale / Collected figure is a button that opens its store-wise table (2026-10-26) ----------
+from mop_reco import matrix_drill as md          # noqa: E402
+from mop_reco import mop_matrix as _mopm         # noqa: E402
+from mop_reco.config import load_config as _load_config  # noqa: E402
+
+_MX_COLS = [("total", "Total sale", matrix.total_sale), ("upi", "UPI", matrix.upi), ("card", "Card", matrix.card),
+            ("digital", "Total digital", matrix.total_digital), ("cash", "Total cash", matrix.total_cash)]
+_MX_W = [1.35, 1.25, 1.25, 1.25, 1.25, 1.25]
+_mx_sel = st.session_state.get("mx_sel")           # "sale|upi" etc., or None
+_adj_open = bool(st.session_state.get("sm_matrix_adjustments", False))
 
 
-def _adjustment_row(label: str, value: float, first: bool = False, colour: str = None) -> str:
-    cls = "mop-matrix-row mop-matrix-row--adjustment"
-    if first:
-        cls += " mop-matrix-row--first-adjustment"
-    style = f" style='color:{colour}'" if colour else ""
-    return (
-        f"<tr class='{cls}'>"
-        f"<td class='mop-matrix-rowlabel'>{label}</td>"
-        f"<td class='mop-matrix-cell'>"
-        f"<div class='mop-matrix-figure'{style}>{money_cr(value)}</div></td>"
-        f"<td colspan='4'></td></tr>"
-    )
+def _mx_pick(row: str, col: str):
+    key = f"{row}|{col}"
+    st.session_state["mx_sel"] = None if st.session_state.get("mx_sel") == key else key
+    st.session_state["mx_store"] = None
 
 
-_row_sale = "<tr class='mop-matrix-row mop-matrix-row--sale'><td class='mop-matrix-rowlabel'>Sale</td>"
-_row_collected = "<tr class='mop-matrix-row'><td class='mop-matrix-rowlabel'>Collected</td>"
-_row_receivable = "<tr class='mop-matrix-row'><td class='mop-matrix-rowlabel'>Receivable</td>"
-for i, col in enumerate(_matrix_cols):
-    pct_html = (f"<div class='mop-matrix-pct'>{col.pct:.1f}%</div>"
-               if col.pct is not None else "")
-    _row_sale += (f"<td class='mop-matrix-cell'>"
-                 f"<div class='mop-matrix-figure mop-matrix-figure--strong'>"
-                 f"{money_cr(col.sale)}</div>{pct_html}</td>")
-    _row_collected += (f"<td class='mop-matrix-cell'>"
-                       f"<div class='mop-matrix-figure'>{money_cr(col.collected)}</div></td>")
-    warn = abs(col.receivable) > 0.005
-    warn_cls = " mop-matrix-cell--warn" if warn else ""
-    _row_receivable += (f"<td class='mop-matrix-cell{warn_cls}'>"
-                        f"<div class='mop-matrix-figure'>{money_cr(col.receivable)}</div></td>")
-_row_sale += "</tr>"
-_row_collected += "</tr>"
-_row_receivable += "</tr>"
+def _mx_cell(container, row: str, col: str, text: str, pct: float = None):
+    selected = _mx_sel == f"{row}|{col}"
+    with container.container(key=f"mxc_{row}_{col}{'_sel' if selected else ''}"):
+        st.button(text, key=f"mxb_{row}_{col}", on_click=_mx_pick, args=(row, col),
+                  help=f"Open {md.ROW_LABEL[row]} - {md.COL_LABEL[col]} store by store", width="stretch")
+        if pct is not None:
+            st.markdown(f"<div class='mx-pct'>{pct:.1f}%</div>", unsafe_allow_html=True)
 
-matrix_html = f"""
-<div class='mop-matrix-scroll'>
-<table class='mop-matrix'>
-  <thead>
-    <tr class='mop-matrix-grouprow'>
-      <th></th><th></th>
-      <th colspan='3' class='mop-matrix-group'>DIGITAL</th>
-      <th class='mop-matrix-group'>CASH</th>
-    </tr>
-    <tr class='mop-matrix-headrow'>
-      <th class='mop-matrix-rowlabel-head'></th>
-      <th class='mop-matrix-colhead'>Total sale</th>
-      <th class='mop-matrix-colhead'>UPI</th>
-      <th class='mop-matrix-colhead'>Card</th>
-      <th class='mop-matrix-colhead'>Total digital</th>
-      <th class='mop-matrix-colhead'>Total cash</th>
-    </tr>
-  </thead>
-  <tbody>
-    {_row_sale}
-    {_row_collected}
-    {_row_receivable}
-    <tr class='mop-matrix-spacer'><td colspan='6'></td></tr>
-    {_adjustment_row("Gift Voucher Redeemed", matrix.gift_voucher_redeemed, first=True)}
-    {_adjustment_row("Credit Note Issued", matrix.credit_note_issued, colour="var(--bad)")}
-    {_adjustment_row("Credit Note Received", matrix.credit_note_received)}
-  </tbody>
-</table>
-</div>
-"""
 
 with st.container(key="matrix-card"):
-    st.markdown(matrix_html, unsafe_allow_html=True)
+    with st.container(key="mx-head"):
+        g = st.columns([_MX_W[0] + _MX_W[1], _MX_W[2] + _MX_W[3] + _MX_W[4], _MX_W[5]])
+        g[1].markdown("<div class='mx-group'>DIGITAL</div>", unsafe_allow_html=True)
+        g[2].markdown("<div class='mx-group'>CASH</div>", unsafe_allow_html=True)
+        h = st.columns(_MX_W)
+        for i, (_k, label, _c) in enumerate(_MX_COLS):
+            h[i + 1].markdown(f"<div class='mx-colhead'>{label}</div>", unsafe_allow_html=True)
+    with st.container(key="mxr_sale"):
+        r = st.columns(_MX_W)
+        r[0].markdown("<div class='mx-rowlabel mx-rowlabel--sale'>Sale</div>", unsafe_allow_html=True)
+        for i, (k, _l, c) in enumerate(_MX_COLS):
+            _mx_cell(r[i + 1], "sale", k, money_cr(c.sale), c.pct)
+    with st.container(key="mxr_collected"):
+        r = st.columns(_MX_W)
+        r[0].markdown("<div class='mx-rowlabel'>Collected</div>", unsafe_allow_html=True)
+        for i, (k, _l, c) in enumerate(_MX_COLS):
+            _mx_cell(r[i + 1], "collected", k, money_cr(c.collected))
+    with st.container(key="mxr_receivable"):
+        r = st.columns(_MX_W)
+        r[0].markdown("<div class='mx-rowlabel'>Receivable</div>", unsafe_allow_html=True)
+        for i, (k, _l, c) in enumerate(_MX_COLS):
+            warn = " mx-fig--warn" if abs(c.receivable) > 0.005 else ""
+            r[i + 1].markdown(f"<div class='mx-fig{warn}'>{money_cr(c.receivable)}</div>", unsafe_allow_html=True)
+    if _adj_open:
+        for _n, (label, value, colour) in enumerate((("Gift Voucher Redeemed", matrix.gift_voucher_redeemed, None),
+                                                     ("Credit Note Issued", matrix.credit_note_issued, "var(--bad)"),
+                                                     ("Credit Note Received", matrix.credit_note_received, None))):
+            with st.container(key=f"mxr_adj_{_n}"):
+                r = st.columns(_MX_W)
+                r[0].markdown(f"<div class='mx-rowlabel mx-rowlabel--adj'>{label}</div>", unsafe_allow_html=True)
+                style = f" style='color:{colour}'" if colour else ""
+                r[1].markdown(f"<div class='mx-fig'{style}>{money_cr(value)}</div>", unsafe_allow_html=True)
+    with st.container(key="matrix-adj"):
+        _t1, _t2 = st.columns([0.05, 0.95], vertical_alignment="center")
+        if _t1.button("−" if _adj_open else "+", key="matrix_adj_toggle",
+                      help=("Hide" if _adj_open else "Show") + " Gift Voucher Redeemed, Credit Note Issued and Credit Note Received"):
+            st.session_state["sm_matrix_adjustments"] = not _adj_open
+            st.rerun()
+        _t2.markdown("<span class='mop-matrix-adjlabel'>Gift voucher &amp; credit notes</span>", unsafe_allow_html=True)
+
+# --- the drill: store by store, then bill by bill ---------------------------------------------------------------
+if _mx_sel:
+    _row, _col = _mx_sel.split("|")
+    _cell_total = getattr(dict((k, c) for k, _l, c in _MX_COLS)[_col], "sale" if _row == "sale" else "collected")
+    _title = f"{md.ROW_LABEL[_row]} - {md.COL_LABEL[_col]}"
+    _txn_wise = _row == "collected" and _col != "cash"
+    with st.container(key="mx-drill"):
+        _store_pick = st.session_state.get("mx_store")
+        _h1, _h2 = st.columns([0.85, 0.15], vertical_alignment="center")
+        if _store_pick is None:
+            _h1.markdown(f"**{_title}** - by store")
+        else:
+            _h1.markdown(f"**{_title}** - store **{_store_pick}** - " + ("transaction-wise" if _txn_wise else "bill-wise"))
+        if _h2.button("Back to stores" if _store_pick else "Close", key="mx_back"):
+            if _store_pick:
+                st.session_state["mx_store"] = None
+            else:
+                st.session_state["mx_sel"] = None
+            st.rerun()
+        _stores, _stores_total = md.by_store(session, run.id, date_from, date_to, store, _row, _col)
+        if abs(_stores_total - _cell_total) > 0.5:
+            st.error(f"**MISMATCH** - the stores add up to Rs {_stores_total:,.2f} but the matrix cell shows "
+                     f"Rs {_cell_total:,.2f} (difference {_stores_total - _cell_total:,.2f}).")
+        if _store_pick is None:
+            _view = _stores.rename(columns={"store": "Store", "amount": "Amount (Rs)"})
+            st.caption(f"{len(_view):,} stores - total Rs {_stores_total:,.2f} = the matrix cell. Click a store to see its "
+                       + ("transactions." if _txn_wise else "bills."))
+            _ev = st.dataframe(_view, hide_index=True, width="stretch", height=min(420, 38 + 35 * len(_view)),
+                               on_select="rerun", selection_mode="single-row", key=f"mx_stores_{_mx_sel}",
+                               column_config={"Amount (Rs)": st.column_config.NumberColumn(format="%.2f")})
+            if _ev.selection.rows:
+                st.session_state["mx_store"] = _view.iloc[_ev.selection.rows[0]]["Store"]
+                st.rerun()
+        else:
+            with st.spinner(f"Reading {_store_pick}'s bills for the whole period..."):
+                _bills = md.bills(session, run.id, date_from, date_to, _store_pick, _row, _col,
+                                  _mopm.load_mop_buckets(_load_config()))
+            _store_amount = float(_stores.loc[_stores["store"] == _store_pick, "amount"].sum())
+            _bills_total = float(_bills["amount"].sum()) if len(_bills) else 0.0
+            if abs(_bills_total - _store_amount) > 0.5:
+                st.error(f"**MISMATCH** - the {len(_bills):,} rows add up to Rs {_bills_total:,.2f} but the store row shows "
+                         f"Rs {_store_amount:,.2f} (difference {_bills_total - _store_amount:,.2f}).")
+            st.caption(f"{len(_bills):,} rows - Rs {_bills_total:,.2f} = the store row.")
+            _show = _bills.copy()
+            _show["business_date"] = _show["business_date"].map(display_date)
+            _show["txn_date"] = _show["txn_date"].map(lambda v: display_date(v) if pd.notna(v) and v else "")
+            for _c in ("gateway", "transaction_id", "payment_mode", "matched_by"):
+                _show[_c] = _show[_c].map(blank)
+            _show["collected"] = _show["collected"].map({True: "Yes", False: "No"})
+            _show = _show.rename(columns={"business_date": "Date", "bill_no": "Bill no", "mop": "MOP", "type": "Type",
+                                          "amount": "Amount (Rs)", "collected": "Collected", "matched_by": "Matched by",
+                                          "gateway": "Gateway", "transaction_id": "Transaction id",
+                                          "payment_mode": "Payment mode", "txn_date": "Transaction date"})
+            if _txn_wise:
+                _first = ["Transaction id", "Gateway", "Transaction date", "Payment mode", "Bill no", "Date"]
+                _show = _show[_first + [c for c in _show.columns if c not in _first]]
+            st.dataframe(_show, hide_index=True, width="stretch", height=420,
+                         column_config={"Amount (Rs)": st.column_config.NumberColumn(format="%.2f")})
+            frame_export_button(
+                _bills.assign(business_date=_bills["business_date"].astype(str)),
+                ExportMeta(run_id=run.id, run_timestamp=run.started_at, date_from=date_from, date_to=date_to,
+                           filters={"store": _store_pick, "cell": _title}, value_column="amount",
+                           title=f"{_title} - {_store_pick}"),
+                key=f"dl_mx_{_mx_sel}_{_store_pick}", noun="rows")
 
 # The provisional-UPI footnote sentence is removed from the page face
 # (2026-09-28, on instruction — display only, the rule itself is untouched:

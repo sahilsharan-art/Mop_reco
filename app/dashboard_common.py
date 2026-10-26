@@ -785,6 +785,10 @@ def _coverage_notices(run, first, last, date_from, date_to):
     if message:
         st.warning(message)
     for month_status in statuses or []:
+        # The month the run itself ends in is already reconciled up to the run's last date; its provisional state is
+        # stated by the banner below (parked bills, missing input), not by an invitation to run it.
+        if (month_status.month.year, month_status.month.month) == (last.year, last.month):
+            continue
         level, text = rc.month_message(month_status)
         (st.success if level == "success" else st.warning)(text)
     try:
@@ -795,6 +799,28 @@ def _coverage_notices(run, first, last, date_from, date_to):
     source_note = rc.source_message(run.id, unread)
     if source_note:
         st.info(source_note)
+    _provisional_notice(run)
+
+
+def _provisional_notice(run):
+    """A run that parked bills awaiting a missing gateway file, or saw days with no CMS data, says so on every page -
+    the later period is provisional and is never presented as complete (CLAUDE.md 6.28)."""
+    try:
+        notes = json.loads(run.notes or "{}")
+    except (ValueError, TypeError):
+        return
+    parked = notes.get("awaiting_source") or {}
+    missing = notes.get("missing_input") or {}
+    if parked.get("lines"):
+        dates = parked.get("dates") or ["", ""]
+        st.warning(
+            f"**Provisional — Axis is outstanding.** No Axis file covers {display_date(dates[0])} to "
+            f"{display_date(dates[1])}. {parked['bills']:,} bill(s) worth Rs {parked['value']:,.2f} can only settle "
+            "through Axis, so they are parked as *Awaiting Axis — not an exception*: they are not in the Exceptions "
+            "list, the store tasks, digital sale or digital receivable until the Axis file arrives and the period is re-run.")
+    # The CMS days with no data are no longer announced on the page (operator's instruction, 2026-10-26); they stay
+    # in the run's notes (missing_input.cms) and no CMS task is raised on them.
+    del missing
 
 
 @st.cache_data(ttl=60, show_spinner=False)

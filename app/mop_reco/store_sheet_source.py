@@ -24,7 +24,7 @@ from sqlalchemy import func
 
 from . import mop_matrix as mm
 from . import store_sheet as ss
-from .db import DateTotalAgg, DigitalModeAgg, ManualMatch, MopDayAgg, R1BillLine, StoreDayAgg
+from .db import DateTotalAgg, DigitalModeAgg, ManualMatch, MopDayAgg, ParkedBillLine, R1BillLine, StoreDayAgg
 
 logger = logging.getLogger("mop_reco")
 
@@ -528,6 +528,20 @@ def persist_mop_day_agg(session, run_id: int, date_from: date, date_to: date) ->
 
     mop_buckets = mm.load_mop_buckets(load_config())
     bucketed = mm.bucket_sales_by_store_date(pos, mop_buckets)
+
+    # Parked digital lines (CLAUDE.md 6.28) are outside r1_bill_lines and therefore outside digital sale and
+    # receivable; they come out of the digital bucket too so "Card + UPI = Total digital" still holds. They are
+    # reported separately (parked_bill_lines), never lost.
+    parked = session.query(ParkedBillLine.business_date, ParkedBillLine.store,
+                           func.sum(ParkedBillLine.amount)).filter(
+        ParkedBillLine.run_id == run_id).group_by(ParkedBillLine.business_date, ParkedBillLine.store).all()
+    if parked:
+        cut = {(d, s): float(v or 0.0) for d, s, v in parked}
+        is_digital = bucketed["bucket"].eq("digital")
+        key = list(zip(bucketed["business_date"].astype(str), bucketed["store"]))
+        bucketed = bucketed.copy()
+        bucketed.loc[is_digital, "sale"] = [
+            float(sale) - cut.get(k, 0.0) for sale, k, flag in zip(bucketed["sale"], key, is_digital) if flag]
 
     records = [{
         "run_id": run_id, "business_date": r.business_date, "store": r.store,

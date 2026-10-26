@@ -216,6 +216,21 @@ def high_float_candidates(sf: pd.DataFrame, config_raw: dict) -> Generated:
     return out
 
 
+def cms_absent_dates(last: date) -> set:
+    """Dates from the 1st of `last`'s month to `last` for which the CMS source holds no data at all - missing
+    input, never a day of zero deposits. Empty when the CMS data cannot be read (nothing is then suppressed)."""
+    try:
+        from . import run_coverage as rc
+        from .config import load_config
+        have = rc.source_dates(load_config(), "axis_cms")
+    except Exception:  # noqa: BLE001
+        return set()
+    if not have:
+        return set()
+    start = last.replace(day=1)
+    return {d.date() for d in pd.date_range(start, last) if d.date() not in have}
+
+
 def cms_candidates(session, run_id: int, sf: pd.DataFrame, config_raw: dict) -> Generated:
     """CMS not done - two ways a store-day can carry it, merged onto one task per
     `store|business_date`:
@@ -240,6 +255,9 @@ def cms_candidates(session, run_id: int, sf: pd.DataFrame, config_raw: dict) -> 
     last = date.fromisoformat(sf["business_date"].max())
     credit_lag = int(((config_raw or {}).get("store_tasks") or {}).get("cms_credit_due_working_days", 1))
     merged: dict = {}
+    # Days in the run's final month on which the CMS file has NO data are absent input, not zero-credit days
+    # (CLAUDE.md 6.28): a deposit whose credit could fall on one cannot be called uncredited.
+    absent = cms_absent_dates(last)
 
     def add(store, bdate, amount, part):
         c = merged.get(f"{store}|{bdate}")
@@ -254,17 +272,30 @@ def cms_candidates(session, run_id: int, sf: pd.DataFrame, config_raw: dict) -> 
     ledger = cms_reco.build_ledger(session, run_id)
     final = (ledger.sort_values("business_date").groupby("store").tail(1).set_index("store")
              ["closing_receivable"].astype(float).to_dict() if not ledger.empty else {})
+    def unverifiable(d, due):
+        return any(x in absent for x in (d, *[d + timedelta(days=i) for i in range(1, (due - d).days + 1)]))
+
     for store, block in sf.groupby("store", sort=False):
         left = float(final.get(store, 0.0))
+        deposits = block[block["cash_deposit"] > EPS]
+        if absent:
+            blind = 0.0
+            for _, r in deposits.iterrows():
+                d = date.fromisoformat(r["business_date"])
+                if unverifiable(d, add_working_days(d, credit_lag)):
+                    blind += float(r["cash_deposit"])
+            left = max(0.0, left - blind)
         if left <= EPS:
             continue
-        for _, r in block[block["cash_deposit"] > EPS].iloc[::-1].iterrows():
+        for _, r in deposits.iloc[::-1].iterrows():
             if left <= EPS:
                 break
-            take = min(float(r["cash_deposit"]), left)
-            left -= take
             d = date.fromisoformat(r["business_date"])
             due = add_working_days(d, credit_lag)
+            if absent and unverifiable(d, due):
+                continue
+            take = min(float(r["cash_deposit"]), left)
+            left -= take
             if last <= due:           # still in transit - not late yet
                 continue
             add(store, r["business_date"], take, {
@@ -276,7 +307,9 @@ def cms_candidates(session, run_id: int, sf: pd.DataFrame, config_raw: dict) -> 
         dates = [date.fromisoformat(x) for x in block["business_date"]]
         dep = dict(zip(dates, block["cash_deposit"].astype(float)))
         cred = dict(zip(dates, block["cash_received"].astype(float)))
-        credited_deposit_days = sorted(d for d in dates if dep[d] > EPS and cred[d] + EPS >= dep[d])
+        credited_deposit_days = sorted(
+            d for d in dates if dep[d] > EPS and (cred[d] + EPS >= dep[d] or (
+                absent and unverifiable(d, add_working_days(d, credit_lag)))))
         for d, sale in zip(dates, block["cash_sale"].astype(float)):
             if sale <= EPS:
                 continue

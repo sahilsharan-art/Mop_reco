@@ -26,7 +26,8 @@ from . import cms_blocks
 from . import lifecycle
 from . import master_gaps
 from . import store_tasks
-from .db import R1BillLine, ReconciliationResult, Run, RunFile
+from .db import ParkedBillLine, R1BillLine, ReconciliationResult, Run, RunFile
+from . import parking
 from . import manual_match
 from . import masters as masters_mod
 from .exceptions import build_r1_exceptions, sync_exceptions
@@ -238,6 +239,11 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         del bills, paytm, axis, bajaj
         gc.collect()
 
+        # Digital lines whose only possible gateway (Axis) has not delivered yet are PARKED, not opened
+        # (CLAUDE.md 6.28): later than the last date Axis has any row for, derived from the loaded data.
+        axis_last = max((str(k) for k in axis_wh), default=None)
+        parked_parts = []
+
         def _as_date(value):
             if value is None:
                 return None
@@ -265,6 +271,10 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
             if (d_from is not None and bd < d_from) or (d_to is not None and bd > d_to):
                 return      # took part in matching, outside the requested range
             t0 = time.perf_counter()
+            day_frame, parked = parking.split_parked(day_frame, axis_last, config.raw)
+            if len(parked):
+                session.execute(ParkedBillLine.__table__.insert(), _parked_records(run.id, parked))
+                parked_parts.append(parked[["business_date", "store", "bill_no", "mop", "amount"]])
             persisted_rows += _persist_day(session, run.id, day_str, day_frame, persisted_at)
             t1 = time.perf_counter()
             rows, oc, ov = store_sheet_source.digital_mode_add_day(session, run.id, day_frame)
@@ -454,9 +464,37 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
                 logger.error(f"run {run.id}: master gaps failed: {exc}", exc_info=True)
                 gaps_report = {"error": f"{type(exc).__name__}: {exc}"}
 
+        parked_report = {"gateway": "axis", "last_date_with_data": axis_last, "lines": 0, "bills": 0, "value": 0.0,
+                         "by_month": {}, "by_mop": {}}
+        if parked_parts:
+            pk = pd.concat(parked_parts, ignore_index=True)
+            pk["amount"] = pd.to_numeric(pk["amount"])
+            parked_report.update(
+                lines=int(len(pk)), bills=int(pk["bill_no"].nunique()), value=round(float(pk["amount"].sum()), 2),
+                by_month={m: {"lines": int(len(g)), "value": round(float(g["amount"].sum()), 2)}
+                          for m, g in pk.groupby(pk["business_date"].astype(str).str[:7])},
+                by_mop={m: {"lines": int(len(g)), "value": round(float(g["amount"].sum()), 2)}
+                        for m, g in pk.groupby("mop")},
+                dates=[str(pk["business_date"].min()), str(pk["business_date"].max())])
+            logger.warning(f"run {run.id}: {parked_report['lines']} digital line(s) worth {parked_report['value']:,.2f} "
+                           f"are PARKED awaiting Axis (no Axis file after {axis_last}) - not exceptions")
+
+        missing_input = {}
+        if dates_in_range:
+            last_day = d_to or date.fromisoformat(max(dates_in_range))
+            cms_missing = sorted(d.isoformat() for d in store_tasks.cms_absent_dates(last_day))
+            if cms_missing:
+                missing_input["cms"] = cms_missing
+                logger.warning(f"run {run.id}: CMS holds no data on {cms_missing} - treated as absent input, "
+                               "not as zero-deposit days; no 'CMS not done' task is raised on them")
+            if axis_last and axis_last < max(dates_in_range):
+                missing_input["axis"] = {"no_data_after": axis_last, "through": max(dates_in_range)}
+
         run.finished_at = datetime.now()
         run.status = "completed"
         run.notes = json.dumps({
+            "missing_input": missing_input,
+            "awaiting_source": parked_report,
             "r1": result.summary,
             "unmapped_outside_range": outside_range,
             "master_gaps": gaps_report,
@@ -666,6 +704,17 @@ def _store_payloads(day: pd.DataFrame):
             "matched_value": float(np.nansum(a[m])),
             "unmatched_value": float(np.nansum(a[~m])),
         }))
+    return out
+
+
+def _parked_records(run_id: int, parked: pd.DataFrame) -> list:
+    out = []
+    for r in parked.itertuples(index=False):
+        out.append({
+            "run_id": run_id, "business_date": str(r.business_date), "store": _s(r.store), "bill_no": _s(r.bill_no),
+            "line_seq": None if pd.isna(getattr(r, "line_seq", None)) else int(r.line_seq), "mop": _s(r.mop),
+            "amount": float(r.amount), "axis_ref": _s(getattr(r, "axis_ref", None)), "awaiting_source": "axis",
+            "reason": "only an Axis gateway row could settle it and no Axis file covers this date"})
     return out
 
 
