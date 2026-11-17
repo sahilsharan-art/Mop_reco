@@ -345,7 +345,7 @@ def test_the_date_expansion_state_is_filtered_against_the_current_option_set():
     date cell rendered as a floating box that overlapped the header and the
     first row) — each open date's own store rows render in their own
     st.expander below the parent-only table instead."""
-    source = (APP / "Summary.py").read_text(encoding="utf-8")
+    source = (APP / "store_detail_view.py").read_text(encoding="utf-8")
     assert 'OPEN_DATES_KEY = "sm_open_dates"' in source
     assert "for d in sorted(d for d in all_dates if d in open_dates):" in source
     # The glyph is gone for good — no "+ "/"− " prefix on the date cell.
@@ -443,7 +443,7 @@ def test_the_seven_tile_ribbon_is_gone_replaced_by_the_particulars_matrix():
     assert 'st.container(key="tile-ribbon")' not in source
     assert "tile(row1[" not in source
     assert "tile(row2[" not in source
-    assert "_MX_COLS = " in source
+    assert "MATRIX_COLUMNS = " in source
     assert "matrix = src.mop_particulars_matrix(" in source
 
 
@@ -453,11 +453,11 @@ def test_the_particulars_matrix_has_all_its_rows():
     (`.mop-matrix-pct`), on instruction, "with no full-height row of its
     own." The other six labels are each still their own row."""
     source = (APP / "Summary.py").read_text(encoding="utf-8")
-    matrix_src = source[source.index("_MX_COLS = "):source.index("_matrix_failed = ")]
+    matrix_src = source[source.index("MATRIX_COLUMNS = "):source.index("_matrix_failed = ")]
     for row in ("Sale", "Collected", "Receivable",
                "Gift Voucher Redeemed", "Credit Note Issued", "Credit Note Received"):
         assert f'>{row}<' in matrix_src or f'"{row}"' in matrix_src, row
-    assert "mx-pct" in matrix_src
+    assert "mop-matrix-pct" in matrix_src
 
 
 def test_percent_to_total_is_a_direct_complement_not_independently_rounded():
@@ -536,9 +536,9 @@ def test_data_quality_is_removed_from_summary_and_merged_onto_float():
 def test_the_detail_table_never_displays_cash_receivable_negative():
     """K = I - J since 2026-09-17 (polarity swapped with column I's sign) —
     a negative K is the Defect-B floor now, not a positive one."""
-    source = (APP / "Summary.py").read_text(encoding="utf-8")
+    source = (APP / "store_detail_view.py").read_text(encoding="utf-8")
     display_fn = source[source.index("def display("):
-                        source.index("# ===", source.index("def display("))]
+                        source.index("def render(")]
     assert 'max(0.0, float(k))' in display_fn
 
 
@@ -747,7 +747,7 @@ def test_navigation_order_and_removed_tabs():
     start = source.index("NAV_PAGES = [")
     block = source[start:source.index(chr(93), start + len("NAV_PAGES = ["))]
     labels = re.findall(r'"([A-Za-z ]+)"\)', block)
-    assert labels == ["Summary", "Exceptions", "CMS Reco", "Float", "Store Task", "Upload", "Masters"]
+    assert labels == ["Summary", "Store Task", "Cash position", "Float", "Exceptions", "Upload", "Masters"]
     assert not (APP / "pages" / "3_Manual_matches.py").exists()
     assert not (APP / "pages" / "4_Run.py").exists()
 

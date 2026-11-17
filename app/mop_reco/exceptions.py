@@ -60,6 +60,16 @@ def txn_exception_key(gateway, transaction_id) -> str:
     return f"{gateway}|{transaction_id}"
 
 
+def noid_txn_ref(business_date, txn_time, amount, ordinal: int) -> str:
+    """A stable stand-in for a gateway row that arrived WITHOUT a transaction id (2026-10-30: 120 Bajaj rows of 01/10/2026,
+    Rs 22,000.05, all keyed `bajaj|<NA>` and so shown as ONE exception). Built only from what the row carries - its date,
+    time and amount - plus an ordinal among rows that share all three, so every such row is its own exception and the key
+    is the same on every run. It is a label, never a transaction id: nothing can be matched or refunded against it."""
+    day = str(business_date).replace("-", "")
+    clock = str(txn_time or "").replace(":", "") or "000000"
+    return f"NOID-{day}-{clock}-{int(round(float(amount) * 100))}-{ordinal}"
+
+
 # ---------------------------------------------------------------------------
 # Building this run's candidates
 # ---------------------------------------------------------------------------
@@ -155,8 +165,26 @@ def build_r1_exceptions(bill_lines: pd.DataFrame, result) -> list:
             },
         ))
 
-    for _, row in result.unmapped_txns.iterrows():
+    unmapped = result.unmapped_txns
+    ids = unmapped["txn_ref"].astype("string").str.strip()
+    no_id = ids.isna() | ids.str.lower().isin(["", "nan", "<na>", "none", "na"])
+    ordinals = {}
+    if no_id.any():
+        sortable = unmapped[no_id].assign(_t=unmapped.loc[no_id, "txn_time"].astype(str))
+        sortable = sortable.sort_values(["gateway", "business_date", "_t", "amount"], kind="mergesort")
+        seen = {}
+        for idx, r in sortable.iterrows():
+            k = (r["gateway"], str(r["business_date"]), r["_t"], round(float(r["amount"]), 2))
+            seen[k] = seen.get(k, 0) + 1
+            ordinals[idx] = seen[k]
+
+    for idx, row in unmapped.iterrows():
         txn_time = row.get("txn_time")
+        txn_ref = row["txn_ref"]
+        if idx in ordinals:
+            txn_ref = noid_txn_ref(row["business_date"],
+                                   txn_time.strftime("%H:%M:%S") if txn_time is not None and not pd.isna(txn_time) else "",
+                                   row["amount"], ordinals[idx])
         # Genuinely None for Axis (see r1_bill_txn.build_gateway_pool's own
         # note — Axis's own TRAN_TIME is a constant placeholder, never a
         # real time) and for any Bajaj/Paytm row whose own time failed to
@@ -164,14 +192,15 @@ def build_r1_exceptions(bill_lines: pd.DataFrame, result) -> list:
         transaction_time = (txn_time.strftime("%H:%M:%S")
                             if txn_time is not None and not pd.isna(txn_time) else None)
         candidates.append(CandidateException(
-            exception_key=txn_exception_key(row["gateway"], row["txn_ref"]),
+            exception_key=txn_exception_key(row["gateway"], txn_ref),
             reconciliation="R1",
             type="unmapped_gateway_transaction",
             business_date=str(row["business_date"]),
             store=str(row["store"]) if pd.notna(row.get("store")) else None,
             amount=float(row["amount"]),
-            detail={"gateway": row["gateway"], "transaction_id": row["txn_ref"],
-                    "payment_mode": row.get("payment_mode")},
+            detail={"gateway": row["gateway"], "transaction_id": txn_ref,
+                    "payment_mode": row.get("payment_mode"),
+                    **({"no_transaction_id_in_source": True} if idx in ordinals else {})},
             transaction_time=transaction_time,
         ))
 

@@ -23,9 +23,9 @@ def test_bills_and_transactions_rows_carry_the_same_figures_as_before():
     b = match_strip.bills_rows(_ov())
     assert b[0] == ("Open (unmatched)", "5,122", "Rs 0.50 Cr") and b[-1][0] == "Total" and b[-1][1] == "4,365,501"
     t = match_strip.txn_rows(_ov())
-    assert [r[0] for r in t] == ["Mapped to bill - auto", "Mapped to bill - manual", "Refunded to customer",
-                                 "Unmapped (open)", "Total"]
-    assert t[3][1] == "6,728" and t[-1][1] == "3,705,992"
+    assert [r[0] for r in t] == ["Unmapped (open)", "Mapped to bill - auto", "Mapped to bill - manual",
+                                 "Refunded to customer", "Total"]
+    assert t[0][1] == "6,728" and t[-1][1] == "3,705,992"
 
 
 def test_the_static_table_is_plain_html_with_no_grid_machinery():
@@ -38,9 +38,7 @@ def test_the_presentation_blocks_do_not_use_a_data_grid():
     assert "st.dataframe" not in inspect.getsource(match_strip.render_table)
     assert "st.data_editor" not in inspect.getsource(match_strip.render_table)
     summary = (Path(__file__).resolve().parents[1] / "app" / "Summary.py").read_text(encoding="utf-8")
-    # 2026-10-26: the particulars matrix is a clickable grid (every Sale / Collected figure opens its store-wise table), so it
-    # is built from Streamlit columns and buttons - still never a data grid - and spans the page width.
-    block = summary[summary.index("_MX_COLS = "):summary.index("# --- the drill")]
-    assert "st.dataframe" not in block and "st.data_editor" not in block and "st.button(text, key=f\"mxb_" in block
+    block = summary[summary.index("matrix_html = f"):summary.index('with st.container(key="matrix-card")') + 120]
+    assert "st.dataframe" not in block and "st.data_editor" not in block and "<table class='mop-matrix'>" in block
     css = (Path(__file__).resolve().parents[1] / "app" / "assets" / "theme.css").read_text(encoding="utf-8")
-    assert ".st-key-matrix-card { width: 100% !important;" in css
+    assert ".mop-matrix { width: auto;" in css and ".st-key-matrix-card { width: fit-content;" in css

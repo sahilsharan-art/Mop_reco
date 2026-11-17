@@ -23,7 +23,7 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
@@ -636,6 +636,30 @@ def version_history(session, master_name: str):
 # identifier into a store. Never guesses; ambiguity is reported, not resolved.
 # ---------------------------------------------------------------------------
 
+def store_aliases() -> dict:
+    """{old code: new code} from config `store_code_aliases` - empty when none. Read once per process."""
+    global _ALIASES
+    if _ALIASES is None:
+        try:
+            from .config import load_config
+            raw = (load_config().raw or {}).get("store_code_aliases") or {}
+            _ALIASES = {str(k).strip(): str(v).strip() for k, v in raw.items() if k and v}
+        except Exception:  # noqa: BLE001 - never stop a read because the alias list could not be loaded
+            logger.warning("store_code_aliases could not be read; no replacement applied", exc_info=True)
+            _ALIASES = {}
+    return _ALIASES
+
+
+_ALIASES = None
+
+
+def canonical_store(code):
+    """The store's CURRENT code: an old code is replaced by its new one, anything else is returned as it was."""
+    if code is None:
+        return code
+    return store_aliases().get(str(code).strip(), code)
+
+
 @dataclass(frozen=True)
 class ResolveResult:
     source: str
@@ -646,7 +670,25 @@ class ResolveResult:
     via_later_version: Optional[str] = None  # set when the identifier was absent as at the date (see below)
 
 
-def resolve_store(
+def resolve_store(session, source: str, identifier, business_date,
+                  pos_store_codes: Optional[set] = None) -> ResolveResult:
+    """`_resolve_store_unaliased`, then the store code replacements: an identifier that the master maps to an OLD code
+    resolves to the NEW one, and an identifier mapped to an old AND its new code is no longer ambiguous."""
+    result = _resolve_store_unaliased(session, source, identifier, business_date, pos_store_codes)
+    aliases = store_aliases()
+    if not aliases:
+        return result
+    if result.status == "store_ambiguous" and result.candidates:
+        mapped = {aliases.get(s, s) for s in result.candidates}
+        if len(mapped) == 1:
+            return replace(result, store=next(iter(mapped)), status="resolved", candidates=())
+        return replace(result, candidates=tuple(sorted(mapped)))
+    if result.store is not None:
+        return replace(result, store=aliases.get(result.store, result.store))
+    return result
+
+
+def _resolve_store_unaliased(
     session,
     source: str,
     identifier,
@@ -797,7 +839,7 @@ def resolve_pickup_store(session, pickup_code, location, business_date) -> Resol
             tuple(sorted(set(by_location.values())))
         )
     return ResolveResult(
-        "pickup_code", identifier_str, by_location[loc_key], "resolved")
+        "pickup_code", identifier_str, canonical_store(by_location[loc_key]), "resolved")
 
 
 def pickup_codes_needing_location_registration(cms_df, session, as_of) -> list:

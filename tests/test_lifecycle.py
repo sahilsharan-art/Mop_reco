@@ -354,3 +354,44 @@ def test_two_rows_naming_the_same_transaction_are_both_rejected_and_unchanged_ro
     assert "also on row" in " ".join(prev.rows[0].why) and "also on row" in " ".join(prev.rows[1].why)
     assert prev.actionable_rows == 2 and prev.total_rows == 3
     assert prev.summary_line() == "2 of 3 rows carry a transaction or a change; 1 skipped as unchanged."
+
+
+# --- one transaction that paid a bill AND was overpaid: bill + customer refund (2026-10-30) -----------------------------
+
+def _split_setup(session, monkeypatch, txn_amount=6655.0, bill_amount=1055.0):
+    make_pair(session, amount=bill_amount)
+    session.query(Exception_).filter_by(exception_key=TXN_KEY).one().amount = txn_amount
+    session.commit()
+    pool = pool_for(amount=txn_amount)
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: pool)
+
+
+def test_a_bill_and_a_refund_share_one_transaction_and_both_close(session, monkeypatch):
+    _split_setup(session, monkeypatch)
+    rf.record_refund_with_bill(session, "SB1/0001", "paytm", "TXN-1", 5600.0, "PREETI", "Z-127346", "15/07/2026", "Aditi")
+    assert status_of(session, BILL_KEY) == "closed" and status_of(session, TXN_KEY) == "closed"
+    refund = session.query(TransactionRefund).one()
+    assert float(refund.amount) == 5600.0
+    mm_row = session.query(ManualMatch).one()
+    assert mm_row.lifecycle == "active" and "6,655.00 = bill Rs 1,055.00 + customer refund Rs 5,600.00" in mm_row.override_reason
+    # the strip counts the transaction ONCE (as refunded) with its value split bill / refund
+    facts = q._manual_txn_facts(session)
+    assert [(f[3], f[4]) for f in facts] == [(1055.0, False)]
+
+
+def test_bill_plus_refund_must_equal_the_transaction_exactly(session, monkeypatch):
+    _split_setup(session, monkeypatch)
+    with pytest.raises(ValueError, match="not the transaction"):
+        rf.record_refund_with_bill(session, "SB1/0001", "paytm", "TXN-1", 5000.0, "PREETI", "Z1", "15/07/2026", "Aditi")
+    assert session.query(TransactionRefund).count() == 0 and session.query(ManualMatch).count() == 0
+    assert status_of(session, TXN_KEY) == "open"
+
+
+def test_reversing_one_half_does_not_reopen_a_transaction_the_other_still_holds(session, monkeypatch):
+    _split_setup(session, monkeypatch)
+    rf.record_refund_with_bill(session, "SB1/0001", "paytm", "TXN-1", 5600.0, "PREETI", "Z1", "15/07/2026", "Aditi")
+    mm.reverse(session, session.query(ManualMatch).one().id, "Aditi", "wrong bill")
+    assert status_of(session, TXN_KEY) == "closed"          # the refund still closes it
+    assert status_of(session, BILL_KEY) == "open"           # the bill is open again
+    rf.reverse_refund(session, session.query(TransactionRefund).one().id, "Aditi", "undo")
+    assert status_of(session, TXN_KEY) == "open"

@@ -176,6 +176,16 @@ float_tracker:
   threshold_overrides: {}
 
 # R3a — store cash book
+# Store code replacements (2026-10-27): the company replaced these stores' codes. OLD -> NEW, applied wherever a store
+# code is read - POS, petty cash, every gateway (through the MID masters), CMS (through the pickup master) and the
+# opening-balance file (through the store master) - for EVERY date, so a store's history sits under its current code.
+# The source files and masters are never edited (rule 7); the mapping is applied as they are read.
+#   NLD  CITYKART STORES PVT. LTD. (EKANGARSARAI-NLD)  ->  NEG  CITYKART STORES PVT. LTD. (EKANGARSARAI-NEG)
+#   KGP  CITYKART STORES PVT. LTD. (KHARAGPUR-KGP)     ->  MKG  CITYKART STORES PVT. LTD. (KHARAGPUR-MKG)
+store_code_aliases:
+  NLD: NEG
+  KGP: MKG
+
 r3a:
   # Closing cash above this at a store means cash is accumulating and not
   # being deposited. Configurable by decision; started at Rs 2,00,000.

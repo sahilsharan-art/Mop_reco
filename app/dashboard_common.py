@@ -88,6 +88,11 @@ def page(title: str, purpose: str = "", icon: str = None, nav: bool = True):
     if not selfcheck.render(st):
         st.stop()
 
+    # The navigation bar is the FIRST thing on every page, above the logo and title (2026-10-26, on instruction;
+    # it sat below the opening block from 2026-10-14). `nav` is kept so an old caller still works, but it is
+    # always drawn here.
+    top_nav(NAV_LABEL_BY_TITLE.get(title))
+
     heading, slot = st.columns([3, 2])
     heading.markdown(_title_html(title), unsafe_allow_html=True)
     st.session_state["_range_slot"] = slot
@@ -95,12 +100,6 @@ def page(title: str, purpose: str = "", icon: str = None, nav: bool = True):
         st.caption(purpose)
     # The status pill sits directly under the title on every page; sidebar() fills it.
     st.session_state["_pill_slot"] = st.empty()
-    # The navigation bar. Summary places it itself, BELOW its summary matrix
-    # (`nav=False` here, then `top_nav()` after the matrix); every other page has no
-    # matrix, so the bar goes straight under the heading - the same place relative to the
-    # page's own opening block, so the layout does not jump when switching pages.
-    if nav:
-        top_nav(NAV_LABEL_BY_TITLE.get(title))
 
 
 LOGO_PATH = Path(__file__).resolve().parent / "assets" / "citykart-logo.png"
@@ -145,10 +144,10 @@ def _title_html(title: str) -> str:
 # slower. The native sidebar list is hidden (theme.css + .streamlit/config.toml).
 NAV_PAGES = [
     ("Summary.py", "Summary"),
-    ("pages/8_Exceptions.py", "Exceptions"),
-    ("pages/2_CMS_Reco.py", "CMS Reco"),
-    ("pages/1_Float.py", "Float"),
     ("pages/7_Store_Task.py", "Store Task"),
+    ("pages/2_Cash_position.py", "Cash position"),
+    ("pages/1_Float.py", "Float"),
+    ("pages/8_Exceptions.py", "Exceptions"),
     ("pages/6_Upload.py", "Upload"),
     ("pages/5_Masters.py", "Masters"),
 ]
@@ -158,7 +157,7 @@ NAV_PAGES = [
 # aria-current on a page_link; the active link differs only by a generated class name,
 # which must not be styled against).
 NAV_LABEL_BY_TITLE = {
-    APP_NAME: "Summary", "MOP RECO_Store Wise": "Summary", "Exceptions": "Exceptions", "CMS Reco": "CMS Reco",
+    APP_NAME: "Summary", "MOP RECO_Store Wise": "Summary", "Exceptions": "Exceptions", "Cash position": "Cash position",
     "Float": "Float", "Store Task": "Store Task", "Upload": "Upload", "Master data": "Masters",
 }
 

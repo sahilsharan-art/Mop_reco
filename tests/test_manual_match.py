@@ -1006,6 +1006,22 @@ def test_find_bill_for_match_returns_an_open_bill(session, run):
     assert bill["amount"] == 500.0
 
 
+def test_a_multi_line_bill_is_judged_by_its_OPEN_line_not_its_matched_one(session, run):
+    """SA53/048915/0926: a PaytmDQR line (499) the engine matched and an EDC OTHER line (7,582) still open. The bill must be
+    offered for matching with the open line's amount, not refused as 'already matched by the engine'."""
+    bill_line(session, run, "ML1", 499.0, matched=True, matched_txn="T-499", mop="PaytmDQR")
+    bill_line(session, run, "ML1", 7582.0, matched=False, mop="EDC OTHER")
+    bill, is_open, why = mm.find_bill_for_match(session, run.id, "ML1")
+    assert is_open and why is None
+    assert bill["amount"] == 7582.0 and bill["mop"] == "EDC OTHER"
+
+
+def test_a_fully_matched_bill_still_reports_its_match(session, run):
+    bill_line(session, run, "ML2", 499.0, matched=True, matched_txn="T-499", mop="PaytmDQR")
+    bill, is_open, why = mm.find_bill_for_match(session, run.id, "ML2")
+    assert not is_open and "already matched by the engine" in why
+
+
 def test_find_bill_for_match_reports_a_missing_bill_number(session, run):
     bill, is_open, why = mm.find_bill_for_match(session, run.id, "NO-SUCH-BILL")
     assert bill is None
@@ -1053,3 +1069,67 @@ def test_reverse_validation_uses_the_same_validate_function(session, run):
     validation = mm.validate(session, bill, "paytm", "TXN-1", CLEAN_POOL)
     assert validation.case == mm.CASE_CLEAN
     assert validation.ok
+
+
+# ---------------------------------------------------------------------------
+# A SHARED payment (2026-10-29): ONE transaction that paid TWO bills
+# ---------------------------------------------------------------------------
+
+SHARED_POOL = pool([
+    ("paytm", "TXN-SHARED", "2026-07-20", "ABD", 4500.0, "SUCCESS", "ACQUIRING"),
+    ("paytm", "TXN-OTHERSTORE", "2026-07-20", "XYZ", 4500.0, "SUCCESS", "ACQUIRING"),
+])
+
+
+def _two_bills(session, run, a=3000.0, b=1500.0, store_b="ABD"):
+    return (as_bill(bill_line(session, run, "SH-A", a)),
+            as_bill(bill_line(session, run, "SH-B", b, store=store_b)))
+
+
+def test_one_transaction_can_close_two_bills_when_they_add_up_exactly(session, run):
+    a, b = _two_bills(session, run)
+    v = mm.validate_shared(session, [a, b], "paytm", "TXN-SHARED", SHARED_POOL)
+    assert v.ok and v.case == mm.CASE_CLEAN
+    rows = mm.record_shared(session, [a, b], "paytm", "TXN-SHARED", "manual_match_by_bill", "tester", v)
+    assert len(rows) == 2 and rows[0].shared_group == rows[1].shared_group and rows[0].shared_group
+    assert {r.bill_no for r in rows} == {"SH-A", "SH-B"} and {r.transaction_ref for r in rows} == {"TXN-SHARED"}
+
+
+def test_a_shared_payment_that_does_not_add_up_is_refused(session, run):
+    a, b = _two_bills(session, run, a=3000.0, b=1400.0)
+    v = mm.validate_shared(session, [a, b], "paytm", "TXN-SHARED", SHARED_POOL)
+    assert not v.ok and any("Amount differs" in p for p in v.problems)
+
+
+def test_a_shared_payment_across_two_stores_is_refused(session, run):
+    a, b = _two_bills(session, run, store_b="XYZ")
+    v = mm.validate_shared(session, [a, b], "paytm", "TXN-SHARED", SHARED_POOL)
+    assert not v.ok and any("different stores" in p for p in v.problems)
+
+
+def test_a_third_bill_cannot_take_a_transaction_a_shared_payment_already_holds(session, run):
+    a, b = _two_bills(session, run)
+    mm.record_shared(session, [a, b], "paytm", "TXN-SHARED", "manual_match_by_bill", "tester",
+                     mm.validate_shared(session, [a, b], "paytm", "TXN-SHARED", SHARED_POOL))
+    third = as_bill(bill_line(session, run, "SH-C", 4500.0))
+    v = mm.validate(session, third, "paytm", "TXN-SHARED", SHARED_POOL)
+    assert not v.ok and any("already matched manually" in p for p in v.problems)
+
+
+def test_an_ordinary_transaction_still_cannot_back_two_bills(session, run):
+    """The database still refuses two ORDINARY matches on one transaction - only a shared group may do it."""
+    a = as_bill(bill_line(session, run, "OR-A", 500.0))
+    b = as_bill(bill_line(session, run, "OR-B", 500.0))
+    v = mm.validate(session, a, "paytm", "TXN-1", CLEAN_POOL)
+    mm.record(session, a, "paytm", "TXN-1", "manual_match_by_bill", "tester", v)
+    with pytest.raises((IntegrityError, ValueError)):
+        mm.record(session, b, "paytm", "TXN-1", "manual_match_by_bill", "tester", v)
+
+
+def test_reversing_one_bill_of_a_shared_payment_reverses_both(session, run):
+    a, b = _two_bills(session, run)
+    rows = mm.record_shared(session, [a, b], "paytm", "TXN-SHARED", "manual_match_by_bill", "tester",
+                            mm.validate_shared(session, [a, b], "paytm", "TXN-SHARED", SHARED_POOL))
+    mm.reverse(session, rows[0].id, "tester", "wrong pair", reopen_tasks=False)
+    session.expire_all()
+    assert [session.get(ManualMatch, r.id).lifecycle for r in rows] == ["reversed", "reversed"]

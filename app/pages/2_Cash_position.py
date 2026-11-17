@@ -19,6 +19,7 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import store_detail_view
 from dashboard_common import (confirm_with_operator, db_session, latest_run, no_run_yet, page, sidebar,
                               stop_if_no_dates, tile)
 from mop_reco import cms_blocks as cb
@@ -26,7 +27,7 @@ from mop_reco import cms_blocks_export as cbx
 from mop_reco.config import load_config
 from mop_reco.formatting import display_date, money_short, money_table
 
-page("CMS Reco")
+page("Cash position")
 
 session = db_session()
 run = latest_run(session)
@@ -36,6 +37,10 @@ if run is None:
 date_from, date_to, store = sidebar(session, run)
 stop_if_no_dates(date_from, run)
 cfg = load_config()
+
+store_detail_view.render(session, run, date_from, date_to, store)
+st.divider()
+st.markdown("### CMS reco")
 
 WARN_FILL = "background-color: #FDE9C8"
 

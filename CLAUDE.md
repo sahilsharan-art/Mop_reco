@@ -4321,3 +4321,70 @@ Rules that follow from it:
   "the table ends at its last column" for the matrix ONLY; the static Bills / Transactions tables keep their content width.
 * Gift Voucher Redeemed, Credit Note Issued and Credit Note Received are hidden by default; a small +/- under the table (`st.session_state["sm_matrix_adjustments"]`,
   plain key so it survives filter changes and page switches) shows or hides them. The figures are unchanged either way.
+
+### 6.30 Store code replacements (2026-10-27)
+
+* The company replaced two store codes: **NLD -> NEG** (CITYKART STORES PVT. LTD. (EKANGARSARAI-NLD) -> (EKANGARSARAI-NEG)) and **KGP -> MKG** (... (KHARAGPUR-KGP) -> (KHARAGPUR-MKG)).
+  Config `store_code_aliases` holds OLD -> NEW; `masters.canonical_store()` / `store_aliases()` apply it wherever a code is read, for EVERY date: POS and PTC (the code is
+  in the file), every gateway (through the MID masters) and CMS (through the pickup master) via `masters.resolve_store`, and the opening balance (store master). An identifier that a
+  master maps to an old AND its new code is no longer `store_ambiguous`. The source files and masters are never edited (rule 7).
+* Why it mattered: POS sales had moved to NEG / MKG while Paytm, Axis and CMS still resolved to NLD / KGP, so those stores showed deposits and credits with no sales (negative closing cash).
+  Run #22: no old code remains in any table or warehouse partition; negative-closing store-days 465 -> 386; NEG and MKG never go negative.
+* `scripts/migrate_store_aliases.py` carries the human-made records (exceptions + remarks, store tasks, manual matches, float and CMS remarks) to the new code before a re-run. A rename that would
+  collide is reported and skipped (34 float tasks, which the next sync closes). Earlier runs' results are history and keep the codes they were run with.
+
+### 6.31 One transaction, two bills - the shared payment (2026-10-29)
+
+* **The one recorded exception to "one transaction can back at most one bill" (6.9b).** A customer sometimes pays two bills with one swipe. On the operator's instruction a
+  single transaction may close TWO bills, and only when ALL of these hold (`manual_match.validate_shared`): the two bills are different; both are in the transaction's own store;
+  their amounts add up to the transaction amount EXACTLY; and the transaction is found, SUCCESS / ACQUIRING and not already used by the engine or by anyone else. Any other combination
+  is refused with its reason. Everything else keeps the rule: `ux_manual_txn_active` is now unique on (gateway, transaction_ref) WHERE active AND `shared_group IS NULL`, so two
+  ORDINARY matches on one transaction are still refused by the database (a test asserts it).
+* **Recording** (`record_shared`): one manual match per bill, all carrying one `shared_group`, in one database transaction. Each bill's exception closes, the ONE transaction's
+  exception closes (`matched manually`), each bill's open-bill task closes. A third bill can no longer take the transaction (validate reports it as held). **Reversal reverses the whole group**
+  (the other bill cannot stand alone); the register keeps every row.
+* **Entry** (Exceptions table): type the SAME transaction id in Txn 1 of both bills. If both are typed in one edit they are paired at once; if typed one after the other, the first waits
+  (it is larger than that bill alone) and the second completes it. Typing a clean id on a single bill records the match straight away; two ids on one bill record a split payment.
+* **Display:** Manual match transactions shows the shared transaction ONCE, naming both bills; the transaction strip counts it once.
+* The schema change (column `shared_group`, narrowed index) is applied automatically by `db.init_db()` to an existing database.
+
+
+### 6.32 Customer Refund folder (2026-10-30)
+
+* `D:\MOP_Reco\Customer Refund\*.xlsx` (the finance team's workbook) is read by column NAME (`Transaction No`, `Zoho ID`, `Name`, `Store Code`, `Tran Date`, `Process Date`, `Amt`); bank details (IFSC, account) are never read. `refunds.read_refund_folder` / `preview_folder` / `apply_folder`; UI: Exceptions page, expander "Customer refunds - from the Customer Refund folder" (Check -> preview with held lines and reasons -> Record).
+* A line is recorded only when it passes the ordinary refund rules (6.9c-ii / 6.23) AND has a process date (no date = approved, not paid: held) AND its amount equals the transaction (a difference is held, never written off). Recorded as `released` with source `folder`, a remark naming customer, Zoho id and process date, one database transaction.
+* Preview on 29 Oct file (276 lines): 226 ready (Rs 3,47,272), 50 held - 8 transaction not found, 2 unpaid, 3 store not in master, duplicate Zoho ids/transactions inside the file, store/amount mismatches. Nothing applied to the live database until the operator confirms on the page.
+
+### 6.33 Customer Refund folder - what is recorded, what is held, and why (2026-10-30)
+
+* **Recorded: 256 of 276 lines (Rs 3,91,557), all 256 exceptions closed.** The first pass recorded 226 and held 50; the 50 were not all defects. Corrected rules:
+  * **One Zoho ticket may refund several payments of ONE customer** (8 tickets, 18 lines). `ux_refund_zoho` is no longer unique (dropped by `db.init_db()`); a Zoho number may be shared only by refunds
+    whose customer name agrees (case/space-insensitive), checked in `refunds.validate_refund` and `_preview_upload`. A different customer reusing a ticket is still refused. A TRANSACTION is still refunded once (`ux_refund_txn`).
+  * **One transaction named by two lines** (6 transactions, 12 lines, different Zoho numbers): refunded ONCE - the line with the earlier process date (then the earlier row) is recorded; the other ticket is NOT recorded
+    and is written into the exception's remark as "possible duplicate payout" with its Zoho number, customer, amount and date, and listed in `exports/customer_refund_held_lines.csv`. Someone must confirm whether the money was paid out twice.
+  * **A store the master lacks** (CHB, CTA) is accepted when it is the transaction's own store (the master is out of date; the data carries those stores). **A store in the file that differs from the transaction's store**
+    (MDH/LBK, SPR2/KPH, NGC/KPH, BBR/'#REF!') is recorded under the transaction's store (the file's store when the transaction's is not a valid code) and BOTH are written into the remark.
+  * Held, never guessed (20 lines): 6 second tickets above; 2 amount differences (LAM 5,600 vs 6,655; UBS 2,548 vs 2,549 - recording would write the difference off); 3 approved with no process date (JRT, LAM, BRN); 9 with
+    no transaction number ("Not Found"). For those 9 the preview lists open transactions of the same store and exact amount (BGM 1,152 and NKG 500 have exactly one candidate each) - offered, not applied.
+
+### 6.34 One transaction, a bill AND a customer refund (2026-10-30)
+
+* **Case:** LAM, Axis transaction 619220648001 = Rs 6,655 = bill `SA01/035111/0726` Rs 1,055 + refund Rs 5,600 (PREETI, Zoho 127346, 15/07/2026). The sheet showed only the refund (5,600 against 6,655), which is why it was held.
+  `refunds.record_refund_with_bill()` records both in ONE database transaction: the refund (amount = the refunded part) and a manual match of the bill to the transaction whose written override is the split
+  ("transaction Rs 6,655.00 = bill Rs 1,055.00 + customer refund Rs 5,600.00"). It refuses unless the bill is open, in the transaction's store, and **bill + refund equals the transaction exactly** (`split_problem`).
+  The folder reader takes an optional **Bill No** column; a line whose refund differs from the transaction is applied this way only when that column names a bill that makes the amounts add up.
+* **Counting:** a transaction held by BOTH records counts ONCE, as refunded; its value is split (bill part in manual, refund part in refunded) so auto + manual + refunded + unmapped = total holds in count and in rupees
+  (`queries._manual_txn_facts` returns `counts=False` for it). Reversing one half does not reopen the transaction while the other half still closes it (`manual_match.reopen_txn_exception`).
+* **Result after the sheet was corrected again (270 lines): 267 recorded, Rs 4,10,758; 3 held** - DPT Rs 1,547 and NKG Rs 500 have no transaction number in the workbook (NKG has exactly one candidate,
+  20260426111020000255165045726592893, offered not applied), BRN Rs 483 has no process date. Controls after: transactions 4,782,775 auto + 573 manual + 267 refunded + 3,550 unmapped = 4,787,165; bills open 1,064 / manual 326.
+
+### 6.35 Gateway rows with no transaction id: one exception each (2026-10-30)
+
+* **Incident:** the Open (unmapped) tile said 3,548 and the Exception transactions export 3,429. The 119 difference was ONE exception, key `bajaj|<NA>`, holding **120 Bajaj rows** (all 01/10/2026, SUCCESS, Rs 22,000.05 in total, small amounts
+  such as 116.67 / 250.00 / 108.33, no Transaction Id, no Net Amount, no store) - the register keys on the transaction id, so every id-less row landed on the same key. The tile's "= exceptions + duplicate-reference rows" sentence (removed from the
+  page on 2026-10-30) had been explaining the same 119 and it was not duplicate references at all.
+* **Fix:** `exceptions.noid_txn_ref()` gives each such row its own deterministic label from what it carries - date, time, amount in paise and an ordinal among rows that share all three:
+  `NOID-20261001-110344-11667-2`, key `bajaj|NOID-...`, detail `no_transaction_id_in_source: true`. It is a label, never a transaction id: nothing can be matched or refunded against it. The key does not depend on row order (tested).
+  The live register was repaired in place: the merged exception is `auto_resolved` (reason recorded, nothing deleted, it had no remarks) and 120 open exceptions replace it - the same keys a re-run produces.
+* **Result:** tile and register agree - 3,548 transactions, Rs 14,84,846.88, no folded rows. **Open finding for the business:** these 120 rows are in Bajaj's own file with no id and zero net amount, so they can only be cleared by
+  correcting that file (or a decision on what they are); they are visible again, not resolved.

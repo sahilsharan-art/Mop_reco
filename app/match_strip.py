@@ -55,59 +55,52 @@ def _txn_notes(ov) -> list:
     return notes
 
 
-def _controls(ov):
+def _controls(ov, quiet: bool = False):
+    """`quiet`: say nothing while the controls hold (the Summary table); a failure is always shown."""
     b = ov.bills
     if ov.bills_ok:
-        st.caption(f"✓ bills: open ({fmt_count(b['open']['count'])}) + auto closed ({fmt_count(b['auto']['count'])}) "
-                   f"+ manual closed ({fmt_count(b['manual']['count'])}) = total ({fmt_count(b['total']['count'])}).")
+        if not quiet:
+            st.caption(f"✓ bills: open ({fmt_count(b['open']['count'])}) + auto closed ({fmt_count(b['auto']['count'])}) "
+                       f"+ manual closed ({fmt_count(b['manual']['count'])}) = total ({fmt_count(b['total']['count'])}).")
     else:
         st.error(f"**MISMATCH** (bills): open + auto closed + manual closed differs from total by "
                  f"{fmt_count(ov.bills_difference)}.")
     t = ov.txns
     if ov.txns_ok:
-        st.caption(f"✓ transactions: auto mapped ({fmt_count(t.auto_n)}) + manual mapped ({fmt_count(t.manual_n)}) + "
-                   f"refunded ({fmt_count(t.refunded_n)}) + unmapped ({fmt_count(t.unmapped_n)}) = "
-                   f"total ({fmt_count(t.total_n)}).")
+        if not quiet:
+            st.caption(f"✓ transactions: auto mapped ({fmt_count(t.auto_n)}) + manual mapped ({fmt_count(t.manual_n)}) + "
+                       f"refunded ({fmt_count(t.refunded_n)}) + unmapped ({fmt_count(t.unmapped_n)}) = "
+                       f"total ({fmt_count(t.total_n)}).")
     else:
         st.error(f"**MISMATCH** (transactions): auto + manual + refunded + unmapped differs from total by "
                  f"{fmt_count(ov.txns_difference)}.")
 
 
 def render_tiles(ov, key: str = "match-ribbon"):
-    """Tiles (Exceptions page). At most four to a row."""
+    """Tiles (Exceptions page): what is still open and what a person has closed (2026-10-30, on instruction). The engine's own
+    matches are not a tile; they are still inside the two-sided control line under the tiles."""
     b, t = ov.bills, ov.txns
     with st.container(key=key):
         st.markdown("**Bills**")
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, _c3 = st.columns(3)
         tile(c1, "OPEN (UNMATCHED)", fmt_count(b["open"]["count"]),
-             state="attention" if b["open"]["count"] else "clean", note=money_short(b["open"]["value"]),
+             state="attention" if b["open"]["count"] else "clean", note=f"Rs {money_table(b['open']['value'])}",
              tooltip=f"Rs {money_table(b['open']['value'])} - no transaction matched yet")
-        tile(c2, "CLOSED - AUTO MATCHED", fmt_count(b["auto"]["count"]), state="clean",
-             note=money_short(b["auto"]["value"]), tooltip=f"Rs {money_table(b['auto']['value'])} - matched by the engine")
-        tile(c3, "CLOSED - MANUALLY MATCHED", fmt_count(b["manual"]["count"]), state="clean",
-             note=money_short(b["manual"]["value"]),
+        tile(c2, "CLOSED - MANUALLY MATCHED", fmt_count(b["manual"]["count"]), state="clean",
+             note=f"Rs {money_table(b['manual']['value'])}",
              tooltip=f"Rs {money_table(b['manual']['value'])} - matched by a person (inline or upload)")
-        tile(c4, "TOTAL BILLS", fmt_count(b["total"]["count"]), state="neutral", note=money_short(b["total"]["value"]),
-             tooltip=f"Rs {money_table(b['total']['value'])}")
-        for note in _bill_notes(ov):
-            st.caption(note)
+        _bill_notes(ov)          # the explanatory sentence is not shown; a MISMATCH still is
 
         st.markdown("**Transactions**")
         r1, r2, r3 = st.columns(3)
-        tile(r1, "MAPPED TO BILL - AUTO", fmt_count(t.auto_n), state="clean", note=money_short(t.auto_v),
-             tooltip=f"Rs {money_table(t.auto_v)} - consumed by the engine")
-        tile(r2, "MAPPED TO BILL - MANUAL", fmt_count(t.manual_n), state="clean", note=money_short(t.manual_v),
-             tooltip=f"Rs {money_table(t.manual_v)} - matched by a person")
-        tile(r3, "REFUNDED TO CUSTOMER", fmt_count(t.refunded_n), state="neutral", note=money_short(t.refunded_v),
-             tooltip=f"Rs {money_table(t.refunded_v)} - never a bill match, never revenue")
-        s1, s2, _ = st.columns(3)
-        tile(s1, "UNMAPPED (OPEN)", fmt_count(t.unmapped_n), state="attention" if t.unmapped_n else "clean",
-             note=money_short(t.unmapped_v), tooltip=f"Rs {money_table(t.unmapped_v)} - money received, no bill")
-        tile(s2, "TOTAL TRANSACTIONS", fmt_count(t.total_n), state="neutral", note=money_short(t.total_v),
-             tooltip=f"Rs {money_table(t.total_v)} - sale transactions")
-        for note in _txn_notes(ov):
-            st.caption(note)
-        _controls(ov)
+        tile(r1, "OPEN (UNMAPPED)", fmt_count(t.unmapped_n), state="attention" if t.unmapped_n else "clean",
+             note=f"Rs {money_table(t.unmapped_v)}", tooltip=f"Rs {money_table(t.unmapped_v)} - money received, no bill")
+        tile(r2, "CLOSED - MANUALLY MATCHED", fmt_count(t.manual_n), state="clean", note=f"Rs {money_table(t.manual_v)}",
+             tooltip=f"Rs {money_table(t.manual_v)} - matched to a bill by a person")
+        tile(r3, "CUSTOMER REFUNDS", fmt_count(t.refunded_n), state="neutral", note=f"Rs {money_table(t.refunded_v)}",
+             tooltip=f"Rs {money_table(t.refunded_v)} - paid back to the customer; never a bill match, never revenue")
+        _txn_notes(ov)           # the explanatory sentences are not shown; a MISMATCH still is
+        _controls(ov, quiet=True)
 
 
 def static_table_html(rows: list, columns=("", "Count", "Value (Rs Cr)")) -> str:
@@ -132,10 +125,11 @@ def bills_rows(ov) -> list:
 
 def txn_rows(ov) -> list:
     t = ov.txns
-    return [("Mapped to bill - auto", fmt_count(t.auto_n), money_cr(t.auto_v)),
+    # The open items come first (2026-10-26, on instruction): what needs work, then where the rest went.
+    return [("Unmapped (open)", fmt_count(t.unmapped_n), money_cr(t.unmapped_v)),
+            ("Mapped to bill - auto", fmt_count(t.auto_n), money_cr(t.auto_v)),
             ("Mapped to bill - manual", fmt_count(t.manual_n), money_cr(t.manual_v)),
             ("Refunded to customer", fmt_count(t.refunded_n), money_cr(t.refunded_v)),
-            ("Unmapped (open)", fmt_count(t.unmapped_n), money_cr(t.unmapped_v)),
             ("Total", fmt_count(t.total_n), money_cr(t.total_v))]
 
 
@@ -144,13 +138,11 @@ def render_table(ov):
     nobody sorts, filters or edits these two small blocks."""
     bcol, tcol = st.columns(2)
     with bcol:
-        st.markdown("**BILLS**")
+        st.markdown("**POS SALE BILLS**")
         st.markdown(static_table_html(bills_rows(ov)), unsafe_allow_html=True)
-        for note in _bill_notes(ov):
-            st.caption(note)
+        _bill_notes(ov)          # the explanatory sentences are not shown here; a MISMATCH still is
     with tcol:
-        st.markdown("**TRANSACTIONS**")
+        st.markdown("**SETTLEMENTS TRANSACTIONS**")
         st.markdown(static_table_html(txn_rows(ov)), unsafe_allow_html=True)
-        for note in _txn_notes(ov):
-            st.caption(note)
-    _controls(ov)
+        _txn_notes(ov)           # the explanatory sentences are not shown here; a MISMATCH still is
+    _controls(ov, quiet=True)

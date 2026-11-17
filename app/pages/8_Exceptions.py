@@ -55,8 +55,7 @@ from mop_reco.formatting import display_date, money_short, money_table
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "app" / "config.yaml"
 
-page("Exceptions", "Bills with no matching transaction, transactions with no matching bill, and the "
-                   "matching and refund tools that clear them.")
+page("Exceptions")
 
 session = db_session()
 run = latest_run(session)
@@ -397,26 +396,137 @@ def _add_pairing(frame):
 def _handle_pairing(edited, shown, raw, pairing, table_key):
     """Act on a Match choice, and validate any id the person pasted into Txn 1 / Txn 2."""
     cands = pairing
+
+    def _bill_of(r):
+        return {"business_date": r["date"], "store": r["store"], "bill_no": r["bill_no"],
+                "mop": r["mop"], "amount": float(r["amount"])}
+
+    # ONE transaction paying TWO bills (2026-10-29): the same id typed against two bills in this edit.
+    typed_once: dict = {}
+    for j in edited.index:
+        a1, a2 = io_.clean_ref(edited.at[j, "Txn 1"]) or "", io_.clean_ref(edited.at[j, "Txn 2"]) or ""
+        moved = any(str(edited.at[j, f"Txn {n}"] or "") != str(shown.at[j, f"Txn {n}"] or "") for n in (1, 2))
+        if moved and bool(a1) != bool(a2):
+            typed_once.setdefault(a1 or a2, []).append(j)
+    for ref_, idxs in typed_once.items():
+        if len(idxs) >= 2:
+            _do_shared([_bill_of(raw.iloc[idxs[0]]), _bill_of(raw.iloc[idxs[1]])], ref_, table_key)
+            return
+
     for i in edited.index:
         row = raw.iloc[i]
-        bill = {"business_date": row["date"], "store": row["store"], "bill_no": row["bill_no"],
-                "mop": row["mop"], "amount": float(row["amount"])}
+        bill = _bill_of(row)
         choice = str(edited.at[i, "Match"] or "")
         if choice:
             n = 1 if choice.endswith("1") else 2
             ref = io_.clean_ref(edited.at[i, f"Txn {n}"]) or ""
             _do_match(bill, ref, cands.get(row["exception_key"]) or [], table_key)
             return
-        for n in (1, 2):
-            if str(edited.at[i, f"Txn {n}"] or "") != str(shown.at[i, f"Txn {n}"] or ""):
-                ref = io_.clean_ref(edited.at[i, f"Txn {n}"]) or ""
-                if ref:
-                    v = _validate_ref(bill, ref, cands.get(row["exception_key"]) or [])
-                    if v.ok:
-                        st.success(f"Bill {bill['bill_no']}: {ref} found in {v.gateway.upper()} - amount and store "
-                                   f"agree. Choose **Match Txn {n}** in the Match column to apply it.")
-                    else:
-                        st.error(f"Bill {bill['bill_no']}: {ref} cannot be matched - " + " | ".join(v.problems))
+        changed = [n for n in (1, 2) if str(edited.at[i, f"Txn {n}"] or "") != str(shown.at[i, f"Txn {n}"] or "")]
+        if not changed:
+            continue
+        cand_list = cands.get(row["exception_key"]) or []
+        t1 = io_.clean_ref(edited.at[i, "Txn 1"]) or ""
+        t2 = io_.clean_ref(edited.at[i, "Txn 2"]) or ""
+        # Typing the transaction id IS the match (2026-10-28, on instruction): a clean one is recorded at once - the bill leaves
+        # Exception bills, the transaction leaves Exception transactions and both show under Manual match. Two ids that add up
+        # to the bill are a split payment and are recorded as one match holding both. Anything that does not validate is
+        # refused with its reason, never recorded.
+        if t1 and t2:
+            _do_split(bill, t1, t2, table_key)
+            return
+        ref = t1 or t2
+        if not ref:
+            continue
+        v = _validate_ref(bill, ref, cand_list)
+        if v.ok and v.case == mm.CASE_CLEAN:
+            _do_match(bill, ref, cand_list, table_key)
+            return
+        txn = v.txn or {}
+        bigger = (txn and float(txn.get("amount") or 0) > bill["amount"] + 0.005
+                  and str(txn.get("store") or "") == str(bill["store"]))
+        if bigger:
+            pending = st.session_state.setdefault("_shared_pending", {})
+            other = pending.get(ref)
+            if other is not None and other["bill_no"] != bill["bill_no"]:
+                _do_shared([other, bill], ref, table_key)
+                return
+            pending[ref] = bill
+            st.info(f"Bill {bill['bill_no']}: transaction {ref} is Rs {money_table(float(txn['amount']))}, more than this bill "
+                    f"(Rs {money_table(bill['amount'])}). If it paid two bills, type the same transaction on the other bill - "
+                    "when the two bills add up to it exactly, both are closed together. If this bill was paid in two parts, "
+                    "enter the second transaction in the other Txn cell.")
+            return
+        extra = (" If this bill was paid in two parts, enter the second transaction in the other Txn cell."
+                 if any("amount" in str(pb).lower() for pb in v.problems) else "")
+        st.error(f"Bill {bill['bill_no']}: {ref} cannot be matched - " + " | ".join(v.problems) + extra)
+
+
+def _do_shared(bills, ref, table_key):
+    """ONE transaction typed against TWO bills: recorded as a shared payment only when the bills are in the transaction's store
+    and add up to its amount exactly (`mm.validate_shared`); both bills close, the transaction closes once."""
+    pool = mm.targeted_pool(ref)
+    hits = pool[pool["txn_ref"].astype(str) == ref] if len(pool) else pool
+    if hits.empty:
+        st.error(f"Transaction {ref} was not found in the Paytm, Axis or Bajaj data.")
+        return
+    if hits["gateway"].nunique() > 1:
+        st.error(f"Transaction {ref} is held by more than one gateway - not guessed.")
+        return
+    gateway = str(hits["gateway"].iloc[0]).lower()
+    v = mm.validate_shared(session, bills, gateway, ref, pool)
+    names = " + ".join(b["bill_no"] for b in bills)
+    if not v.ok or v.case != mm.CASE_CLEAN:
+        st.error(f"{names}: cannot be matched to {ref} as one payment - " + " | ".join(v.problems or ["not a clean match"]))
+        return
+    operator = require_operator("matching these bills", key=f"{table_key}_match_op")
+    if not operator:
+        st.warning("Give your name above to record this match.")
+        return
+    try:
+        mm.record_shared(session, bills, gateway, ref, "manual_match_by_bill", operator, v, source="inline")
+    except (ValueError, LookupError) as exc:
+        st.error(f"{names}: refused - {exc}")
+        return
+    st.session_state.get("_shared_pending", {}).pop(ref, None)
+    st.session_state["_pair_msg"] = (f"Matched {names} to {ref} ({gateway}) as ONE shared payment of "
+                                     f"Rs {money_table(sum(b['amount'] for b in bills))}: both bills are closed.")
+    st.session_state.pop(table_key, None)
+    st.cache_data.clear()
+
+
+def _do_split(bill, ref1, ref2, table_key):
+    """Two ids typed against one bill: record ONE manual match holding both when each is a clean, unused, same-store
+    SUCCESS transaction and the two add up to the bill exactly (`mm.validate_split`)."""
+    pool = pd.concat([mm.targeted_pool(ref1), mm.targeted_pool(ref2)], ignore_index=True)
+    legs = []
+    for ref in (ref1, ref2):
+        hits = pool[pool["txn_ref"].astype(str) == ref]
+        if hits.empty:
+            st.error(f"Bill {bill['bill_no']}: transaction {ref} was not found in the Paytm, Axis or Bajaj data.")
+            return
+        if hits["gateway"].nunique() > 1:
+            st.error(f"Bill {bill['bill_no']}: transaction {ref} is held by more than one gateway - not guessed.")
+            return
+        legs.append((str(hits["gateway"].iloc[0]).lower(), ref, float(hits["amount"].iloc[0])))
+    v = mm.validate_split(session, bill, [(legs[0][0], legs[0][1]), (legs[1][0], legs[1][1])], pool)
+    if not v.ok or v.case != mm.CASE_CLEAN:
+        st.error(f"Bill {bill['bill_no']}: the two transactions cannot be matched - " + " | ".join(v.problems or ["not a clean split"]))
+        return
+    operator = require_operator("matching this bill", key=f"{table_key}_match_op")
+    if not operator:
+        st.warning("Give your name above to record this match.")
+        return
+    try:
+        mm.record(session, bill, legs[0][0], legs[0][1], "manual_match_by_bill", operator, v, source="inline",
+                  second={"gateway": legs[1][0], "txn_ref": legs[1][1], "amount": legs[1][2]})
+    except (ValueError, LookupError) as exc:
+        st.error(f"Bill {bill['bill_no']}: refused - {exc}")
+        return
+    st.session_state["_pair_msg"] = (f"Matched {bill['bill_no']} to {legs[0][1]} + {legs[1][1]} (split payment, "
+                                     f"Rs {money_table(legs[0][2])} + Rs {money_table(legs[1][2])}).")
+    st.session_state.pop(table_key, None)
+    st.cache_data.clear()
 
 
 def _validate_ref(bill, ref, cand_list):
@@ -786,10 +896,6 @@ def _bulk_accept_block():
         st.session_state["_bulk_preview"] = "exact"
     if pick_split:
         st.session_state["_bulk_preview"] = "split"
-    if bulk.left:
-        why = "; ".join(f"{v['bills']:,} ({money_table(v['value'])}) {k}" for k, v in bulk.left.items())
-        st.caption(f"After both buttons {fmt_count(bulk.left_n)} bills ({money_table(bulk.left_value)}) stay for you "
-                   f"to decide one by one: {why}.")
 
     kind = st.session_state.get("_bulk_preview")
     if kind:
@@ -900,6 +1006,59 @@ st.divider()
 _exception_table_block("txns", status_wanted, scope_label, status_view == "Open", sort_label)
 
 
+def _refund_folder_block():
+    """The finance team's 'Customer Refund' folder, read as it is: every line is judged by the ordinary refund rules, previewed
+    (exportable), and only the lines that pass are recorded - after a confirmation, in ONE database transaction."""
+    with st.expander("Customer refunds - from the Customer Refund folder"):
+        done = st.session_state.pop("_refund_folder_done", None)
+        if done:
+            st.success(done)
+        frame, files = rf.read_refund_folder()
+        if not files:
+            st.info(f"No workbook found in {rf.DEFAULT_FOLDER}.")
+            return
+        st.caption("Read: " + "; ".join(f"{f['file']} ({f['rows']:,} lines, modified {f['modified']:%d/%m/%Y %H:%M})" for f in files)
+                   + ". Bank details in the workbook are never read.")
+        if st.button("Check the folder", key="rf_check"):
+            st.session_state["_refund_judged"] = rf.preview_folder(session, frame)
+        judged = st.session_state.get("_refund_judged")
+        if judged is None:
+            return
+        ok = judged[judged["verdict"] == "apply"]
+        hold = judged[judged["verdict"] == "hold"]
+        done_n = int((judged["verdict"] == "recorded").sum())
+        st.markdown(f"**{fmt_count(done_n)} already recorded** · **{fmt_count(len(ok))} ready to record - "
+                    f"{money_table(float(ok['txn_amount'].sum()))}** · **{fmt_count(len(hold))} held** "
+                    "(nothing is recorded for a held line).")
+        noted = ok[ok["notes"].fillna("").str.len() + ok["extra_remark"].fillna("").str.len() > 0]
+        if len(noted):
+            st.caption(f"{len(noted)} of the lines to record carry a note that is written into the exception's remark:")
+            st.dataframe(noted[["file_row", "transaction_no", "store_code", "store_used", "zoho_no", "notes", "extra_remark"]],
+                         hide_index=True, width="stretch", height=200)
+        if len(hold):
+            st.dataframe(hold[["file", "file_row", "transaction_no", "store_code", "zoho_no", "customer_name",
+                               "amount_file", "txn_amount", "why"]], hide_index=True, width="stretch", height=260)
+        a1, a2, _a3 = st.columns([1.4, 1, 3])
+        operator = confirm_with_operator(
+            a1.button(f"Record {fmt_count(len(ok))} refunds", type="primary", key="rf_apply", disabled=ok.empty),
+            "recording these customer refunds", key="rf_op")
+        if a2.button("Cancel", key="rf_cancel"):
+            st.session_state.pop("_refund_judged", None)
+            st.rerun()
+        if operator:
+            try:
+                n = rf.apply_folder(session, judged, operator)
+            except Exception as exc:  # noqa: BLE001 - shown with its reason; nothing was recorded
+                st.error(f"Nothing was recorded: {exc}")
+                return
+            st.session_state["_refund_folder_done"] = f"{n} customer refund(s) recorded; they leave Exception transactions."
+            st.session_state.pop("_refund_judged", None)
+            st.cache_data.clear()
+            st.rerun()
+
+
+_refund_folder_block()
+
 # ===========================================================================
 # CLOSED BY A PERSON (2026-10-16). When a bill and a transaction are matched - inline or by upload - both
 # leave the exception tables and appear here, in tables with EXACTLY the exception tables' columns plus
@@ -1000,6 +1159,40 @@ else:
                    if r["kind"] == "refund" else f"transaction {r['transaction_id']} <-> bill {r['matched_bill']}"),
         _reverse_txn)
 
+# --- Customer refunds -----------------------------------------------------------------------------
+st.divider()
+cr_frame = rf.refund_table(session, date_from, date_to, store)
+st.markdown(f"**Customer refunds {fmt_count(len(cr_frame))} · "
+            f"{money_short(float(cr_frame['amount'].sum()) if len(cr_frame) else 0.0)}**")
+if cr_frame.empty:
+    st.caption("No customer refund has been recorded in this view.")
+else:
+    cr_view = cr_frame.copy()
+    cr_view["business_date"] = cr_view["business_date"].map(display_date)
+    cr_view["refund_date"] = cr_view["refund_date"].map(display_date)
+    cr_view["uploaded_at"] = pd.to_datetime(cr_view["uploaded_at"]).dt.strftime("%d/%m/%Y %H:%M")
+    cr_view["amount"] = cr_view["amount"].map(money_table)
+    for c in ("customer_name", "zoho_no"):
+        cr_view[c] = cr_view[c].map(fmt_blank)
+    ev3 = st.dataframe(
+        cr_view.drop(columns=["id", "uploaded_by"]).rename(columns={
+            "business_date": "Txn date", "store": "Store", "gateway": "Gateway", "transaction_id": "Transaction id",
+            "amount": "Amount", "zoho_no": "Zoho no", "customer_name": "Customer name", "refund_date": "Refund date",
+            "status": "Status", "uploaded_at": "Recorded at"}),
+        hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key=f"cr_table_{_REV_GEN}",
+        column_config={"Transaction id": st.column_config.TextColumn(width="medium")})
+    cr_export = cr_frame.drop(columns=["id", "uploaded_by"]).copy()
+    cr_export["business_date"] = cr_export["business_date"].map(display_date)
+    cr_export["refund_date"] = cr_export["refund_date"].map(display_date)
+    frame_export_button(
+        cr_export, ExportMeta(run_id=run.id, run_timestamp=run.started_at, date_from=date_from, date_to=date_to,
+                              filters={"store": store}, value_column="amount", title="Customer refunds"),
+        key="dl_customer_refunds", noun="customer refunds")
+    _reverse_panel(
+        cr_frame, ev3.selection.rows if ev3 and ev3.selection else [], "cr_rev",
+        lambda r: f"customer refund of transaction {r['transaction_id']} (Zoho {r['zoho_no']})",
+        lambda r, who, why: rf.reverse_refund(session, int(r["id"]), who, why))
+
 # --- The register: every match and refund ever recorded, reversed ones included --------------------
 st.divider()
 with st.expander("The register - every manual match and refund ever recorded, reversed ones included"):
@@ -1032,3 +1225,85 @@ with st.expander("The register - every manual match and refund ever recorded, re
         ev_view["refund_date"] = ev_view["refund_date"].map(display_date)
         st.dataframe(ev_view, hide_index=True, width="stretch",
                      column_config={"transaction_id": st.column_config.TextColumn(width="medium")})
+
+
+# ===========================================================================
+# Matched - moved here from Summary (2026-10-26), at the bottom of the page. Matched BILLS only; collapsed by default.
+# ===========================================================================
+st.divider()
+_bills_closed_n = _overview.bills["auto"]["count"] + _overview.bills["manual"]["count"]
+matched_open = _section_toggle("matched", "Matched", f"{fmt_count(_bills_closed_n)} bill(s)")
+
+if matched_open:
+    st.caption("A bill is matched by the engine or by a person — either way "
+              "it leaves the exception list the instant it happens.")
+
+    MB_PAGE = 50
+    mb_key = "sm_matched_bills_offset"
+    st.session_state.setdefault(mb_key, 0)
+    mb_fingerprint = (str(date_from), str(date_to), store)
+    if st.session_state.get("sm_matched_bills_fp") != mb_fingerprint:
+        st.session_state["sm_matched_bills_fp"] = mb_fingerprint
+        st.session_state[mb_key] = 0
+
+    mb_total = _bills_closed_n
+    if mb_total == 0:
+        st.caption("No matched bills in this range.")
+    else:
+        mb_offset = min(st.session_state[mb_key],
+                        max(0, (mb_total - 1) // MB_PAGE * MB_PAGE))
+        mb_df, _ = q.matched_bills_page(session, run.id, date_from, date_to, store,
+                                        limit=MB_PAGE, offset=mb_offset)
+        mp1, mp2, mp3 = st.columns([1, 1, 3])
+        if mp1.button("Previous", disabled=mb_offset == 0, key="mb_prev"):
+            st.session_state[mb_key] = max(0, mb_offset - MB_PAGE)
+            st.rerun()
+        if mp2.button("Next", disabled=mb_offset + MB_PAGE >= mb_total, key="mb_next"):
+            st.session_state[mb_key] = mb_offset + MB_PAGE
+            st.rerun()
+        mp3.markdown(
+            f"<div class='mop-page-info'>Showing "
+            f"<b>{fmt_count(mb_offset + 1)}-{fmt_count(min(mb_offset + MB_PAGE, mb_total))}</b> "
+            f"of <b>{fmt_count(mb_total)}</b></div>", unsafe_allow_html=True)
+
+        # Date/Txn date as DD/MM/YYYY; Amount Indian-grouped; Lag flagged
+        # with a "⚠" prefix when non-zero (the same never-hide-a-flag
+        # pattern the Float page uses for a negative float, rather than a
+        # per-cell background colour Streamlit's dataframe grid has no
+        # supported hook for). Sortable on every column and frozen-header
+        # scrolling are the grid's own default behaviour — nothing extra to
+        # configure for either.
+        matched_display = pd.DataFrame({
+            "Date": mb_df["date"].map(display_date),
+            "Store": mb_df["store"],
+            "Bill no": mb_df["bill_no"],
+            "MOP": mb_df["mop"],
+            "Amount": mb_df["amount"].map(money_table),
+            "Gateway": mb_df["gateway"],
+            "Transaction id": mb_df["transaction_id"],
+            "Txn date": mb_df["txn_date"].map(display_date),
+            "Lag": mb_df["lag"].map(
+                lambda n: "0" if n == 0 else f"⚠ {n:+d}"),
+            "Match source": mb_df["match_source"],
+        })
+        st.dataframe(
+            matched_display, hide_index=True, width="stretch",
+            column_config={
+                "Amount": st.column_config.TextColumn("Amount", width="small"),
+                "Transaction id": st.column_config.TextColumn(
+                    "Transaction id", width="large",
+                    help="Shown in full — never truncated."),
+            },
+        )
+
+    export_all_button(
+        lambda progress: q.matched_bills_export(
+            session, run.id, date_from, date_to, store, progress=progress),
+        mb_total,
+        ExportMeta(run_id=run.id, run_timestamp=run.started_at,
+                  date_from=date_from, date_to=date_to,
+                  filters={"store": store}, value_column="amount",
+                  title="Matched bills"),
+        key="dl_matched_bills", noun="matched bills",
+    )
+

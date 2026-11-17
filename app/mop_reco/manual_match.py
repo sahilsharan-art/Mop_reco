@@ -615,9 +615,11 @@ def find_bill_for_match(session, run_id: int, bill_no: str):
         matched, mt_ref, mt_gw = row["matched"], row["matched_txn_ref"], row["matched_gateway"]
         existing = pf.manual_by_key.get(bill_key_of(bill))
     else:
-        line = (session.query(R1BillLine)
-                .filter(R1BillLine.run_id == run_id, R1BillLine.bill_no == bill_no)
-                .first())
+        lines = (session.query(R1BillLine)
+                 .filter(R1BillLine.run_id == run_id, R1BillLine.bill_no == bill_no)
+                 .order_by(R1BillLine.id).all())
+        # several lines per bill are normal; act on an OPEN one (2026-10-28), else the first line reports its match
+        line = next((l for l in lines if not l.matched), lines[0] if lines else None)
         if line is None:
             return None, False, f"bill {bill_no!r} was not found in the loaded data"
         bill = {"business_date": line.business_date, "store": line.store,
@@ -675,6 +677,18 @@ def reopen_txn_exception(session, gateway, transaction_ref, operator: str, reaso
     row = _txn_exception(session, gateway, transaction_ref)
     if row is None or row.status != "closed":
         return False
+    # A transaction can be held by TWO records (a bill match and a customer refund of the rest, 2026-10-30): reversing one
+    # must not reopen what the other still closes.
+    from .db import TransactionRefund
+    ref = _clean_ref(transaction_ref)
+    gw = _clean(gateway).lower()
+    session.flush()
+    if (session.query(TransactionRefund.id).filter(TransactionRefund.gateway == gw,
+                                                   TransactionRefund.transaction_ref == ref).first()
+            or session.query(ManualMatch.id).filter(ManualMatch.gateway == gw, ManualMatch.transaction_ref == ref,
+                                                    ManualMatch.lifecycle == ACTIVE,
+                                                    ManualMatch.status == STATUS_MATCHED_MANUAL).first()):
+        return False
     set_status(session, row.exception_key, "open", operator, reason_code=reason, commit=False)
     return True
 
@@ -688,7 +702,7 @@ def record(session, bill: dict, gateway, transaction_ref: str,
            reason_code: str, operator: str, validation: Validation,
            note: str = None, override_reason: str = None,
            batch: ManualMatchBatch = None, source: str = None,
-           commit: bool = True, second: dict = None) -> ManualMatch:
+           commit: bool = True, second: dict = None, shared_group: str = None) -> ManualMatch:
     """Write the overlay row, close the bill's exception, and log the event.
 
     Refuses a case (b) submission with no written override reason: the whole
@@ -749,6 +763,7 @@ def record(session, bill: dict, gateway, transaction_ref: str,
         gateway_2=(_clean(second["gateway"]).lower() if second else None),
         transaction_ref_2=(_clean_ref(second["txn_ref"]) if second else None),
         amount_2=(float(second["amount"]) if second else None),
+        shared_group=shared_group,
     )
     session.add(entry)
     session.flush()
@@ -788,6 +803,48 @@ def record(session, bill: dict, gateway, transaction_ref: str,
     return entry
 
 
+def validate_shared(session, bills: list, gateway: str, transaction_ref: str, gateway_pool: pd.DataFrame) -> Validation:
+    """ONE transaction that paid TWO bills (2026-10-29, on instruction). Allowed ONLY when the two bills are different, are in the
+    same store as the transaction, and their amounts add up to the transaction amount EXACTLY - the transaction is then checked as
+    an ordinary match of the two bills taken together (found, SUCCESS / ACQUIRING, unused by the engine or by anyone else).
+    Every other combination is refused; the rule "one transaction, one bill" is untouched for everything else."""
+    problems = []
+    if len(bills) != 2 or len({bill_key_of(b) for b in bills}) != 2:
+        return Validation(CASE_DISCREPANT, False, STATUS_MATCHED_MANUAL, ["a shared payment needs exactly two different bills"])
+    stores = {_clean(b.get("store")) for b in bills}
+    if len(stores) != 1:
+        problems.append(f"the two bills are in different stores ({', '.join(sorted(stores))}); a shared payment is one store's")
+    if problems:
+        return Validation(CASE_DISCREPANT, False, STATUS_MATCHED_MANUAL, problems)
+    combined = {"business_date": min(str(b["business_date"]) for b in bills), "store": bills[0].get("store"),
+                "bill_no": " + ".join(str(b.get("bill_no")) for b in bills), "mop": bills[0].get("mop"),
+                "amount": round(sum(float(b.get("amount") or 0) for b in bills), 2)}
+    return validate(session, combined, gateway, transaction_ref, gateway_pool)
+
+
+def record_shared(session, bills: list, gateway, transaction_ref: str, reason_code: str, operator: str,
+                  validation: Validation, source: str = None, commit: bool = True) -> list:
+    """Record a validated shared payment: one manual match per bill, all carrying one `shared_group`. Each bill's exception
+    closes, the ONE transaction's exception closes, each bill's open-bill task closes - together, in one transaction."""
+    if not validation.ok or validation.case != CASE_CLEAN:
+        raise ValueError("a shared payment is recorded only when it validates cleanly: " + " | ".join(validation.problems))
+    import uuid
+    group = uuid.uuid4().hex[:12]
+    names = " + ".join(str(b.get("bill_no")) for b in bills)
+    entries = []
+    try:
+        for b in bills:
+            entries.append(record(session, b, gateway, transaction_ref, reason_code, operator, validation,
+                                  note=f"shared payment: one transaction for {names}", source=source,
+                                  commit=False, shared_group=group))
+        if commit:
+            session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return entries
+
+
 def reverse(session, manual_match_id: int, operator: str,
             reason: str, commit: bool = True, reopen_tasks: bool = True) -> ManualMatch:
     """Undo a manual match: the bill returns to unmatched and the transaction
@@ -806,6 +863,15 @@ def reverse(session, manual_match_id: int, operator: str,
     entry.lifecycle_note = _clean(reason)
     entry.lifecycle_at = now
     entry.reversed_by = operator
+    session.flush()
+    if entry.shared_group:
+        # The other bill of a shared payment cannot stand on its own (the transaction no longer equals its amount):
+        # the whole group is reversed together.
+        for sib in (session.query(ManualMatch).filter(ManualMatch.shared_group == entry.shared_group,
+                                                      ManualMatch.lifecycle == ACTIVE,
+                                                      ManualMatch.id != entry.id).all()):
+            reverse(session, sib.id, operator, f"{_clean(reason)} (shared payment reversed together)",
+                    commit=False, reopen_tasks=reopen_tasks)
     session.add(ManualMatchEvent(manual_match_id=entry.id, event="reversed",
                                  at=now, operator=operator,
                                  detail=json.dumps({"reason": _clean(reason)})))

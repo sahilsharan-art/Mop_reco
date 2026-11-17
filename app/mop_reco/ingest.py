@@ -1460,6 +1460,10 @@ def ingest_pos_bill_wise(config: Config, session, file_path: Path = None,
     # _write_parquet_single_file_cache for why writing it per file would let
     # a losing file's rows silently overwrite a winning file's rows on disk
     # for a date they both claim).
+    # Store code replacements (config store_code_aliases): the POS dump carries the store code itself.
+    from .masters import store_aliases
+    if store_aliases():
+        df["store"] = df["store"].replace(store_aliases())
     warehouse_paths, _ = _write_parquet_by_date(df, "pos_bill_wise", "business_date")
     from_warehouse_all = all(meta["from_warehouse"] for meta in per_file_meta.values())
 
@@ -1805,6 +1809,9 @@ def _read_ptc_file(file_path: Path, encoding: str) -> pd.DataFrame:
     df = df[list(PTC_ALIASES)]
 
     df["store"] = df["store"].astype(str).str.strip()
+    from .masters import store_aliases
+    if store_aliases():
+        df["store"] = df["store"].replace(store_aliases())      # config store_code_aliases
     df["amount"] = df["amount"].map(_to_float)
     df["business_date"] = io_.parse_business_date_series(df["date"])
     df["mode"] = df["mode"].astype(str).str.strip().str.upper()

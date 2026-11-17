@@ -1635,9 +1635,15 @@ class TransactionResolution:
 
 
 def _manual_txn_facts(session) -> list:
-    """[(gateway, business_date, store, amount)] of the TRANSACTION each ACTIVE, accepted manual
+    """[(gateway, business_date, store, amount, counts)] of the TRANSACTION each ACTIVE, accepted manual
     match closed - read from the validation snapshot taken when it was recorded. An asserted-but-
-    unverified match names no real transaction and is not here."""
+    unverified match names no real transaction and is not here.
+
+    A transaction that ALSO carries a customer refund (a bill paid and the rest refunded, 2026-10-30) is counted ONCE, as
+    refunded: here it contributes only the bill's part of its value (`counts` False) so the strip still adds up."""
+    from .db import TransactionRefund
+    refunded = {(str(g).lower(), r): float(a or 0.0) for g, r, a in session.query(
+        TransactionRefund.gateway, TransactionRefund.transaction_ref, TransactionRefund.amount).all()}
     out = []
     for m in (session.query(ManualMatch)
               .filter(ManualMatch.lifecycle == "active", ManualMatch.status == "matched_manual").all()):
@@ -1646,15 +1652,16 @@ def _manual_txn_facts(session) -> list:
         except ValueError:
             continue
         if txn.get("gateway") and txn.get("business_date"):
+            split = refunded.get((str(txn["gateway"]).lower(), str(m.transaction_ref).strip()))
             out.append((str(txn["gateway"]).lower(), str(txn["business_date"]), txn.get("store"),
-                        float(txn.get("amount") or 0.0)))
+                        float(txn.get("amount") or 0.0) - (split or 0.0), split is None))
         try:
             txn2 = (json.loads(m.validation_detail) if m.validation_detail else {}).get("txn2") or {}
         except ValueError:
             txn2 = {}
         if txn2.get("gateway") and txn2.get("business_date"):      # the second leg of a split is a transaction too
             out.append((str(txn2["gateway"]).lower(), str(txn2["business_date"]), txn2.get("store"),
-                        float(txn2.get("amount") or 0.0)))
+                        float(txn2.get("amount") or 0.0), True))
     return out
 
 
@@ -1693,9 +1700,9 @@ def _transaction_resolution_from_agg(session, run_id, date_from, date_to, store)
         out.total_n, out.total_v = int(tn or 0), float(tv or 0.0)
         out.auto_n, out.auto_v = int(mn or 0), float(mv or 0.0)
 
-    for _gateway, day, txn_store, amount in _manual_txn_facts(session):
+    for _gateway, day, txn_store, amount, counts in _manual_txn_facts(session):
         if str(date_from) <= day <= str(date_to) and (not store or txn_store == store):
-            out.manual_n += 1
+            out.manual_n += 1 if counts else 0
             out.manual_v += amount
     out.mapped_n, out.mapped_v = out.auto_n + out.manual_n, out.auto_v + out.manual_v
 
@@ -1765,9 +1772,10 @@ def transaction_resolution_summary(session, date_from=None, date_to=None,
     out.unmapped_n = int(unmapped.sum())
     out.unmapped_v = float(amounts[unmapped].sum())
 
-    # The slow path's `mapped` already includes what a person matched; split it.
-    for _gateway, day, txn_store, amount in _manual_txn_facts(session):
-        if str(date_from) <= day <= str(date_to) and (not store or txn_store == store):
+    # The slow path's `mapped` already includes what a person matched; split it. (A transaction that is also refunded
+    # is `refunded` here, not `mapped`, so it takes no part in this split.)
+    for _gateway, day, txn_store, amount, counts in _manual_txn_facts(session):
+        if counts and str(date_from) <= day <= str(date_to) and (not store or txn_store == store):
             out.manual_n += 1
             out.manual_v += amount
     out.auto_n, out.auto_v = out.mapped_n - out.manual_n, out.mapped_v - out.manual_v

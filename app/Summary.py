@@ -55,9 +55,8 @@ from mop_reco import store_sheet_source as src
 from mop_reco.export import ExportMeta
 from mop_reco.formatting import count as fmt_count
 from mop_reco.formatting import blank, display_date, money_cr, money_short, money_table
-from mop_reco.store_sheet_export import build_workbook
 
-page("MOP RECO_Store Wise", nav=False)
+page("MOP RECO_Store Wise")
 
 session = db_session()
 run = latest_run(session)
@@ -246,138 +245,92 @@ receivable_total = ss.net_cash_receivable(shown)
 # ===========================================================================
 matrix = src.mop_particulars_matrix(session, run.id, date_from, date_to, store)
 
-# --- the matrix: every Sale / Collected figure is a button that opens its store-wise table (2026-10-26) ----------
-from mop_reco import matrix_drill as md          # noqa: E402
-from mop_reco import mop_matrix as _mopm         # noqa: E402
-from mop_reco.config import load_config as _load_config  # noqa: E402
+# --- the matrix, restyled as a plain report (hairlines only, no box grid) -
+MATRIX_COLUMNS = ["Total sale", "UPI", "Card", "Total digital", "Total cash"]
+_matrix_cols = [matrix.total_sale, matrix.upi, matrix.card,
+               matrix.total_digital, matrix.total_cash]
 
-_MX_COLS = [("total", "Total sale", matrix.total_sale), ("upi", "UPI", matrix.upi), ("card", "Card", matrix.card),
-            ("digital", "Total digital", matrix.total_digital), ("cash", "Total cash", matrix.total_cash)]
-_MX_W = [1.35, 1.25, 1.25, 1.25, 1.25, 1.25]
-_mx_sel = st.session_state.get("mx_sel")           # "sale|upi" etc., or None
+
+def _adjustment_row(label: str, value: float, first: bool = False, colour: str = None) -> str:
+    cls = "mop-matrix-row mop-matrix-row--adjustment"
+    if first:
+        cls += " mop-matrix-row--first-adjustment"
+    style = f" style='color:{colour}'" if colour else ""
+    return (
+        f"<tr class='{cls}'>"
+        f"<td class='mop-matrix-rowlabel'>{label}</td>"
+        f"<td class='mop-matrix-cell'>"
+        f"<div class='mop-matrix-figure'{style}>{money_cr(value)}</div></td>"
+        f"<td colspan='4'></td></tr>"
+    )
+
+
+_row_sale = "<tr class='mop-matrix-row mop-matrix-row--sale'><td class='mop-matrix-rowlabel'>Sale</td>"
+_row_collected = "<tr class='mop-matrix-row'><td class='mop-matrix-rowlabel'>Collected</td>"
+_row_receivable = "<tr class='mop-matrix-row'><td class='mop-matrix-rowlabel'>Receivable</td>"
+for i, col in enumerate(_matrix_cols):
+    pct_html = (f"<div class='mop-matrix-pct'>{col.pct:.1f}%</div>"
+               if col.pct is not None else "")
+    _row_sale += (f"<td class='mop-matrix-cell'>"
+                 f"<div class='mop-matrix-figure mop-matrix-figure--strong'>"
+                 f"{money_cr(col.sale)}</div>{pct_html}</td>")
+    _row_collected += (f"<td class='mop-matrix-cell'>"
+                       f"<div class='mop-matrix-figure'>{money_cr(col.collected)}</div></td>")
+    warn = abs(col.receivable) > 0.005
+    warn_cls = " mop-matrix-cell--warn" if warn else ""
+    _row_receivable += (f"<td class='mop-matrix-cell{warn_cls}'>"
+                        f"<div class='mop-matrix-figure'>{money_cr(col.receivable)}</div></td>")
+_row_sale += "</tr>"
+_row_collected += "</tr>"
+_row_receivable += "</tr>"
+
+# Gift Voucher / Credit Note lines are hidden until asked for (2026-10-26, on instruction): a small +/- under the
+# table. State is a plain session key, so a filter change or a page switch keeps the choice.
 _adj_open = bool(st.session_state.get("sm_matrix_adjustments", False))
+_adjustment_rows = ""
+if _adj_open:
+    _adjustment_rows = f"""
+    <tr class='mop-matrix-spacer'><td colspan='6'></td></tr>
+    {_adjustment_row("Gift Voucher Redeemed", matrix.gift_voucher_redeemed, first=True)}
+    {_adjustment_row("Credit Note Issued", matrix.credit_note_issued, colour="var(--bad)")}
+    {_adjustment_row("Credit Note Received", matrix.credit_note_received)}"""
 
-
-def _mx_pick(row: str, col: str):
-    key = f"{row}|{col}"
-    st.session_state["mx_sel"] = None if st.session_state.get("mx_sel") == key else key
-    st.session_state["mx_store"] = None
-
-
-def _mx_cell(container, row: str, col: str, text: str, pct: float = None):
-    selected = _mx_sel == f"{row}|{col}"
-    with container.container(key=f"mxc_{row}_{col}{'_sel' if selected else ''}"):
-        st.button(text, key=f"mxb_{row}_{col}", on_click=_mx_pick, args=(row, col),
-                  help=f"Open {md.ROW_LABEL[row]} - {md.COL_LABEL[col]} store by store", width="stretch")
-        if pct is not None:
-            st.markdown(f"<div class='mx-pct'>{pct:.1f}%</div>", unsafe_allow_html=True)
-
+matrix_html = f"""
+<div class='mop-matrix-scroll'>
+<table class='mop-matrix'>
+  <thead>
+    <tr class='mop-matrix-grouprow'>
+      <th></th><th></th>
+      <th colspan='3' class='mop-matrix-group'>DIGITAL</th>
+      <th class='mop-matrix-group'>CASH</th>
+    </tr>
+    <tr class='mop-matrix-headrow'>
+      <th class='mop-matrix-rowlabel-head'></th>
+      <th class='mop-matrix-colhead'>Total sale</th>
+      <th class='mop-matrix-colhead'>UPI</th>
+      <th class='mop-matrix-colhead'>Card</th>
+      <th class='mop-matrix-colhead'>Total digital</th>
+      <th class='mop-matrix-colhead'>Total cash</th>
+    </tr>
+  </thead>
+  <tbody>
+    {_row_sale}
+    {_row_collected}
+    {_row_receivable}{_adjustment_rows}
+  </tbody>
+</table>
+</div>
+"""
 
 with st.container(key="matrix-card"):
-    with st.container(key="mx-head"):
-        g = st.columns([_MX_W[0] + _MX_W[1], _MX_W[2] + _MX_W[3] + _MX_W[4], _MX_W[5]])
-        g[1].markdown("<div class='mx-group'>DIGITAL</div>", unsafe_allow_html=True)
-        g[2].markdown("<div class='mx-group'>CASH</div>", unsafe_allow_html=True)
-        h = st.columns(_MX_W)
-        for i, (_k, label, _c) in enumerate(_MX_COLS):
-            h[i + 1].markdown(f"<div class='mx-colhead'>{label}</div>", unsafe_allow_html=True)
-    with st.container(key="mxr_sale"):
-        r = st.columns(_MX_W)
-        r[0].markdown("<div class='mx-rowlabel mx-rowlabel--sale'>Sale</div>", unsafe_allow_html=True)
-        for i, (k, _l, c) in enumerate(_MX_COLS):
-            _mx_cell(r[i + 1], "sale", k, money_cr(c.sale), c.pct)
-    with st.container(key="mxr_collected"):
-        r = st.columns(_MX_W)
-        r[0].markdown("<div class='mx-rowlabel'>Collected</div>", unsafe_allow_html=True)
-        for i, (k, _l, c) in enumerate(_MX_COLS):
-            _mx_cell(r[i + 1], "collected", k, money_cr(c.collected))
-    with st.container(key="mxr_receivable"):
-        r = st.columns(_MX_W)
-        r[0].markdown("<div class='mx-rowlabel'>Receivable</div>", unsafe_allow_html=True)
-        for i, (k, _l, c) in enumerate(_MX_COLS):
-            warn = " mx-fig--warn" if abs(c.receivable) > 0.005 else ""
-            r[i + 1].markdown(f"<div class='mx-fig{warn}'>{money_cr(c.receivable)}</div>", unsafe_allow_html=True)
-    if _adj_open:
-        for _n, (label, value, colour) in enumerate((("Gift Voucher Redeemed", matrix.gift_voucher_redeemed, None),
-                                                     ("Credit Note Issued", matrix.credit_note_issued, "var(--bad)"),
-                                                     ("Credit Note Received", matrix.credit_note_received, None))):
-            with st.container(key=f"mxr_adj_{_n}"):
-                r = st.columns(_MX_W)
-                r[0].markdown(f"<div class='mx-rowlabel mx-rowlabel--adj'>{label}</div>", unsafe_allow_html=True)
-                style = f" style='color:{colour}'" if colour else ""
-                r[1].markdown(f"<div class='mx-fig'{style}>{money_cr(value)}</div>", unsafe_allow_html=True)
+    st.markdown(matrix_html, unsafe_allow_html=True)
     with st.container(key="matrix-adj"):
         _t1, _t2 = st.columns([0.05, 0.95], vertical_alignment="center")
-        if _t1.button("−" if _adj_open else "+", key="matrix_adj_toggle",
+        if _t1.button("\u2212" if _adj_open else "+", key="matrix_adj_toggle",
                       help=("Hide" if _adj_open else "Show") + " Gift Voucher Redeemed, Credit Note Issued and Credit Note Received"):
             st.session_state["sm_matrix_adjustments"] = not _adj_open
             st.rerun()
         _t2.markdown("<span class='mop-matrix-adjlabel'>Gift voucher &amp; credit notes</span>", unsafe_allow_html=True)
-
-# --- the drill: store by store, then bill by bill ---------------------------------------------------------------
-if _mx_sel:
-    _row, _col = _mx_sel.split("|")
-    _cell_total = getattr(dict((k, c) for k, _l, c in _MX_COLS)[_col], "sale" if _row == "sale" else "collected")
-    _title = f"{md.ROW_LABEL[_row]} - {md.COL_LABEL[_col]}"
-    _txn_wise = _row == "collected" and _col != "cash"
-    with st.container(key="mx-drill"):
-        _store_pick = st.session_state.get("mx_store")
-        _h1, _h2 = st.columns([0.85, 0.15], vertical_alignment="center")
-        if _store_pick is None:
-            _h1.markdown(f"**{_title}** - by store")
-        else:
-            _h1.markdown(f"**{_title}** - store **{_store_pick}** - " + ("transaction-wise" if _txn_wise else "bill-wise"))
-        if _h2.button("Back to stores" if _store_pick else "Close", key="mx_back"):
-            if _store_pick:
-                st.session_state["mx_store"] = None
-            else:
-                st.session_state["mx_sel"] = None
-            st.rerun()
-        _stores, _stores_total = md.by_store(session, run.id, date_from, date_to, store, _row, _col)
-        if abs(_stores_total - _cell_total) > 0.5:
-            st.error(f"**MISMATCH** - the stores add up to Rs {_stores_total:,.2f} but the matrix cell shows "
-                     f"Rs {_cell_total:,.2f} (difference {_stores_total - _cell_total:,.2f}).")
-        if _store_pick is None:
-            _view = _stores.rename(columns={"store": "Store", "amount": "Amount (Rs)"})
-            st.caption(f"{len(_view):,} stores - total Rs {_stores_total:,.2f} = the matrix cell. Click a store to see its "
-                       + ("transactions." if _txn_wise else "bills."))
-            _ev = st.dataframe(_view, hide_index=True, width="stretch", height=min(420, 38 + 35 * len(_view)),
-                               on_select="rerun", selection_mode="single-row", key=f"mx_stores_{_mx_sel}",
-                               column_config={"Amount (Rs)": st.column_config.NumberColumn(format="%.2f")})
-            if _ev.selection.rows:
-                st.session_state["mx_store"] = _view.iloc[_ev.selection.rows[0]]["Store"]
-                st.rerun()
-        else:
-            with st.spinner(f"Reading {_store_pick}'s bills for the whole period..."):
-                _bills = md.bills(session, run.id, date_from, date_to, _store_pick, _row, _col,
-                                  _mopm.load_mop_buckets(_load_config()))
-            _store_amount = float(_stores.loc[_stores["store"] == _store_pick, "amount"].sum())
-            _bills_total = float(_bills["amount"].sum()) if len(_bills) else 0.0
-            if abs(_bills_total - _store_amount) > 0.5:
-                st.error(f"**MISMATCH** - the {len(_bills):,} rows add up to Rs {_bills_total:,.2f} but the store row shows "
-                         f"Rs {_store_amount:,.2f} (difference {_bills_total - _store_amount:,.2f}).")
-            st.caption(f"{len(_bills):,} rows - Rs {_bills_total:,.2f} = the store row.")
-            _show = _bills.copy()
-            _show["business_date"] = _show["business_date"].map(display_date)
-            _show["txn_date"] = _show["txn_date"].map(lambda v: display_date(v) if pd.notna(v) and v else "")
-            for _c in ("gateway", "transaction_id", "payment_mode", "matched_by"):
-                _show[_c] = _show[_c].map(blank)
-            _show["collected"] = _show["collected"].map({True: "Yes", False: "No"})
-            _show = _show.rename(columns={"business_date": "Date", "bill_no": "Bill no", "mop": "MOP", "type": "Type",
-                                          "amount": "Amount (Rs)", "collected": "Collected", "matched_by": "Matched by",
-                                          "gateway": "Gateway", "transaction_id": "Transaction id",
-                                          "payment_mode": "Payment mode", "txn_date": "Transaction date"})
-            if _txn_wise:
-                _first = ["Transaction id", "Gateway", "Transaction date", "Payment mode", "Bill no", "Date"]
-                _show = _show[_first + [c for c in _show.columns if c not in _first]]
-            st.dataframe(_show, hide_index=True, width="stretch", height=420,
-                         column_config={"Amount (Rs)": st.column_config.NumberColumn(format="%.2f")})
-            frame_export_button(
-                _bills.assign(business_date=_bills["business_date"].astype(str)),
-                ExportMeta(run_id=run.id, run_timestamp=run.started_at, date_from=date_from, date_to=date_to,
-                           filters={"store": _store_pick, "cell": _title}, value_column="amount",
-                           title=f"{_title} - {_store_pick}"),
-                key=f"dl_mx_{_mx_sel}_{_store_pick}", noun="rows")
 
 # The provisional-UPI footnote sentence is removed from the page face
 # (2026-09-28, on instruction — display only, the rule itself is untouched:
@@ -393,161 +346,10 @@ if _matrix_failed:
     for label, _holds, detail in _matrix_failed:
         st.markdown(f"- **{label}** — {detail}")
 
-# The navigation bar sits BELOW the summary matrix (2026-10-14), sticky. Every other
-# page puts it directly under its heading, so it is in the same place relative to the
-# page's own opening block everywhere.
-top_nav("Summary")
 
-# ===========================================================================
-# Section open/closed state — plain session keys (2026-09-19), not widget
-# keys, so a filter change or a page switch never resets which sections are
-# open. Default: Exceptions open, everything else closed.
-# ===========================================================================
-SECTION_DEFAULTS = {"store_detail": False, "matched": False}
-
-
-def _section_key(name: str) -> str:
-    return f"sm_open_{name}"
-
-
-def _section_open(name: str) -> bool:
-    key = _section_key(name)
-    if key not in st.session_state:
-        st.session_state[key] = SECTION_DEFAULTS[name]
-    return st.session_state[key]
-
-
-def _section_toggle(name: str, title: str, meta: str) -> bool:
-    """One header row: a compact +/- button, the title, and the row
-    count/value — shown even while collapsed, so the size is visible
-    without opening it.
-    """
-    is_open = _section_open(name)
-    c1, c2 = st.columns([0.05, 0.95])
-    if c1.button("−" if is_open else "+", key=f"toggle_{name}",
-                help=("Collapse " if is_open else "Expand ") + title):
-        st.session_state[_section_key(name)] = not is_open
-        st.rerun()
-    c2.markdown(f"**{title}**  \n{meta}")
-    return _section_open(name)
-
-
-# --- Expand all / Collapse all — page-level, drive the three SECTION
-# toggles only (2026-09-20: the per-date table expansion got its own local
-# Expand all/Collapse all next to the table's own heading, below, since it
-# is a different control over a different thing). ------------------------
-all_dates = [d for d in summary_by_date_shown["date"] if d != "TOTAL"]
-OPEN_DATES_KEY = "sm_open_dates"
-st.session_state.setdefault(OPEN_DATES_KEY, set())
-
-# Expand all | Collapse all | Build the Excel sheet - ONE row, left aligned, 12px gap
-# (2026-10-14). Build keeps the filled accent style; the other two stay secondary.
-with st.container(key="btnrow", horizontal=True):
-    _expand = st.button("Expand all", key="ss_expand_all")
-    _collapse = st.button("Collapse all", key="ss_collapse_all")
-    _build = st.button("Build the Excel sheet", type="primary", key="ss_build_sheet")
-if _expand:
-    for name in SECTION_DEFAULTS:
-        st.session_state[_section_key(name)] = True
-    st.rerun()
-if _collapse:
-    for name in SECTION_DEFAULTS:
-        st.session_state[_section_key(name)] = False
-    st.rerun()
-
-# --- the export -----------------------------------------------------------
-#
-# The "Data quality" section (credits exceeding deposits — Defect B) that
-# used to live here is REMOVED from Summary (2026-09-20, on instruction) —
-# never from the underlying data: `src.defect_b_summary()` and
-# `src.data_quality_rows()` are untouched and now read from the Float page
-# instead, merged under Float's own existing deposit-vs-credit data quality
-# heading (see app/pages/1_Float.py) so there is exactly one place to look.
-if _build:
-    with st.spinner("Writing the workbook…"):
-        shown_summary = ss.summarise_by_date(shown)
-        shown_by_store = ss.summarise_by_store(shown)
-        shown_grand_total = ss.grand_total_row(shown)
-        # other_types (ADJ.CR./ADJ.DB./ZPO) is a whole-range CMS breakdown,
-        # like contribution and excluded — not store-scoped, so it is passed
-        # through unchanged regardless of the store filter. Computed FRESH
-        # here (_cms_breakdown(), 2026-09-24) rather than read from a static
-        # per-run snapshot, for the same reason the controls above are now
-        # live — an export built while viewing August must not silently
-        # carry July's own CMS breakdown.
-        bundle_checks = ss.run_controls(
-            shown, shown_summary, None,
-            dashboard_digital=float(shown["digital_sale"].sum()))
-        _cms = _cms_breakdown()
-        data = build_workbook(
-            shown, shown_summary, _cms["excluded"],
-            run_id=run.id, run_timestamp=run.started_at,
-            date_from=date_from, date_to=date_to, checks=bundle_checks,
-            summary_by_store=shown_by_store, grand_total=shown_grand_total,
-            contribution=_cms["contribution"], other_types=_cms["other_types"])
-    st.session_state["_store_sheet_xlsx"] = data
-
-if st.session_state.get("_store_sheet_xlsx"):
-    st.download_button(
-        f"Download the sheet ({fmt_count(len(shown))} detail rows)",
-        st.session_state["_store_sheet_xlsx"],
-        file_name=f"store_wise_sale_and_cash_{date_from}_{date_to}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        width="stretch")
+# The 'Build the Excel sheet' button moved to the Cash position tab (2026-10-26) with the store-wise detail it exports.
 
 st.divider()
-
-
-# The on-screen grid's own column order (2026-09-30) — identical to the
-# Excel export's layout (`store_sheet_export.COLUMN_ORDER`), minus its blank
-# spacer column: a canvas-drawn `st.dataframe` grid has no concept of an
-# unheaded filler column the way a real spreadsheet does, so the same
-# digital/cash separation is conveyed with a words-only caption above the
-# grid instead (a judgment call, stated here rather than silently guessed —
-# the grid genuinely cannot merge/span a header cell across columns either,
-# the same constraint already documented for the particulars matrix, §8.1).
-# No letter prefixes any more (2026-09-30) — they were internal references
-# and do not belong in a report, on the same instruction that removed them
-# from the Excel export.
-DISPLAY_COLUMNS = [
-    ("store", "Store"), ("date", "Date"), ("total_sale", "Total sale"),
-    ("digital_sale", "Digital sale"), ("digital_received", "Digital received"),
-    ("digital_receivable", "Digital receivable"),
-    ("opening_balance", "Opening balance"), ("cash_sale", "Cash sale"),
-    ("cash_deposit", "Cash deposit"), ("cash_received", "Cash received"),
-    ("cash_receivable", "Cash receivable"),
-    ("cash_expense_income", "Cash expense/income"),
-    ("closing_balance", "Closing balance"),
-]
-DIGITAL_RECO_GROUP = "Total sale, Digital sale, Digital received, Digital receivable"
-CASH_RECO_GROUP = ("Opening balance, Cash sale, Cash deposit, Cash received, "
-                   "Cash receivable, Cash expense/income, Closing balance")
-
-
-def display(frame: pd.DataFrame, include_float: bool = False) -> pd.DataFrame:
-    """`include_float` adds Float amount as the last column — present only
-    on the expanded per-store-per-day rows, never on the consolidated
-    ALL-STORES parent rows, exactly as the workbook carries it on "By store
-    and date" only (2c)."""
-    cols = DISPLAY_COLUMNS + ([("float_amount", "Float amount")] if include_float else [])
-    out = {}
-    for name, label in cols:
-        if name == "date":
-            out[label] = frame[name].map(display_date)
-        elif name == "store":
-            out[label] = frame[name]
-        elif name == "cash_receivable":
-            # Never shown negative anywhere on this page (2026-09-13; K's
-            # polarity swapped 2026-09-17 along with column I's sign). A
-            # negative K (credit exceeds deposit, at whatever grain this row
-            # is — a single store-date, a consolidated ALL-STORES date row,
-            # or the grand total) is a Defect B data artefact, not a
-            # negative receivable — it floors to zero here and is named in
-            # the Data quality expander instead, never displayed raw.
-            out[label] = frame[name].map(lambda k: money_table(max(0.0, float(k))))
-        else:
-            out[label] = frame[name].map(money_table)
-    return pd.DataFrame(out)
 
 
 # ===========================================================================
@@ -625,7 +427,7 @@ def _store_cash_card():
     receivable_mismatch = not cash["matches_receivable"]
     receivable_nonzero = abs(cash["cash_receivable_net"]) > 0.005
     right_rows = (
-        _stmt_row("Cash deposited", cash["cash_deposit"], use_cr=True)
+        _stmt_row("Cash handed over", cash["cash_deposit"], use_cr=True)
         + _stmt_row("Less: Cash credited by bank", cash["cash_received"], use_cr=True)
     )
     right_html = _stmt_table(
@@ -662,193 +464,57 @@ def _store_cash_card():
 
 
 with st.container(key="store-cash-card"):
-    store_detail_open = _section_toggle(
-        "store_detail", "Store-wise detail", f"{fmt_count(len(shown))} rows")
-    st.markdown("<hr class='mop-cash-hr'>", unsafe_allow_html=True)
     _store_cash_card()
 
-if store_detail_open:
-    # `summary_by_date_shown` already reflects the current store filter —
-    # `load()` above builds it that way regardless (2026-09-20).
-    head_l, head_r = st.columns([3, 2])
-    head_l.markdown("##### Store-wise sale and cash — by business date")
-    with head_r:
-        dea, dca = st.columns(2)
-        if dea.button("Expand all", key="sm_dates_expand_all"):
-            st.session_state[OPEN_DATES_KEY] = set(all_dates)
-            st.rerun()
-        if dca.button("Collapse all", key="sm_dates_collapse_all"):
-            st.session_state[OPEN_DATES_KEY] = set()
-            st.rerun()
+# ===========================================================================
+# Live store tasks by type (2026-10-26) - each row opens its store-wise table (open tickets and volume), the same
+# layout as the Store Task tab's store-wise summary. Between the cash position cards and the bills / transactions block,
+# on instruction. Follows the sidebar's dates and store; counts only LIVE tasks (open, replied, under review).
+# ===========================================================================
+from mop_reco import store_task_summary as _sts   # noqa: E402
+from mop_reco import store_tasks as _stt          # noqa: E402
+from mop_reco.db import StoreTask                 # noqa: E402
+from sqlalchemy import func                       # noqa: E402
 
-    open_dates = st.session_state[OPEN_DATES_KEY]
+_task_filters = dict(date_from=date_from, date_to=date_to, store=store)
+_by_type = _stt.type_summary(session, date_cls.today(), **_task_filters)
+_TYPE_BY_LABEL = {v: k for k, v in _stt.TYPE_LABEL.items()}
 
-    # Group headers, in words (2026-09-30) — st.dataframe's canvas-drawn
-    # grid cannot merge/span a header cell across columns the way the Excel
-    # export's own "Digital Reco"/"Cash Reco" band can, so the same grouping
-    # is stated here instead, directly above the grid it describes.
-    st.caption(f"**Digital Reco**: {DIGITAL_RECO_GROUP} &nbsp;·&nbsp; "
-              f"**Cash Reco**: {CASH_RECO_GROUP}")
 
-    # Parent (ALL STORES) rows only — build_grouped_table with an empty
-    # expansion list never splices any store row into this table. No Float
-    # amount here (2c) — it is a per-store-per-day figure, detail-only.
-    parent_only = ss.build_grouped_table(
-        shown, summary_by_date_shown, []).reset_index(drop=True)
-    event = st.dataframe(
-        display(parent_only), hide_index=True, width="stretch",
-        on_select="rerun", selection_mode="single-row", key="sm_grouped_table",
-    )
-    picked = list(event.selection.rows) if event and event.selection else []
-    if picked:
-        clicked = parent_only.iloc[picked[0]]
-        if clicked["store"] == "ALL STORES":
-            d = clicked["date"]
-            if d in open_dates:
-                open_dates.discard(d)
+def _whole_rupees(v) -> str:
+    """Whole rupees, Indian grouping, rounded half up (2026-10-26, on instruction): 14,99,33,843.38 -> 14,99,33,844."""
+    from mop_reco.formatting import indian_group
+    whole = int(abs(float(v)) + 0.5) * (1 if float(v) >= 0 else -1)
+    return indian_group(whole).removesuffix(".00") if whole else "0"
+
+with st.container(key="task-sum"):
+    _w = [0.05, 0.35, 0.15, 0.15, 0.30]
+    _h = st.columns(_w)
+    for _c, _label in zip(_h[1:], ("Type", "Stores", "Live tasks", "Value")):
+        _c.markdown(f"<div class='ts-head{' ts-num' if _label != 'Type' else ''}'>{_label}</div>", unsafe_allow_html=True)
+    for _rec in _by_type.itertuples(index=False):
+        _type = _TYPE_BY_LABEL[_rec[0]]
+        _key = f"sm_tasksum_{_type}"
+        _open = bool(st.session_state.get(_key, False))
+        with st.container(key=f"tsr_{_type}"):
+            _r = st.columns(_w, vertical_alignment="center")
+            if _r[0].button("\u2212" if _open else "+", key=f"tsb_{_type}",
+                            help=("Hide" if _open else "Show") + f" {_rec[0]} store by store"):
+                st.session_state[_key] = not _open
+                st.rerun()
+            # stores with at least one LIVE task of this type, under the same filters as the counts beside it
+            _stores_n = _stt._filtered(session, today=date_cls.today(), statuses=_stt.LIVE_STATUSES, types=[_type],
+                                       **_task_filters).with_entities(func.count(func.distinct(StoreTask.store))).scalar() or 0
+            _r[1].markdown(f"<div class='ts-cell'>{_rec[0]}</div>", unsafe_allow_html=True)
+            _r[2].markdown(f"<div class='ts-cell ts-num'>{fmt_count(int(_stores_n))}</div>", unsafe_allow_html=True)
+            _r[3].markdown(f"<div class='ts-cell ts-num'>{fmt_count(int(_rec[1]))}</div>", unsafe_allow_html=True)
+            _r[4].markdown(f"<div class='ts-cell ts-num'>{"-" if _type == _stt.HIGH_FLOAT else _whole_rupees(_rec[2])}</div>", unsafe_allow_html=True)
+        if _open:
+            _frame = _sts.type_frame(session, date_cls.today(), _type, **_task_filters)
+            if _frame.empty:
+                st.caption("No live tasks of this type.")
             else:
-                open_dates.add(d)
-            st.session_state.pop("sm_grouped_table", None)
-            st.rerun()
-
-    # --- CONTROL: every parent row = the exact sum of its own child rows --
-    #
-    # Never silent (rule 4): the check itself always runs, over every
-    # additive AND stock column (C, D, E, F, G, I, J, K, L, H, M, N),
-    # regardless of which dates happen to be open on screen right now, and a
-    # genuine disagreement is shown loudly, naming the date and the column.
-    # Only the "all clean" case is quiet.
-    date_mismatches = ss.verify_date_rows_equal_store_sums(shown, summary_by_date_shown)
-    if not date_mismatches.empty:
-        st.error(
-            f"**{len(date_mismatches)} date/column combination(s) do not sum "
-            "correctly.** The figures below cannot be relied on until this "
-            "is explained."
-        )
-        st.dataframe(date_mismatches, hide_index=True, width="stretch")
-
-    # --- CONTROL: sum of all parent rows = the whole-range totals ---------
-    #
-    # These whole-range figures used to be shown as tiles (removed
-    # 2026-09-18 — see the particulars matrix above); the numbers
-    # themselves are unchanged and this control still needs something
-    # independently-computed to check the by-date table against. "Cash
-    # receivable" is the net (sum I - sum J, floored) and "Closing balance"
-    # is the LAST date's own closing — a stock, never summed across dates.
-    # This asserts the SAME figures read the other way: down the parent
-    # (by-date ALL STORES) rows of the table on screen.
-    parent_rows = summary_by_date_shown[summary_by_date_shown["date"] != "TOTAL"]
-    tile_checks = []
-
-    def _tile_check(label, got, expected):
-        diff = round(got - expected, 2)
-        tile_checks.append((label, got, expected, diff, abs(diff) <= ss.TOLERANCE))
-
-    if not parent_rows.empty:
-        _tile_check("Total sale (C)", float(parent_rows["total_sale"].sum()), total_sale)
-        _tile_check("Digital sale (D)", float(parent_rows["digital_sale"].sum()), digital_sale)
-        _tile_check("Cash sale (E)", float(parent_rows["cash_sale"].sum()), cash_sale)
-        _tile_check("Digital receivable (G)",
-                   float(parent_rows["digital_receivable"].sum()), digital_receivable)
-        _tile_check("Cash deposit (I)", float(parent_rows["cash_deposit"].sum()), cash_deposit)
-        _tile_check("Cash receivable", ss.net_cash_receivable(parent_rows), receivable_total)
-        last_parent_date = parent_rows["date"].max()
-        _tile_check(
-            "Closing balance (M)",
-            float(parent_rows[parent_rows["date"] == last_parent_date]["closing_balance"].sum()),
-            closing_balance)
-
-    tile_mismatches = [c for c in tile_checks if not c[4]]
-    if tile_mismatches:
-        st.error(f"**{len(tile_mismatches)} whole-range total(s) do not match "
-                 "the sum of the parent rows.**")
-        st.dataframe(pd.DataFrame([
-            {"Total": label, "Sum of parent rows": got, "Whole-range total": expected,
-             "Difference": diff}
-            for label, got, expected, diff, _ok in tile_mismatches
-        ]), hide_index=True, width="stretch")
-
-    # --- each open date's own store rows, in its own expander -------------
-    #
-    # A closed date is not in `open_dates`, so its store rows are never
-    # sliced out of `shown`, formatted or rendered — collapse means no work,
-    # not just no display.
-    for d in sorted(d for d in all_dates if d in open_dates):
-        block = shown[shown["date"] == d].sort_values("store").reset_index(drop=True)
-        if block.empty:
-            continue
-        with st.expander(f"{display_date(d)} — {fmt_count(len(block))} store(s)", expanded=True):
-            block_key = f"sm_store_rows_{d}"
-            block_event = st.dataframe(
-                display(block, include_float=True), hide_index=True, width="stretch",
-                on_select="rerun", selection_mode="single-row", key=block_key,
-            )
-            block_picked = (list(block_event.selection.rows)
-                           if block_event and block_event.selection else [])
-            if block_picked:
-                row = block.iloc[block_picked[0]]
-                st.markdown(f"###### Behind {row['store']} on {display_date(row['date'])}")
-                records = src.source_records(session, run.id, row["date"], row["store"])
-
-                a, b = st.columns(2)
-                with a:
-                    st.markdown(f"**Digital sale** {money_table(row['digital_sale'])} · "
-                                f"**Digital received** {money_table(row['digital_received'])} · "
-                                f"**Digital receivable** {money_table(row['digital_receivable'])}")
-                    if records.digital_bills is not None and not records.digital_bills.empty:
-                        st.dataframe(records.digital_bills, hide_index=True, width="stretch")
-                    else:
-                        st.caption("No digital bills that day.")
-
-                    st.markdown(f"**Cash sale** {money_table(row['cash_sale'])}")
-                    if records.cash_bills is not None and not records.cash_bills.empty:
-                        st.caption(f"{fmt_count(len(records.cash_bills))} cash bills — "
-                                   "a row with no bill number is excluded, it is not a sale.")
-                        st.dataframe(records.cash_bills.head(200), hide_index=True,
-                                     width="stretch")
-                    else:
-                        st.caption("No cash bills that day.")
-
-                with b:
-                    st.markdown(f"**Cash deposit** {money_table(row['cash_deposit'])} · "
-                                f"**Expense/income** {money_table(row['cash_expense_income'])}")
-                    if records.ptc_rows is not None and not records.ptc_rows.empty:
-                        st.dataframe(records.ptc_rows, hide_index=True, width="stretch")
-                    else:
-                        st.caption("No PTC rows that day.")
-
-                    # Never shown negative (2026-09-13): a negative
-                    # row['cash_receivable'] (K's polarity swapped
-                    # 2026-09-17) means the credit exceeded the deposit that
-                    # day — a Defect B artefact, not a receivable — and
-                    # floors to zero here too.
-                    row_receivable = max(0.0, float(row["cash_receivable"]))
-                    st.markdown(f"**Cash received** {money_table(row['cash_received'])} · "
-                                f"**Cash receivable** {money_table(row_receivable)}")
-                    if records.cms_credits is not None and not records.cms_credits.empty:
-                        st.dataframe(records.cms_credits, hide_index=True, width="stretch")
-                        if row["cash_receivable"] < -0.005:
-                            st.error(
-                                "**This day's credit exceeds its deposit** — a "
-                                "Defect B data artefact (a credit posted against "
-                                "the wrong date, or a shared pickup code), not a "
-                                "real receivable. See **Data quality** on the "
-                                "**Float** page."
-                            )
-                        else:
-                            st.caption(
-                                "Credits are attributed to the **deposit date** "
-                                "(DEPDATE), not the credit date. A T+1 credit shows "
-                                "on the day the cash left the store, which is the "
-                                "only way K means \"deposited and not yet "
-                                "received\"."
-                            )
-                    else:
-                        st.caption(
-                            "No CMS credit carries this deposit date yet. If I is "
-                            "non-zero, this is cash still in transit — real, not an "
-                            "error."
-                        )
+                st.markdown(_sts.html_table_one(_frame, _type), unsafe_allow_html=True)
 
 # ===========================================================================
 # Bills and transactions — the two-sided controls made visible (2026-09-19,
@@ -867,7 +533,7 @@ bills_closed_n = bill_summary["auto"]["count"] + bill_summary["manual"]["count"]
 bills_closed_v = bill_summary["auto"]["value"] + bill_summary["manual"]["value"]
 bills_open_n, bills_open_v = bill_summary["open"]["count"], bill_summary["open"]["value"]
 
-st.markdown("##### Bills and transactions")
+st.markdown("##### POS sale bills and settlements transactions")
 # The same MatchOverview the Exceptions tiles read (match_strip.py) - tiles and table cannot disagree.
 match_strip.render_table(overview)
 
@@ -881,82 +547,6 @@ st.divider()
 # this one). Reformatted for readability: a fixed, sortable, frozen-header
 # table with the transaction id shown in full, never truncated.
 # ===========================================================================
-matched_open = _section_toggle(
-    "matched", "Matched", f"{fmt_count(bills_closed_n)} bill(s)")
-
-if matched_open:
-    st.caption("A bill is matched by the engine or by a person — either way "
-              "it leaves the exception list the instant it happens.")
-
-    MB_PAGE = 50
-    mb_key = "sm_matched_bills_offset"
-    st.session_state.setdefault(mb_key, 0)
-    mb_fingerprint = (str(date_from), str(date_to), store)
-    if st.session_state.get("sm_matched_bills_fp") != mb_fingerprint:
-        st.session_state["sm_matched_bills_fp"] = mb_fingerprint
-        st.session_state[mb_key] = 0
-
-    mb_total = bills_closed_n
-    if mb_total == 0:
-        st.caption("No matched bills in this range.")
-    else:
-        mb_offset = min(st.session_state[mb_key],
-                        max(0, (mb_total - 1) // MB_PAGE * MB_PAGE))
-        mb_df, _ = q.matched_bills_page(session, run.id, date_from, date_to, store,
-                                        limit=MB_PAGE, offset=mb_offset)
-        mp1, mp2, mp3 = st.columns([1, 1, 3])
-        if mp1.button("Previous", disabled=mb_offset == 0, key="mb_prev"):
-            st.session_state[mb_key] = max(0, mb_offset - MB_PAGE)
-            st.rerun()
-        if mp2.button("Next", disabled=mb_offset + MB_PAGE >= mb_total, key="mb_next"):
-            st.session_state[mb_key] = mb_offset + MB_PAGE
-            st.rerun()
-        mp3.markdown(
-            f"<div class='mop-page-info'>Showing "
-            f"<b>{fmt_count(mb_offset + 1)}-{fmt_count(min(mb_offset + MB_PAGE, mb_total))}</b> "
-            f"of <b>{fmt_count(mb_total)}</b></div>", unsafe_allow_html=True)
-
-        # Date/Txn date as DD/MM/YYYY; Amount Indian-grouped; Lag flagged
-        # with a "⚠" prefix when non-zero (the same never-hide-a-flag
-        # pattern the Float page uses for a negative float, rather than a
-        # per-cell background colour Streamlit's dataframe grid has no
-        # supported hook for). Sortable on every column and frozen-header
-        # scrolling are the grid's own default behaviour — nothing extra to
-        # configure for either.
-        matched_display = pd.DataFrame({
-            "Date": mb_df["date"].map(display_date),
-            "Store": mb_df["store"],
-            "Bill no": mb_df["bill_no"],
-            "MOP": mb_df["mop"],
-            "Amount": mb_df["amount"].map(money_table),
-            "Gateway": mb_df["gateway"],
-            "Transaction id": mb_df["transaction_id"],
-            "Txn date": mb_df["txn_date"].map(display_date),
-            "Lag": mb_df["lag"].map(
-                lambda n: "0" if n == 0 else f"⚠ {n:+d}"),
-            "Match source": mb_df["match_source"],
-        })
-        st.dataframe(
-            matched_display, hide_index=True, width="stretch",
-            column_config={
-                "Amount": st.column_config.TextColumn("Amount", width="small"),
-                "Transaction id": st.column_config.TextColumn(
-                    "Transaction id", width="large",
-                    help="Shown in full — never truncated."),
-            },
-        )
-
-    export_all_button(
-        lambda progress: q.matched_bills_export(
-            session, run.id, date_from, date_to, store, progress=progress),
-        mb_total,
-        ExportMeta(run_id=run.id, run_timestamp=run.started_at,
-                  date_from=date_from, date_to=date_to,
-                  filters={"store": store}, value_column="amount",
-                  title="Matched bills"),
-        key="dl_matched_bills", noun="matched bills",
-    )
-
 # The Exceptions section moved to its own tab, Exceptions (2026-10-14).
 
 # --- data notes, collapsed, at the bottom (2026-09-12, controls moved in

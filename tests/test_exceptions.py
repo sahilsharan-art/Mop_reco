@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
@@ -17,6 +18,7 @@ from mop_reco.exceptions import (
     CandidateException,
     add_remark,
     bill_exception_key,
+    build_r1_exceptions,
     remarks_for,
     set_status,
     sync_exceptions,
@@ -188,3 +190,30 @@ def test_multiple_remarks_are_all_kept(session):
     remarks = remarks_for(session, cand.exception_key)
     assert [r.remark_text for r in remarks] == ["first", "second"]
     assert [r.created_by for r in remarks] == ["aditi", "sanu"]
+
+
+# --- gateway rows with NO transaction id: each its own exception, same key on every run (2026-10-30) --------------------
+
+def _unmapped_frame(rows):
+    import datetime as _dt
+    return pd.DataFrame([{"gateway": g, "txn_ref": ref, "business_date": _dt.date(2026, 10, 1), "amount": amt,
+                          "status": "SUCCESS", "txn_type": "ACQUIRING", "payment_mode": "", "store": None,
+                          "txn_time": _dt.time(*t)} for g, ref, amt, t in rows])
+
+
+def test_gateway_rows_without_a_transaction_id_are_one_exception_each_with_a_stable_key():
+    from types import SimpleNamespace
+    rows = [("bajaj", pd.NA, 116.67, (11, 3, 44)), ("bajaj", pd.NA, 116.67, (11, 3, 44)),
+            ("bajaj", pd.NA, 250.0, (11, 2, 33)), ("bajaj", "REAL-1", 99.0, (9, 0, 0))]
+
+    def keys(order):
+        res = SimpleNamespace(unmapped_txns=_unmapped_frame([rows[i] for i in order]).reset_index(drop=True),
+                              linkage_exceptions=pd.DataFrame())
+        cands = build_r1_exceptions(pd.DataFrame(columns=["matched"]), res)
+        return sorted(c.exception_key for c in cands)
+
+    first = keys([0, 1, 2, 3])
+    assert len(first) == 4 and len(set(first)) == 4                       # four rows, four exceptions - none merged
+    assert "bajaj|REAL-1" in first and not any(k.endswith("<NA>") for k in first)
+    assert sum("NOID-20261001-110344-11667" in k for k in first) == 2     # identical rows are told apart by ordinal
+    assert keys([3, 2, 1, 0]) == first                                    # the key does not depend on row order

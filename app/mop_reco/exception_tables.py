@@ -213,7 +213,16 @@ def manual_txn_frame(session, date_from=None, date_to=None, store=None) -> pd.Da
                                                 ManualMatch.status == "matched_manual").all()
     refunds = session.query(TransactionRefund).all()
     items = []
+    shared_bills: dict = {}
     for m in matches:
+        if m.shared_group:
+            shared_bills.setdefault(m.shared_group, []).append(m.bill_no)
+    seen_groups: set = set()
+    for m in matches:
+        if m.shared_group:                              # one transaction, however many bills it paid: ONE row
+            if m.shared_group in seen_groups:
+                continue
+            seen_groups.add(m.shared_group)
         try:
             txn = (json.loads(m.validation_detail) if m.validation_detail else {}).get("txn") or {}
         except ValueError:
@@ -249,7 +258,8 @@ def manual_txn_frame(session, date_from=None, date_to=None, store=None) -> pd.Da
             "time": blank(e.transaction_time) if e is not None else "", "store": st, "amount": amt,
             "payment_mode": detail.get("payment_mode") or txn.get("payment_mode") or "—",
             "status": e.status if e is not None else "closed",
-            "matched_bill": rec.bill_no if is_match else "",
+            "matched_bill": ((", ".join(shared_bills[rec.shared_group]) if getattr(rec, "shared_group", None) else rec.bill_no)
+                             if is_match else ""),
             "customer_name": "" if is_match else (rec.customer_name or ""),
             "zoho_no": "" if is_match else (rec.zoho_no or ""),
             "refund_date": "" if is_match else display_date(rec.refund_date),

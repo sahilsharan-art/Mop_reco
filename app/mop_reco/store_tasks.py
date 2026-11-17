@@ -133,6 +133,8 @@ class Generated:
     active: list = field(default_factory=list)
     cleared_n: int = 0
     cleared_value: float = 0.0
+    excluded_n: int = 0          # high float days left out because the store-day is a CMS not done (2026-10-27)
+    excluded_value: float = 0.0
 
 
 def _run_dates(session, run_id: int):
@@ -181,11 +183,16 @@ def _store_day_frame(session, run_id: int) -> pd.DataFrame:
     return df.sort_values(["store", "business_date"]).reset_index(drop=True)
 
 
-def high_float_candidates(sf: pd.DataFrame, config_raw: dict) -> Generated:
+def high_float_candidates(sf: pd.DataFrame, config_raw: dict, skip_days: set = None) -> Generated:
     """A store-day whose float is above its threshold and that carries no weekend/holiday
     auto-remark. It is STILL ACTIVE while the store's high-float streak is unbroken to the last
-    loaded date; the first later day at or below the threshold clears it (float dropped)."""
+    loaded date; the first later day at or below the threshold clears it (float dropped).
+
+    `skip_days` (2026-10-27, on instruction): `store|business_date` keys of the days that are already a CMS not done task.
+    Cash a store could not hand over to the CMS that day is not counted as high float - the CMS not done task carries it.
+    Such a day is neither a task nor counted as cleared; it is reported on `excluded_n` / `excluded_value`."""
     out = Generated()
+    skip_days = skip_days or set()
     if sf.empty:
         return out
     for store, block in sf.groupby("store", sort=False):
@@ -204,6 +211,10 @@ def high_float_candidates(sf: pd.DataFrame, config_raw: dict) -> Generated:
             if float_tracker.auto_remark_for(d):
                 continue
             amount = float(block["float_amount"].iloc[i])
+            if f"{store}|{dates[i]}" in skip_days:
+                out.excluded_n += 1
+                out.excluded_value += amount
+                continue
             if later_low[i]:
                 out.cleared_n += 1
                 out.cleared_value += amount
@@ -343,9 +354,10 @@ def _stored_key(c: Candidate) -> str:
 def generate(session, run_id: int, config_raw: dict) -> dict:
     """{task_type: Generated} for the run, from precomputed rows."""
     sf = _store_day_frame(session, run_id)
+    cms = cms_candidates(session, run_id, sf, config_raw)
     return {OPEN_BILL: open_bill_candidates(session, run_id),
-            CMS_NOT_DONE: cms_candidates(session, run_id, sf, config_raw),
-            HIGH_FLOAT: high_float_candidates(sf, config_raw)}
+            CMS_NOT_DONE: cms,
+            HIGH_FLOAT: high_float_candidates(sf, config_raw, skip_days={c.key for c in cms.active})}
 
 
 # ---------------------------------------------------------------------------

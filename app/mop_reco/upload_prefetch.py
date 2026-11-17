@@ -36,7 +36,7 @@ class Prefetch:
     manual_by_key: dict = field(default_factory=dict)      # bill_key -> ManualMatch
     engine_owner: dict = field(default_factory=dict)       # txn ref -> first matched bill line (dict)
     refund_txns: set = field(default_factory=set)          # (gateway, ref)
-    refund_zoho: set = field(default_factory=set)
+    refund_zoho: dict = field(default_factory=dict)      # zoho_no -> {normalised customer names}
     requested_bills: set = field(default_factory=set)
     requested_refs: set = field(default_factory=set)
     timings: dict = field(default_factory=dict)
@@ -79,10 +79,14 @@ def prefetch(session, run_id: int, bill_nos=(), refs=(), zohos=()):
             f"from r1_bill_lines where run_id=:r and bill_no in ({marks}) order by id"), {"r": run_id, **params})
         pf.queries += 1
         for r in rows:
-            pf.bills.setdefault(r.bill_no, {
-                "business_date": r.business_date, "store": r.store, "bill_no": r.bill_no, "mop": r.mop,
-                "amount": float(r.amount or 0), "matched": bool(r.matched), "matched_txn_ref": r.matched_txn_ref,
-                "matched_gateway": r.matched_gateway})
+            row = {"business_date": r.business_date, "store": r.store, "bill_no": r.bill_no, "mop": r.mop,
+                   "amount": float(r.amount or 0), "matched": bool(r.matched), "matched_txn_ref": r.matched_txn_ref,
+                   "matched_gateway": r.matched_gateway}
+            cur = pf.bills.get(r.bill_no)
+            # A bill can have several lines (e.g. PaytmDQR 499 matched + EDC OTHER 7,582 open). The line to act on is
+            # an OPEN one; only when every line is matched does the first matched line speak (2026-10-28).
+            if cur is None or (cur["matched"] and not row["matched"]):
+                pf.bills[r.bill_no] = row
     timed("bills", t)
 
     t = time.perf_counter()
@@ -108,10 +112,10 @@ def prefetch(session, run_id: int, bill_nos=(), refs=(), zohos=()):
     timed("engine_owner", t)
 
     t = time.perf_counter()
-    for g, ref, zoho in session.query(TransactionRefund.gateway, TransactionRefund.transaction_ref,
-                                      TransactionRefund.zoho_no).all():
+    for g, ref, zoho, cust in session.query(TransactionRefund.gateway, TransactionRefund.transaction_ref,
+                                            TransactionRefund.zoho_no, TransactionRefund.customer_name).all():
         pf.refund_txns.add((str(g).lower(), ref))
-        pf.refund_zoho.add(zoho)
+        pf.refund_zoho.setdefault(zoho, set()).add(" ".join(str(cust or "").lower().split()))
     pf.queries += 1
     timed("refunds", t)
 

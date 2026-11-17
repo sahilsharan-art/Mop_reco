@@ -98,3 +98,35 @@ def html_table(frame: pd.DataFrame) -> str:
         body.append(f"<tr class='mop-static-total'><td class='mop-sum-left'>Total</td>{cells}</tr>")
     return ("<div class='mop-static-wrap mop-sum-scroll'><table class='mop-static mop-sum'><thead>"
             f"{head1}{head2}</thead><tbody>{''.join(body)}</tbody></table></div>")
+
+
+def type_frame(session, today: date, task_type: str, **filters) -> pd.DataFrame:
+    """One task type, store by store: [Store code, open ticket, Volume] - LIVE tasks only, the same ones the type table counts."""
+    label = dict(GROUPS)[task_type]
+    f = summary_frame(session, today, types=[task_type], statuses=stt.LIVE_STATUSES, **filters)
+    f = f[["Store code", f"{label} open ticket", f"{label} Volume"]]
+    f.columns = ["Store code", "open ticket", "Volume"]
+    # Biggest volume first (2026-10-26, on instruction); equal volumes keep store-code order.
+    return f[f["open ticket"] > 0].sort_values(["Volume", "Store code"], ascending=[False, True]).reset_index(drop=True)
+
+
+def html_table_one(frame: pd.DataFrame, task_type: str) -> str:
+    """The same layout as the store-wise summary, for one task type: Store code spans both header rows, the group name
+    spans its two columns, a Total row closes it. Static HTML, volumes in whole rupees with Indian grouping."""
+    from .formatting import count as fmt_count
+    from .formatting import indian_group
+
+    def rupees(v) -> str:
+        whole = int(abs(float(v)) + 0.5) * (1 if float(v) >= 0 else -1)
+        return indian_group(whole).removesuffix(".00") if v else "0"
+
+    label = dict(GROUPS)[task_type]
+    head = (f"<tr><th rowspan='2' class='mop-sum-left'>Store code</th><th colspan='2'>{label}</th></tr>"
+            "<tr><th>open ticket</th><th>Volume</th></tr>")
+    body = [f"<tr><td class='mop-sum-left'>{r[0]}</td><td>{fmt_count(int(r[1]))}</td><td>{rupees(r[2])}</td></tr>"
+            for r in frame.itertuples(index=False)]
+    if len(frame):
+        body.append(f"<tr class='mop-static-total'><td class='mop-sum-left'>Total</td>"
+                    f"<td>{fmt_count(int(frame['open ticket'].sum()))}</td><td>{rupees(frame['Volume'].sum())}</td></tr>")
+    return ("<div class='mop-static-wrap mop-sum-scroll'><table class='mop-static mop-sum'><thead>"
+            f"{head}</thead><tbody>{''.join(body)}</tbody></table></div>")

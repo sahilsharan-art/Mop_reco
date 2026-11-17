@@ -25,6 +25,12 @@ TODAY = date(2026, 10, 14)          # a Wednesday
 CFG = {"float_tracker": {"float_threshold": 10000}}
 
 
+@pytest.fixture(autouse=True)
+def _no_cms_absent_dates(monkeypatch):
+    """`cms_absent_dates` reads the REAL warehouse's CMS dates; these tests use made-up August dates, so pin it to 'no absent day'."""
+    monkeypatch.setattr(stt, "cms_absent_dates", lambda last: set())
+
+
 @pytest.fixture
 def session(tmp_path):
     engine = get_engine(tmp_path / "t.sqlite")
@@ -267,13 +273,16 @@ def test_cms_deposit_still_in_transit_is_not_a_task(session):
     assert stt.generate(session, 1, CFG)[stt.CMS_NOT_DONE].active == []
 
 
-def test_cms_and_high_float_on_the_same_store_day_do_not_collide(session):
+def test_a_cms_not_done_store_day_is_not_also_high_float(session):
     sday(session, "ABD", "2026-08-03", sale=50000, opening=40000)
     sday(session, "ABD", "2026-08-04", opening=40000)
     sday(session, "ABD", "2026-08-05", opening=40000)
     stt.sync_tasks(session, 1, TODAY, CFG)
     keys = {t.task_key for t in tasks(session)}
-    assert {"cms_not_done:ABD|2026-08-03", "high_float:ABD|2026-08-03"} <= keys
+    # The key spaces never collide, and (2026-10-27) a store-day that is already a CMS not done is NOT also counted as high float:
+    # the cash the store could not hand over that day is carried by the CMS not done task alone.
+    assert "cms_not_done:ABD|2026-08-03" in keys and "high_float:ABD|2026-08-03" not in keys
+    assert "high_float:ABD|2026-08-04" in keys
 
 
 # --- SLA, overdue, tiles ----------------------------------------------------------------

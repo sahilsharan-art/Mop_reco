@@ -303,6 +303,10 @@ class ManualMatch(Base):
     transaction_ref_2 = Column(String, nullable=True)
     amount_2 = Column(Numeric, nullable=True)
 
+    # A SHARED payment (2026-10-29): ONE transaction that paid TWO bills (the amounts add up to it exactly, same store). Each bill
+    # has its own row; the rows share this id. Only rows WITHOUT a shared_group are held to "one transaction, one bill" below.
+    shared_group = Column(String, nullable=True, index=True)
+
     __table_args__ = (
         Index("ux_manual_txn2_active", "gateway_2", "transaction_ref_2",
               unique=True, sqlite_where=text("lifecycle = 'active' AND transaction_ref_2 IS NOT NULL")),
@@ -311,7 +315,7 @@ class ManualMatch(Base):
         # shortfall, so it is refused in the validator AND unique here — the
         # database is the backstop if a code path ever forgets to check.
         Index("ux_manual_txn_active", "gateway", "transaction_ref",
-              unique=True, sqlite_where=text("lifecycle = 'active'")),
+              unique=True, sqlite_where=text("lifecycle = 'active' AND shared_group IS NULL")),
         Index("ux_manual_bill_active", "bill_key",
               unique=True, sqlite_where=text("lifecycle = 'active'")),
         Index("ix_manual_operator_date", "operator", "business_date"),
@@ -795,7 +799,9 @@ class TransactionRefund(Base):
 
     __table_args__ = (
         Index("ux_refund_txn", "gateway", "transaction_ref", unique=True),
-        Index("ux_refund_zoho", "zoho_no", unique=True),
+        # NOT unique (2026-10-30): one Zoho ticket can refund several payments of ONE customer (the finance workbook has
+        # eight such tickets). A transaction is still refunded once (ux_refund_txn); a Zoho number is shared only by
+        # refunds of the same customer - enforced in refunds.py, not here.
     )
 
 
@@ -942,6 +948,7 @@ _ADDED_COLUMNS = [
     ("manual_matches", "gateway_2", "TEXT"),
     ("manual_matches", "transaction_ref_2", "TEXT"),
     ("manual_matches", "amount_2", "NUMERIC"),
+    ("manual_matches", "shared_group", "TEXT"),
     ("transaction_refunds", "source", "TEXT"),
 ]
 
@@ -971,6 +978,17 @@ def _add_missing_columns(engine):
         conn.exec_driver_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_manual_txn2_active ON manual_matches (gateway_2, transaction_ref_2) "
             "WHERE lifecycle = 'active' AND transaction_ref_2 IS NOT NULL")
+        conn.exec_driver_sql("DROP INDEX IF EXISTS ux_refund_zoho")
+        # "One transaction, one bill" stays the rule for every ordinary match; a SHARED payment (two bills, one transaction)
+        # is the one recorded exception. An older database carries the unconditional index: replace it once.
+        old = conn.exec_driver_sql("SELECT sql FROM sqlite_master WHERE type='index' AND name='ux_manual_txn_active'").fetchone()
+        if old is not None and "shared_group" not in (old[0] or ""):
+            conn.exec_driver_sql("DROP INDEX ux_manual_txn_active")
+            old = None
+        if old is None:
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_manual_txn_active ON manual_matches (gateway, transaction_ref) "
+                "WHERE lifecycle = 'active' AND shared_group IS NULL")
         conn.commit()
 
 

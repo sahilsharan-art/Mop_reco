@@ -108,19 +108,16 @@ def test_transaction_refund_gateway_and_ref_must_be_unique(session):
     session.rollback()
 
 
-def test_transaction_refund_zoho_no_must_be_unique(session):
-    session.add(TransactionRefund(
-        gateway="paytm", transaction_ref="T1", business_date="2026-07-20",
-        store="ABD", amount=100.0, zoho_no="Z1", refund_status="pending",
-        uploaded_by="tester", uploaded_at=datetime(2026, 7, 20, 10, 0)))
+def test_transaction_refund_zoho_no_may_repeat_across_transactions(session):
+    """One Zoho ticket can refund several payments of one customer (2026-10-30): the database no longer forbids it. A
+    TRANSACTION is still refunded once (ux_refund_txn); the same-customer rule for a shared Zoho number is in refunds.py."""
+    for ref in ("T1", "T2"):
+        session.add(TransactionRefund(
+            gateway="paytm", transaction_ref=ref, business_date="2026-07-20",
+            store="ABD", amount=100.0, zoho_no="Z1", customer_name="Ramesh", refund_status="pending",
+            uploaded_by="tester", uploaded_at=datetime(2026, 7, 20, 10, 0)))
     session.commit()
-    session.add(TransactionRefund(
-        gateway="paytm", transaction_ref="T2", business_date="2026-07-20",
-        store="ABD", amount=100.0, zoho_no="Z1", refund_status="pending",
-        uploaded_by="tester", uploaded_at=datetime(2026, 7, 20, 10, 0)))
-    with pytest.raises(IntegrityError):
-        session.commit()
-    session.rollback()
+    assert session.query(TransactionRefund).count() == 2
 
 
 # ---------------------------------------------------------------------------

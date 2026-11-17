@@ -154,7 +154,8 @@ def with_bill_mapping(session, pool: pd.DataFrame) -> pd.DataFrame:
         .filter(ManualMatch.lifecycle == "active").all()
     ):
         if gw and ref:
-            manual[(str(gw).lower(), str(ref).strip())] = bill_no
+            k = (str(gw).lower(), str(ref).strip())
+            manual[k] = f"{manual[k]}, {bill_no}" if k in manual and bill_no not in manual[k] else bill_no
         if gw2 and ref2:
             manual[(str(gw2).lower(), str(ref2).strip())] = bill_no
 
