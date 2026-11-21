@@ -24,12 +24,32 @@ function Read-EnvFile([string]$Path) {
 
 function Get-Settings { return Read-EnvFile (Join-Path $PSScriptRoot 'production.env') }
 
+# Secrets are encrypted with Windows DPAPI in MACHINE scope: the file can be decrypted only on this server (a copy taken
+# elsewhere is useless), it works from a scheduled task AND from a remote session, and the secrets folder is ACL'd to
+# Administrators only. (User-scope DPAPI fails in a key-authenticated SSH session, which has no loaded user profile.)
+Add-Type -AssemblyName System.Security
+$script:SecretEntropy = [Text.Encoding]::UTF8.GetBytes('MOP-Reconciliation-secret-v1')
+
+function Protect-Secret([string]$Plain, [string]$File) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Plain)
+    $enc = [Security.Cryptography.ProtectedData]::Protect($bytes, $script:SecretEntropy, [Security.Cryptography.DataProtectionScope]::LocalMachine)
+    [Convert]::ToBase64String($enc) | Set-Content -Path $File -Encoding ASCII
+}
+
 function Unprotect-Secret([string]$File) {
-    if (-not (Test-Path $File)) { throw "Secret file missing: $File - run deploy\set_secrets.ps1 first (as the SAME Windows account that runs the app)." }
-    $secure = Get-Content $File | ConvertTo-SecureString          # DPAPI: readable only by the account that wrote it
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-    try { return [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
-    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    if (-not (Test-Path $File)) { throw "Secret file missing: $File - run deploy\set_secrets.ps1 first." }
+    $enc = [Convert]::FromBase64String((Get-Content $File -Raw).Trim())
+    $bytes = [Security.Cryptography.ProtectedData]::Unprotect($enc, $script:SecretEntropy, [Security.Cryptography.DataProtectionScope]::LocalMachine)
+    return [Text.Encoding]::UTF8.GetString($bytes)
+}
+
+function Protect-SecretsFolder {
+    $acl = Get-Acl $script:SecretsDir
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($id in @('BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM')) {
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+    }
+    Set-Acl $script:SecretsDir $acl
 }
 
 function Set-AppEnvironment($s) {

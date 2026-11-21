@@ -15,7 +15,7 @@ Everything the application needs lives inside its own folder. Nothing else on ei
 2. **Install packages** (inside the application's own `venv` only): `powershell -File deploy\install.ps1`.
 3. **Settings:** edit `deploy\production.env` (database host/port/name/user, NAS paths). No passwords in it.
 4. **Passwords, once, typed by you at the server:** `powershell -File deploy\set_secrets.ps1`
-   (stored encrypted for the account that runs the app; not readable by anyone else).
+   (stored encrypted for this server (Windows DPAPI, machine scope); the secrets folder is limited to Administrators).
 5. **Masters into the production database, once:** copy `masters_snapshot.json` (sent separately - it is business data)
    to `snapshots\` and run (with the same environment `start_app.ps1` sets):
    `venv\Scripts\python.exe scripts\import_masters_snapshot.py --snapshot snapshots\masters_snapshot.json --by "<your name>"`
