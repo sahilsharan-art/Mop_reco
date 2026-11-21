@@ -6,6 +6,7 @@ $script:Root = Split-Path -Parent $PSScriptRoot            # the application fol
 $script:SecretsDir = Join-Path $script:Root 'secrets'
 $script:LogsDir = Join-Path $script:Root 'logs'
 $script:PidFile = Join-Path $script:Root 'logs\streamlit.pid'
+$script:NasProbeFile = Join-Path $script:Root 'logs\nas_probe.json'
 $script:Python = Join-Path $script:Root 'venv\Scripts\python.exe'
 $script:TaskName = 'MOP-Reconciliation-App'
 
@@ -24,9 +25,9 @@ function Read-EnvFile([string]$Path) {
 
 function Get-Settings { return Read-EnvFile (Join-Path $PSScriptRoot 'production.env') }
 
-# Secrets are encrypted with Windows DPAPI in MACHINE scope: the file can be decrypted only on this server (a copy taken
-# elsewhere is useless), it works from a scheduled task AND from a remote session, and the secrets folder is ACL'd to
-# Administrators only. (User-scope DPAPI fails in a key-authenticated SSH session, which has no loaded user profile.)
+# The database password is encrypted with Windows DPAPI in MACHINE scope: the file can be decrypted only on this server
+# (a copy taken elsewhere is useless), it works from a scheduled task AND from a remote session, and the secrets folder
+# is ACL'd to Administrators and the one service account. (User-scope DPAPI fails in a key-authenticated SSH session.)
 Add-Type -AssemblyName System.Security
 $script:SecretEntropy = [Text.Encoding]::UTF8.GetBytes('MOP-Reconciliation-secret-v1')
 
@@ -43,11 +44,14 @@ function Unprotect-Secret([string]$File) {
     return [Text.Encoding]::UTF8.GetString($bytes)
 }
 
-function Protect-SecretsFolder {
+function Protect-SecretsFolder([string]$ServiceAccount = '') {
     $acl = Get-Acl $script:SecretsDir
     $acl.SetAccessRuleProtection($true, $false)
     foreach ($id in @('BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM')) {
         $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+    }
+    if ($ServiceAccount) {      # the account the app runs as may READ (never change) the secrets
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($ServiceAccount, 'Read', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
     }
     Set-Acl $script:SecretsDir $acl
 }
@@ -60,11 +64,26 @@ function Set-AppEnvironment($s) {
     $env:PYTHONUNBUFFERED = '1'
 }
 
-function Connect-Nas($s) {
-    # a UNC-only mapping with the NAS account (no drive letter, so it works for a background task)
-    $pw = Unprotect-Secret (Join-Path $script:SecretsDir 'nas.sec')
-    $existing = Get-SmbMapping -RemotePath $s['NAS_SHARE'] -ErrorAction SilentlyContinue
-    if ($existing) { Remove-SmbMapping -RemotePath $s['NAS_SHARE'] -Force -UpdateProfile -ErrorAction SilentlyContinue }
-    New-SmbMapping -RemotePath $s['NAS_SHARE'] -UserName $s['NAS_USER'] -Password $pw | Out-Null
-    if (-not (Test-Path $s['NAS_FOLDER'])) { throw "NAS folder not reachable: $($s['NAS_FOLDER'])" }
+function Test-NasAccess([string]$Folder) {
+    # The NAS login is the Windows account this process runs as (the platform convention: other apps on this server run
+    # as .\ckappuser and the NAS recognises that account). Nothing is mapped and no NAS password is stored. Proves the
+    # folder can be written, read back and cleaned up, and records the outcome in logs\nas_probe.json.
+    $result = [ordered]@{ checked_at = (Get-Date).ToString('s'); account = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+                          folder = $Folder; ok = $false; message = '' }
+    try {
+        if (-not (Test-Path $Folder)) { throw "folder not reachable by this account: $Folder" }
+        $dir = Join-Path $Folder '_healthcheck'
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        $f = Join-Path $dir ("probe_{0:yyyyMMddHHmmss}.txt" -f (Get-Date))
+        $token = [guid]::NewGuid().ToString()
+        Set-Content -Path $f -Value $token
+        $back = (Get-Content -Path $f).Trim()
+        Remove-Item $f -Force
+        if ($back -ne $token) { throw 'read-back did not match what was written' }
+        $result.ok = $true
+        $result.message = 'wrote, read back and deleted a probe file'
+    } catch { $result.message = $_.Exception.Message }
+    New-Item -ItemType Directory -Force -Path $script:LogsDir -ErrorAction SilentlyContinue | Out-Null
+    try { ($result | ConvertTo-Json) | Set-Content -Path $script:NasProbeFile -Encoding UTF8 } catch { }
+    return [pscustomobject]$result
 }
