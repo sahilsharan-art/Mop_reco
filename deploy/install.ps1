@@ -1,6 +1,7 @@
 # Install or refresh the Python packages for the application, inside THIS application's own folder only.
 # Touches nothing outside the application folder. Safe to run again after an update.
 . "$PSScriptRoot\common.ps1"
+Set-Location $script:Root          # relative paths below (app\, requirements.txt) always mean THIS application folder
 if (-not (Test-Path $script:Python)) {
     throw "The application's own Python environment is missing: $script:Python. Create it first (python -m venv venv) using the application's own Python 3.14 (CLAUDE.md section 3)."
 }
