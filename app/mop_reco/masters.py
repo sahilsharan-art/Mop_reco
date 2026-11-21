@@ -378,6 +378,13 @@ def preflight_masters(config: Config, session=None, raise_on_failure: bool = Tru
     only, by the version already stored in the database - recorded on the check (file, modified date, header seen,
     stored version) so the run's notes and the Masters page say so. A master with no stored version still fails."""
     use_stored = use_stored or {}
+    from . import masters_db
+    if masters_db.in_database(session):
+        checks = masters_db.preflight_checks(session)
+        problems = [p for c in checks for p in c.problems]
+        if problems and raise_on_failure:
+            raise MasterPreflightError(problems, checks)
+        return checks
     checks = []
     for name in MASTER_SPECS:
         stored = None
@@ -434,6 +441,10 @@ def _upsert_master_version(
     source_file_path: str,
     source_file_mtime: Optional[datetime],
     loaded_at: Optional[datetime] = None,
+    created_by: Optional[str] = None,
+    change_note: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    meta: Optional[dict] = None,
 ):
     """Snapshot `rows` as a new version unless they're identical to the current
     one. Returns (MasterVersion, created: bool). created=False means the file
@@ -464,6 +475,10 @@ def _upsert_master_version(
         row_count=len(rows),
         is_current=True,
         content_hash=new_hash,
+        created_by=created_by,
+        change_note=change_note,
+        source_kind=source_kind or "excel_load",
+        meta_json=json.dumps(meta, default=str) if meta else None,
     )
     session.add(version)
     session.flush()  # assign version.id
@@ -477,18 +492,33 @@ def _upsert_master_version(
     # this master so nothing stale survives a reload. The rows/grouped caches
     # don't need clearing: they're keyed by version.id, which never changes
     # for an existing version.
-    db_url = str(session.bind.url)
+    db_url = _db_key(session)
     stale_keys = [k for k in _VERSION_CACHE if k[0] == db_url and k[1] == master_name]
     for k in stale_keys:
         del _VERSION_CACHE[k]
+    _LATER_CACHE.clear()      # "the earliest later version that holds it" depends on every newer version
 
     return version, True
+
+
+def clear_caches() -> None:
+    """Drop every cached master lookup (after an edit on screen, so the next read sees the new version)."""
+    for cache in (_VERSION_CACHE, _ROWS_CACHE, _GROUPED_CACHE, _LATER_CACHE):
+        cache.clear()
 
 
 def load_master(config: Config, session, master_name: str):
     """Read the real file for `master_name` and version it. Returns (MasterVersion, created)."""
     if master_name not in MASTER_SPECS:
         raise MasterLoadError(f"Unknown master '{master_name}'")
+    from . import masters_db
+    if masters_db.in_database(session):
+        # The masters live in the database (2026-11-21): no workbook is opened, ever. The current version IS the
+        # master; it changes only through the Masters screen (a new version, with who and why).
+        current = masters_db.current_version(session, master_name)
+        if current is None:
+            raise MasterLoadError(f"{master_label(master_name)} has no version in the database - import the masters first")
+        return current, False
     try:
         rows, file_path, mtime = _read_master_rows(config, master_name)
     except MasterLoadError:
@@ -523,6 +553,14 @@ def load_all_masters_safe(config: Config, session):
     loaded - LOCATION column missing" - never a traceback, and the stored version already in
     the database stays in force; nothing is guessed or inferred to fill the gap."""
     loaded, failed = {}, {}
+    from . import masters_db
+    if masters_db.in_database(session):
+        for name in MASTER_SPECS:
+            try:
+                loaded[name] = load_master(config, session, name)
+            except MasterLoadError as exc:
+                failed[name] = str(exc)
+        return loaded, failed
     for name in MASTER_SPECS:
         check = preflight_master(config, name)
         if check.missing:
@@ -555,6 +593,18 @@ _GROUPED_CACHE: dict = {}
 # is called once per row of a settlement file (tens of thousands of times per
 # run against real data) with the *same* (master_name, as_of) every time — so
 # even a cheap query becomes the dominant cost at that volume. Cached here too.
+def _db_key(session) -> str:
+    """Identifies the database a cached master answer belongs to: the URL plus, on PostgreSQL, the schema
+    (search_path) - two schemas on one server share a URL (the test hook gives every test its own)."""
+    bind = session.bind
+    opts = ""
+    try:
+        opts = str(getattr(bind, "_mop_schema", ""))
+    except Exception:  # noqa: BLE001
+        opts = ""
+    return f"{bind.url}|{opts}"
+
+
 _VERSION_CACHE: dict = {}
 
 
@@ -565,7 +615,7 @@ def _find_version_asof(session, master_name: str, as_of):
         # before midnight at its start.
         as_of = datetime.combine(as_of, datetime.max.time())
 
-    cache_key = (str(session.bind.url), master_name, as_of)
+    cache_key = (_db_key(session), master_name, as_of)
     if cache_key in _VERSION_CACHE:
         return _VERSION_CACHE[cache_key]
 
@@ -595,7 +645,7 @@ def get_rows_asof(session, master_name: str, as_of):
     """The version of `master_name` that applied as of `as_of` (date or datetime)
     — never just the newest — and its rows."""
     version = _find_version_asof(session, master_name, as_of)
-    cache_key = (str(session.bind.url), master_name, version.id)
+    cache_key = (_db_key(session), master_name, version.id)
     if cache_key not in _ROWS_CACHE:
         _ROWS_CACHE[cache_key] = [
             json.loads(r.row_json)
@@ -609,7 +659,7 @@ def _grouped_by_key(session, master_name: str, as_of, key_field: str):
     `key_field`. Cached per version — this is what makes resolve_store() and
     check_mid_integrity() O(1) per lookup instead of rescanning every row."""
     version = _find_version_asof(session, master_name, as_of)
-    cache_key = (str(session.bind.url), master_name, version.id, key_field)
+    cache_key = (_db_key(session), master_name, version.id, key_field)
     if cache_key not in _GROUPED_CACHE:
         _, rows = get_rows_asof(session, master_name, as_of)
         normalise = (master_name, key_field) in NORMALISED_KEYS
@@ -751,7 +801,7 @@ def _first_later_match(session, master_name: str, key_field: str, as_of, lookup:
     """The earliest version loaded AFTER `as_of` that holds `lookup`, as ({stores}, loaded_at iso), else None."""
     if isinstance(as_of, date) and not isinstance(as_of, datetime):
         as_of = datetime.combine(as_of, datetime.max.time())
-    ck = (str(session.bind.url), master_name, key_field, as_of)
+    ck = (_db_key(session), master_name, key_field, as_of)
     if ck not in _LATER_CACHE:
         normalise = (master_name, key_field) in NORMALISED_KEYS
         merged: dict = {}
@@ -791,7 +841,7 @@ def _grouped_pickup_locations(session, as_of):
     exact-after-normalising, the same way the store name is (NORMALISED_KEYS)
     — not fuzzy matching, just case/whitespace-insensitive."""
     version = _find_version_asof(session, "pickup_location", as_of)
-    cache_key = (str(session.bind.url), "pickup_location", version.id, "grouped")
+    cache_key = (_db_key(session), "pickup_location", version.id, "grouped")
     if cache_key not in _GROUPED_CACHE:
         _, rows = get_rows_asof(session, "pickup_location", as_of)
         grouped: dict = {}

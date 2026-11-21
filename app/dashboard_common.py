@@ -45,7 +45,8 @@ THEME_CSS_PATH = Path(__file__).resolve().parent / "assets" / "theme.css"
 
 
 @st.cache_data
-def _theme_css() -> str:
+def _theme_css(mtime: float = 0.0) -> str:
+    """The stylesheet text; keyed on the file's modified time so an edit shows on the next load, no restart."""
     return THEME_CSS_PATH.read_text(encoding="utf-8")
 
 
@@ -59,7 +60,7 @@ def inject_theme():
     rerun — restyling must not cost render time (per the operator's own
     instruction: "if any change adds render time, drop it").
     """
-    st.markdown(f"<style>{_theme_css()}</style>", unsafe_allow_html=True)
+    st.markdown(f"<style>{_theme_css(THEME_CSS_PATH.stat().st_mtime)}</style>", unsafe_allow_html=True)
 
 
 def page(title: str, purpose: str = "", icon: str = None, nav: bool = True):
@@ -808,6 +809,11 @@ def _provisional_notice(run):
         notes = json.loads(run.notes or "{}")
     except (ValueError, TypeError):
         return
+    completeness = notes.get("source_completeness") or {}
+    if completeness and completeness.get("ok") is False:
+        from mop_reco import pos_completeness as _pc
+        st.error("**The POS export looks INCOMPLETE - treat the affected figures as provisional.** "
+                 + " ".join(_pc.warning_lines(completeness)))
     parked = notes.get("awaiting_source") or {}
     missing = notes.get("missing_input") or {}
     if parked.get("lines"):
@@ -1008,10 +1014,10 @@ def tile(container, label: str, value: str, state: str = "neutral", note: str = 
 # hand; there is no way to share one definition across a CSS file and a
 # canvas-consumed Python dict.
 STATUS_TINT = {
-    "good": ("#E7F6EF", "#15A66B"),
-    "warn": ("#FDF2E3", "#E8962E"),
-    "bad":  ("#FCEAEE", "#D93A5B"),
-    "accent": ("#E6F6FA", "#16A5C4"),
+    "good": ("#E8F5EE", "#1A8050"),
+    "warn": ("#FBF3E1", "#B07B18"),
+    "bad":  ("#FBEAEA", "#C93535"),
+    "accent": ("#EBF3FC", "#1A4D8F"),
 }
 
 

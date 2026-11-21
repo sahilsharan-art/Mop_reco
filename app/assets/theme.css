@@ -23,30 +23,44 @@
    the untouched value, never the Styler.
    ============================================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;700&family=Inter:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
   /* ---- palette --------------------------------------------------------- */
-  --bg:            #F4F7FB;
+  --bg:            #F3F5F8;
   --surface:       #FFFFFF;
-  --surface-alt:   #F8FAFC;
-  --border:        #E4EBF3;
-  --ink:           #0F2B46;
-  --ink-soft:      #6B7C93;
-  --accent:        #16A5C4;
-  --accent-deep:   #10375C;
-  --accent-tint:   #E6F6FA;
-  --good:          #15A66B;
-  --warn:          #E8962E;
-  --bad:           #D93A5B;
-  --good-tint:     #E7F6EF;
-  --warn-tint:     #FDF2E3;
-  --bad-tint:      #FCEAEE;
+  --surface-alt:   #F6F8FB;
+  --muted:         #EEF1F5;
+  --border:        #E3E9F0;
+  --ink:           #17202B;
+  --ink-soft:      #637080;
+  --accent:        #1A4D8F;
+  --accent-glow:   #2E6FE6;
+  --accent-deep:   #123A6D;
+  --accent-tint:   #EBF3FC;
+  --good:          #1A8050;
+  --warn:          #B07B18;
+  --bad:           #C93535;
+  --good-tint:     #E8F5EE;
+  --warn-tint:     #FBF3E1;
+  --bad-tint:      #FBEAEA;
+
+  /* ---- CK Desk design language (2026-11-21): shadows, gradients, header ------------------------------------ */
+  --shadow-soft:   0 1px 2px rgba(23, 32, 43, .04), 0 2px 8px rgba(23, 32, 43, .04);
+  --shadow-card:   0 1px 2px rgba(23, 32, 43, .04), 0 6px 24px -8px rgba(23, 32, 43, .10);
+  --shadow-pop:    0 8px 32px -12px rgba(23, 32, 43, .22);
+  --shadow-glossy: inset 0 1px 0 rgba(255, 255, 255, .35), 0 1px 2px rgba(23, 32, 43, .20), 0 6px 16px -6px var(--accent);
+  --shadow-glossy-press: inset 0 2px 4px rgba(0, 0, 0, .15), 0 1px 1px rgba(23, 32, 43, .20);
+  --gradient-primary: linear-gradient(180deg, var(--accent-glow), var(--accent) 55%, color-mix(in oklab, var(--accent) 80%, black));
+  --gradient-primary-glow: linear-gradient(135deg, var(--accent-glow) 0%, var(--accent) 100%);
+  --gradient-nav: linear-gradient(to right, color-mix(in oklab, var(--accent) 80%, black),
+                  color-mix(in oklab, var(--accent) 90%, black) 50%, color-mix(in oklab, var(--accent) 80%, black));
+  --header-h: 56px;
 
   /* ---- type -------------------------------------------------------------*/
-  --font-heading: "Plus Jakarta Sans", -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-body:    "Inter", -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono:    ui-monospace, "SF Mono", Consolas, monospace;
+  --font-heading: "Manrope", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-body:    "Manrope", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, "SF Mono", Consolas, monospace;
 
   /* ---- motion -------------------------------------------------------------*/
   --transition-fast: 120ms ease;
@@ -142,12 +156,12 @@ small, .stCaption {
   padding: 20px;
   height: 100%;
   min-width: 150px;
-  box-shadow: 0 1px 2px rgba(16, 55, 92, .04), 0 4px 12px rgba(16, 55, 92, .06);
+  box-shadow: var(--shadow-card);
   transition: box-shadow var(--transition-fast);
 }
 
 .mop-tile:hover {
-  box-shadow: 0 1px 3px rgba(16, 55, 92, .06), 0 8px 20px rgba(16, 55, 92, .10);
+  box-shadow: var(--shadow-pop);
 }
 
 /* A 3px left border only for a state that needs attention — never a filled
@@ -278,7 +292,7 @@ div[data-baseweb="select"] > div {
 div[data-testid="stTextInput"] input:focus,
 div[data-testid="stNumberInput"] input:focus,
 div[data-testid="stTextArea"] textarea:focus {
-  box-shadow: 0 0 0 3px rgba(22, 165, 196, .30);
+  box-shadow: 0 0 0 3px rgba(46, 111, 230, .18);
   border-color: var(--accent) !important;
 }
 
@@ -514,7 +528,7 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
   border-radius: 16px;
   padding: 20px;
   margin-bottom: 20px;
-  box-shadow: 0 1px 2px rgba(16, 55, 92, .04), 0 4px 12px rgba(16, 55, 92, .06);
+  box-shadow: var(--shadow-card);
 }
 
 /* The hairline between the header row and the statement tables — both are
@@ -662,7 +676,7 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
   border-radius: 16px;
   padding: 16px;
   margin-bottom: 20px;
-  box-shadow: 0 1px 2px rgba(16, 55, 92, .04), 0 4px 12px rgba(16, 55, 92, .06);
+  box-shadow: var(--shadow-card);
 }
 
 /* --- the matrix: hairlines only, no box grid ------------------------------ */
@@ -914,7 +928,7 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-topnav) {
 .mop-matrix { border-collapse: separate; border-spacing: 0; }
 .mop-matrix-grouprow th { border-bottom: 2px solid var(--accent); padding: 0 14px 7px; letter-spacing: .1em; font-size: 11px; }
 .mop-matrix-grouprow th:empty { border-bottom: none; }
-.mop-matrix-headrow th { background: var(--surface-alt, #f4f7fb); padding: 9px 16px; font-size: 11px;
+.mop-matrix-headrow th { background: var(--surface-alt, #f6f8fb); padding: 9px 16px; font-size: 11px;
   border-bottom: 1px solid var(--border); }
 .mop-matrix-headrow th:first-child { border-top-left-radius: 8px; }
 .mop-matrix-headrow th:last-child { border-top-right-radius: 8px; }
@@ -963,3 +977,238 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-topnav) {
 [class*="st-key-tsr_"] { border-bottom: 1px solid var(--border); }
 [class*="st-key-tsr_"] button { min-height: 22px !important; height: 22px; width: 24px; min-width: 24px; padding: 0 !important;
   font-size: 14px; line-height: 1; border-radius: 6px; }
+
+
+/* ============================================================================
+   CK Desk design layer (2026-11-21) - the Citykart Desk look: cool canvas, white hairline cards, one navy
+   accent, glossy gradient primary buttons, a dark gradient brand bar, compact Manrope type, uppercase
+   micro-labels, strict semantic colours. Everything reads the tokens at :root; change --accent to re-skin.
+   ============================================================================ */
+
+body { font-feature-settings: "ss01", "cv11"; -webkit-font-smoothing: antialiased; }
+h1, h2, h3 { letter-spacing: -0.02em; }
+
+/* --- the brand bar: Streamlit's own header, restyled ---------------------------------------------------------- */
+header[data-testid="stHeader"] {
+  background: var(--gradient-nav);
+  height: var(--header-h);
+  border-bottom: 1px solid rgba(0, 0, 0, .12);
+  box-shadow: 0 2px 10px -4px rgba(18, 58, 109, .45);
+}
+header[data-testid="stHeader"]::before {
+  content: "CK";
+  position: absolute; left: 56px; top: 50%; transform: translateY(-50%);
+  width: 32px; height: 32px; border-radius: 10px;
+  display: grid; place-items: center;
+  background: var(--gradient-primary-glow); color: #FFFFFF;
+  font-family: var(--font-heading); font-weight: 800; font-size: 13px; letter-spacing: -0.04em;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), inset 0 -1px 0 rgba(0, 0, 0, .18), 0 6px 14px -6px rgba(10, 30, 70, .6);
+  border: 1px solid rgba(255, 255, 255, .25);
+}
+header[data-testid="stHeader"]::after {
+  content: "MOP Reconciliation";
+  position: absolute; left: 98px; top: 50%; transform: translateY(-50%);
+  color: #FFFFFF; font-family: var(--font-heading); font-weight: 700; font-size: 15px; letter-spacing: -0.01em;
+  pointer-events: none;
+}
+header[data-testid="stHeader"] button,
+header[data-testid="stHeader"] a,
+header[data-testid="stHeader"] svg,
+header[data-testid="stHeader"] [data-testid="stExpandSidebarButton"],
+header[data-testid="stHeader"] [data-testid="stIconMaterial"]::before { color: rgba(255, 255, 255, .85) !important; fill: rgba(255, 255, 255, .85); }
+header[data-testid="stHeader"] button:hover { background: rgba(255, 255, 255, .12) !important; border-radius: 8px; }
+header[data-testid="stHeader"] [data-testid="stToolbar"] { right: 8px; }
+/* the logo, when the file is supplied, replaces the CK tile (see dashboard_common.inject_theme) */
+:root.mop-has-logo header[data-testid="stHeader"]::before { content: ""; }
+
+div[data-testid="stMainBlockContainer"] { padding-top: 4.5rem; }
+
+/* --- navigation: a white bar under the brand bar, the open page a glossy gradient pill ------------------------ */
+.st-key-topnav {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-soft);
+  margin: 0 -16px 10px;
+  padding: 6px 16px;
+}
+div[data-testid="stLayoutWrapper"]:has(> .st-key-topnav) { top: var(--header-h); }
+.st-key-topnav [data-testid="stHorizontalBlock"] { gap: 4px; align-items: center; }
+.st-key-topnav a[data-testid="stPageLink-NavLink"] {
+  height: 34px; padding: 0 12px; border-radius: 8px; border: 1px solid transparent; border-bottom: 1px solid transparent;
+  color: var(--ink-soft); transition: background var(--transition-fast), color var(--transition-fast);
+}
+.st-key-topnav a[data-testid="stPageLink-NavLink"] p { font-size: 13px; font-weight: 600; }
+.st-key-topnav a[data-testid="stPageLink-NavLink"]:hover { background: var(--muted); color: var(--ink); }
+.st-key-topnav .mop-nav-active {
+  height: 34px; padding: 0 12px; top: 0; border-radius: 8px; border: 1px solid color-mix(in oklab, var(--accent) 70%, black);
+  border-bottom: 1px solid color-mix(in oklab, var(--accent) 70%, black);
+  background-image: var(--gradient-primary); color: #FFFFFF; font-size: 13px; font-weight: 700;
+  box-shadow: var(--shadow-glossy);
+}
+
+/* --- title block ----------------------------------------------------------------------------------------------- */
+div[data-testid="stAppViewContainer"] h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+.mop-titlebar { gap: 10px; }
+div[data-testid="stMarkdownContainer"] h5 {
+  font-size: 14px; font-weight: 700; letter-spacing: -0.01em;
+}
+.mop-pill { border-radius: 999px; background: var(--surface); box-shadow: var(--shadow-soft); font-weight: 500; }
+.mop-pill-live { color: var(--good); }
+
+/* --- buttons: the glossy primary, soft secondary ----------------------------------------------------------------- */
+.stButton button, .stDownloadButton button, div[data-testid="stFormSubmitButton"] button {
+  border-radius: 8px; font-size: 12px; font-weight: 600; min-height: 32px; padding: 4px 14px;
+}
+.stButton button[kind="primary"], .stDownloadButton button[kind="primary"],
+div[data-testid="stFormSubmitButton"] button[kind="primaryFormSubmit"],
+button[data-testid="stBaseButton-primary"] {
+  background-image: var(--gradient-primary);
+  background-color: var(--accent);
+  border: 1px solid color-mix(in oklab, var(--accent) 70%, black);
+  color: #FFFFFF;
+  box-shadow: var(--shadow-glossy);
+  transition: transform 120ms ease, box-shadow 200ms ease, filter 200ms ease;
+}
+.stButton button[kind="primary"]:hover, .stDownloadButton button[kind="primary"]:hover,
+button[data-testid="stBaseButton-primary"]:hover { filter: brightness(1.05) saturate(1.05); color: #FFFFFF; border-color: color-mix(in oklab, var(--accent) 70%, black); }
+.stButton button[kind="primary"]:active, button[data-testid="stBaseButton-primary"]:active {
+  transform: translateY(1px); box-shadow: var(--shadow-glossy-press); filter: brightness(.97);
+}
+.stButton button[kind="primary"]:disabled, button[data-testid="stBaseButton-primary"]:disabled { opacity: .5; box-shadow: none; }
+.stButton button[kind="secondary"], .stDownloadButton button[kind="secondary"],
+button[data-testid="stBaseButton-secondary"] {
+  background: var(--surface); color: var(--ink-soft); border: 1px solid var(--border);
+  box-shadow: none; transition: background var(--transition-fast), color var(--transition-fast), transform 120ms ease;
+}
+.stButton button[kind="secondary"]:hover, .stDownloadButton button[kind="secondary"]:hover,
+button[data-testid="stBaseButton-secondary"]:hover { background: var(--muted); color: var(--ink); border-color: var(--border); }
+.stButton button[kind="secondary"]:active, button[data-testid="stBaseButton-secondary"]:active { transform: translateY(1px); }
+/* the quick-pick year/month buttons keep their own compact look but follow the new accent gradient */
+.st-key-qp .stButton button[kind="primary"] { background-image: var(--gradient-primary); border-color: color-mix(in oklab, var(--accent) 70%, black); }
+
+/* --- inputs ------------------------------------------------------------------------------------------------------- */
+div[data-testid="stTextInput"] input, div[data-testid="stNumberInput"] input, div[data-testid="stDateInput"] input,
+div[data-testid="stTextArea"] textarea, div[data-baseweb="select"] > div {
+  border-radius: 8px !important; font-size: 13px; background: var(--surface);
+  box-shadow: inset 0 1px 2px rgba(23, 32, 43, .04);
+}
+div[data-testid="stTextInput"] label p, div[data-testid="stNumberInput"] label p, div[data-testid="stDateInput"] label p,
+div[data-testid="stSelectbox"] label p, div[data-testid="stTextArea"] label p {
+  font-size: 11px; font-weight: 600; color: var(--ink-soft);
+}
+
+/* --- cards: tiles, ribbons, expanders, dataframes ------------------------------------------------------------------ */
+.mop-tile { position: relative; overflow: hidden; border-radius: 16px; padding: 16px 18px; }
+.mop-tile::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--accent); }
+.mop-tile--warn { border-left: 1px solid var(--border); }
+.mop-tile--warn::before { background: var(--warn); }
+.mop-tile--bad { border-left: 1px solid var(--border); border-color: color-mix(in oklab, var(--bad) 30%, var(--border)); }
+.mop-tile--bad::before { background: var(--bad); }
+.mop-tile--feature { background-image: var(--gradient-primary); background-color: var(--accent); border-color: color-mix(in oklab, var(--accent) 70%, black); }
+.mop-tile--feature::before { background: rgba(255, 255, 255, .35); }
+.mop-tile:hover { transform: translateY(-1px); }
+.mop-tile { transition: box-shadow var(--transition-fast), transform var(--transition-fast); }
+.mop-tile-label { font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.mop-tile-figure { font-weight: 800; letter-spacing: -0.03em; }
+.st-key-tile-ribbon, .st-key-mm-open-ribbon, .st-key-float-ribbon, .st-key-cms-reco-ribbon { background: var(--surface-alt); border-radius: 16px; }
+
+details, div[data-testid="stExpander"] { border-radius: 12px !important; border: 1px solid var(--border) !important; background: var(--surface); box-shadow: var(--shadow-soft); }
+div[data-testid="stExpander"] summary { font-weight: 600; font-size: 13px; }
+div[data-testid="stDataFrame"] { border-radius: 12px; box-shadow: var(--shadow-soft); }
+
+.st-key-matrix-card, .st-key-store-cash-card, .st-key-task-sum { box-shadow: var(--shadow-card); }
+.mop-matrix-headrow th { background: var(--muted); text-transform: uppercase; letter-spacing: .06em; font-weight: 700; color: var(--ink-soft); }
+.mop-matrix-grouprow th { border-bottom: 2px solid var(--accent); color: var(--accent); }
+
+/* --- sidebar: white, hairline, uppercase kicker headings ------------------------------------------------------------ */
+section[data-testid="stSidebar"] { background: var(--surface); border-right: 1px solid var(--border); }
+section[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] p strong {
+  font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-soft);
+}
+
+/* --- status words, dividers, ids -------------------------------------------------------------------------------------- */
+.mop-status { border-radius: 4px; font-weight: 600; border: 1px solid transparent; }
+.mop-status--good { border-color: color-mix(in oklab, var(--good) 20%, white); }
+.mop-status--warn { border-color: color-mix(in oklab, var(--warn) 22%, white); }
+.mop-status--bad  { border-color: color-mix(in oklab, var(--bad) 20%, white); }
+hr, div[data-testid="stDivider"] { margin: 16px 0 !important; }
+
+/* alerts: tinted with a hairline, never solid */
+div[data-testid="stAlert"] { border-radius: 12px; border: 1px solid var(--border); }
+
+
+/* ============================================================================
+   Deploy button and the status widget (2026-11-21)
+   The Deploy button is a developer control: hidden. The "Running / Stop" status widget and the three-dot menu stay,
+   in white on the brand bar.
+   ============================================================================ */
+[data-testid="stAppDeployButton"], .stAppDeployButton, [data-testid="stDeployButton"] { display: none !important; }
+header[data-testid="stHeader"] [data-testid="stStatusWidget"],
+header[data-testid="stHeader"] [data-testid="stStatusWidget"] * { color: rgba(255, 255, 255, .9) !important; }
+header[data-testid="stHeader"] [data-testid="stMainMenu"] button { color: rgba(255, 255, 255, .9) !important; }
+
+/* ============================================================================
+   Every screen size (2026-11-21): phone, tablet, laptop, wide desktop.
+   Streamlit stacks columns below 640px; the navigation bar must NOT stack - it scrolls sideways instead - and
+   figures, tables and cards must never be clipped or overlap.
+   ============================================================================ */
+
+/* the nav bar: one row at every width; a narrow screen scrolls it sideways, never wraps or squeezes labels */
+.st-key-topnav { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.st-key-topnav::-webkit-scrollbar { display: none; }
+.st-key-topnav [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; width: max-content; min-width: 100%; }
+.st-key-topnav [data-testid="stColumn"] { flex: 0 0 auto !important; width: auto !important; min-width: 0 !important; }
+.st-key-topnav a[data-testid="stPageLink-NavLink"], .st-key-topnav .mop-nav-active { flex: 0 0 auto; }
+
+/* images, tables and code never push the page wider than the screen */
+div[data-testid="stMarkdownContainer"] table:not(.mop-matrix) { display: block; max-width: 100%; overflow-x: auto; }
+.mop-matrix { min-width: 680px; }
+.mop-matrix-figure, .mop-matrix-cell, .mop-matrix-pct { white-space: nowrap; }
+div[data-testid="stAppViewContainer"], div[data-testid="stMain"] { overflow-x: hidden; }
+
+/* tablets and small laptops */
+@media (max-width: 1024px) {
+  div[data-testid="stMainBlockContainer"] { padding-left: 12px; padding-right: 12px; }
+  .st-key-topnav { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
+  .mop-tile { min-width: 0; }
+  .mop-tile-figure { font-size: 24px; }
+}
+
+/* phones */
+@media (max-width: 640px) {
+  :root { --header-h: 52px; }
+  header[data-testid="stHeader"]::after { font-size: 14px; }
+  div[data-testid="stMainBlockContainer"] { padding-left: 10px; padding-right: 10px; padding-top: 4rem; }
+  .st-key-topnav { margin-left: -10px; margin-right: -10px; padding: 4px 10px; }
+  .st-key-topnav a[data-testid="stPageLink-NavLink"], .st-key-topnav .mop-nav-active { height: 32px; padding: 0 10px; }
+  .st-key-topnav a[data-testid="stPageLink-NavLink"] p, .st-key-topnav .mop-nav-active { font-size: 12.5px; }
+  div[data-testid="stAppViewContainer"] h1 { font-size: 18px; }
+  .mop-pill { flex-wrap: wrap; row-gap: 2px; font-size: 11px; }
+  .mop-tile { padding: 12px 14px; }
+  .mop-tile-figure { font-size: 22px; white-space: normal; overflow-wrap: anywhere; }
+  .st-key-tile-ribbon, .st-key-mm-open-ribbon, .st-key-float-ribbon, .st-key-cms-reco-ribbon { padding: 10px 10px 2px; }
+  .st-key-matrix-card, .st-key-store-cash-card { padding-left: 12px; padding-right: 12px; }
+  div[data-testid="stAlert"] { font-size: 12.5px; }
+  .stButton button, .stDownloadButton button { min-height: 40px; }          /* a finger-sized target */
+  div[data-testid="stTextInput"] input, div[data-testid="stNumberInput"] input,
+  div[data-testid="stDateInput"] input, div[data-baseweb="select"] > div { min-height: 40px; font-size: 16px; }  /* no iOS zoom */
+}
+
+/* very small phones */
+@media (max-width: 400px) {
+  header[data-testid="stHeader"]::after { content: "MOP Reco"; }
+}
+
+/* tables built from st.columns (Store Task summary) stay in rows on a phone and scroll sideways inside their card */
+.st-key-task-sum { overflow-x: auto; }
+.st-key-task-sum [data-testid="stHorizontalBlock"] { flex-wrap: nowrap !important; min-width: 560px; }
+.st-key-task-sum [data-testid="stColumn"] { min-width: 0 !important; flex: 1 1 0 !important; width: auto !important; }
+
+/* text inside a primary (navy gradient) button is always white - the generic `p { color: ink }` rule must not win */
+.stButton button[kind="primary"] p, .stDownloadButton button[kind="primary"] p,
+button[data-testid="stBaseButton-primary"] p, div[data-testid="stFormSubmitButton"] button[kind="primaryFormSubmit"] p,
+.stButton button[kind="primary"] *, button[data-testid="stBaseButton-primary"] * { color: #FFFFFF !important; }
+
+/* compact heading scale: st.header / st.subheader follow the page title (20px) -> 17px -> 14px */
+div[data-testid="stAppViewContainer"] h2, div[data-testid="stMarkdownContainer"] h2 { font-size: 17px; font-weight: 700; letter-spacing: -0.015em; margin: 14px 0 4px; padding: 0; }
+div[data-testid="stAppViewContainer"] h3, div[data-testid="stMarkdownContainer"] h3 { font-size: 14px; font-weight: 700; letter-spacing: -0.01em; margin: 10px 0 4px; padding: 0; }

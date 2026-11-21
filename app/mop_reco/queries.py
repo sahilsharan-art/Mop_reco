@@ -1167,7 +1167,7 @@ def _bill_match_summary_from_results(session, run_id, date_from, date_to, store,
         return None
 
     def jsum(field):
-        return func.sum(func.json_extract(ReconciliationResult.payload, f"$.{field}"))
+        return func.sum(_json_number(session, ReconciliationResult.payload, field))
 
     n, v, mn, mv = base.with_entities(
         jsum("digital_bill_lines"), jsum("digital_value"), jsum("matched"), jsum("matched_value")).one()
@@ -1906,13 +1906,34 @@ def match_overview(session, run_id, date_from, date_to, store=None) -> MatchOver
                          merged_extra_rows(session, date_from, date_to, store, RECEIVED_NOT_BILLED_TYPES, live))
 
 
+# --- JSON stored as text in a column: the SQL differs by database -------------------------------------------------
+# SQLite has json_extract(); PostgreSQL reads it by casting the text to jsonb. One place, so no query is written twice.
+
+def _json_number(session, column, field: str):
+    """The numeric value of top-level key `field` in a JSON-text column, as a SQL expression."""
+    if session.get_bind().dialect.name == "postgresql":
+        from sqlalchemy import Numeric, cast
+        from sqlalchemy.dialects.postgresql import JSONB
+        return cast(cast(column, JSONB)[field].astext, Numeric)
+    return func.json_extract(column, f"$.{field}")
+
+
+def _json_array_length(session, column, field: str):
+    """The length of the JSON array at top-level key `field` in a JSON-text column."""
+    if session.get_bind().dialect.name == "postgresql":
+        from sqlalchemy import cast
+        from sqlalchemy.dialects.postgresql import JSONB
+        return func.jsonb_array_length(cast(column, JSONB)[field])
+    return func.json_array_length(func.json_extract(column, f"$.{field}"))
+
+
+
 def merged_extra_rows(session, date_from, date_to, store, types, statuses) -> int:
     """How many source rows the exception register folded into another exception of the same key
     (`detail.merged_line_seqs`): the whole difference between a count of lines and a count of
     exceptions. Summed in SQL over only the rows that carry the marker."""
     query = _apply_exception_filters(
-        session.query(func.coalesce(func.sum(func.json_array_length(
-            func.json_extract(Exception_.detail, "$.merged_line_seqs")) - 1), 0)),
+        session.query(func.coalesce(func.sum(_json_array_length(session, Exception_.detail, "merged_line_seqs") - 1), 0)),
         date_from, date_to, store, open_only=False)
     query = query.filter(Exception_.type.in_(types), Exception_.status.in_(statuses),
                          Exception_.detail.like('%merged_line_seqs%'))

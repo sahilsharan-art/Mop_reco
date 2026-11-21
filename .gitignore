@@ -61,3 +61,12 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+snapshots/
+
+# Deployment packages are built, never committed
+dist/
+deploy/production.env
+secrets/
+
+# the secrets SETUP script holds no secret (it prompts for them) - it must be versioned
+!deploy/set_secrets.ps1

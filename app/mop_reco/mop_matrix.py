@@ -27,7 +27,11 @@ agg()` — never from this module's own bucket field.
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 BUCKETS = ("digital", "cash", "gift_voucher", "credit_note_issued",
           "credit_note_received")
@@ -133,17 +137,18 @@ def bucket_sales_by_store_date(pos: pd.DataFrame, mop_buckets: dict) -> pd.DataF
     if pos.empty:
         return pd.DataFrame(columns=["business_date", "store", "bucket", "sale"])
 
-    unmapped = pos.loc[~pos["mop"].isin(mop_buckets), "mop"]
-    if not unmapped.empty:
-        counts = unmapped.value_counts()
-        detail = "; ".join(f"{mop!r} ({n} row(s))" for mop, n in counts.items())
-        raise ValueError(
-            f"mop_matrix: {len(unmapped)} row(s) carry a MOP not in "
-            f"config.yaml's mop_classification, so they cannot be placed in "
-            f"any particulars-matrix bucket: {detail}. Add it to "
-            "config.yaml (with a ruled bucket, not a guessed one) before "
-            "this run's aggregate can be built."
-        )
+    # A MOP that config.yaml does not classify (class "other" at ingest - operator's ruling 2026-11-20) belongs to
+    # NO bucket: it is left out of the matrix, never guessed into one, and named here so it is not silent. The
+    # ingest report and the run notes carry the same MOP with its rows, amount, stores and dates.
+    unmapped_mask = ~pos["mop"].isin(mop_buckets)
+    if unmapped_mask.any():
+        for mop, grp in pos.loc[unmapped_mask].groupby("mop"):
+            logger.warning(
+                f"mop_matrix: UNCLASSIFIED MOP {mop!r} - {len(grp)} row(s), {float(grp['amount'].sum()):,.2f} - "
+                "in no particulars-matrix bucket; excluded from the matrix, reported in the run notes")
+        pos = pos.loc[~unmapped_mask]
+        if pos.empty:
+            return pd.DataFrame(columns=["business_date", "store", "bucket", "sale"])
 
     out = pos.copy()
     out["bucket"] = out["mop"].map(mop_buckets)

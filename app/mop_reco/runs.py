@@ -101,7 +101,13 @@ def _stage(session, run, timings: dict, name: str):
     finally:
         timings[name] = round(time.perf_counter() - t0, 2)
         logger.info(f"stage '{name}': {timings[name]}s")
-        heartbeat(session, run, detail=f"finished '{name}' in {timings[name]}s")
+        try:
+            heartbeat(session, run, detail=f"finished '{name}' in {timings[name]}s")
+        except Exception as exc:  # noqa: BLE001 - never mask the stage's own error
+            # After a failure inside the stage the Session can be unusable (a MemoryError mid-query left it in
+            # 'committed' state on run #28). Raising from here would REPLACE the real error and, with it, the
+            # failure record. The original exception continues to the run's handler, which rolls back.
+            logger.warning(f"stage '{name}': heartbeat not written ({type(exc).__name__}: {str(exc)[:120]})")
 
 
 def _record_files(session, run_id: int, report):
@@ -171,6 +177,7 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
     session.add(run)
     session.commit()
     logger.info(f"run {run.id}: started ({date_from} .. {date_to}) by {triggered_by}")
+    run_id_for_failure = run.id          # a plain int: still readable if the Session is damaged later
 
     load_reports = {}
     timings = {}
@@ -494,6 +501,7 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         run.status = "completed"
         run.notes = json.dumps({
             "missing_input": missing_input,
+            "source_completeness": (bills_report.breakdown or {}).get("completeness"),
             "awaiting_source": parked_report,
             "r1": result.summary,
             "unmapped_outside_range": outside_range,
@@ -541,10 +549,20 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         # `rollback()` discards only this stage's own uncommitted work; every
         # EARLIER stage's per-date commits (ingestion, R1 matching's
         # persist_results) are already durable and are untouched by it.
-        failed_stage = run.current_stage
-        session.rollback()
-        run.finished_at = datetime.now()
-        run.status = "failed"
+        failed_stage = next(reversed(timings), None) or "unknown"
+        try:
+            session.rollback()
+            failed_stage = run.current_stage or failed_stage
+            run.finished_at = datetime.now()
+            run.status = "failed"
+        except Exception:  # noqa: BLE001 - the Session is unusable: record the failure through a fresh one
+            bind = session.get_bind()
+            session.close()
+            from .db import get_session as _get_session
+            session = _get_session(bind)
+            run = session.get(Run, run_id_for_failure)
+            run.finished_at = datetime.now()
+            run.status = "failed"
         # JSON, like every other successful-path write to `notes` — a plain
         # string here (as this used to be) breaks every reader that assumes
         # `notes` is JSON, including run_history() on the Run page itself,

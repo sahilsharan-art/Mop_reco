@@ -309,15 +309,15 @@ class ManualMatch(Base):
 
     __table_args__ = (
         Index("ux_manual_txn2_active", "gateway_2", "transaction_ref_2",
-              unique=True, sqlite_where=text("lifecycle = 'active' AND transaction_ref_2 IS NOT NULL")),
+              unique=True, sqlite_where=text("lifecycle = 'active' AND transaction_ref_2 IS NOT NULL"), postgresql_where=text("lifecycle = 'active' AND transaction_ref_2 IS NOT NULL")),
         # A transaction may back at most ONE active manual match. Assigning one
         # transaction to two bills double-counts revenue and hides a genuine
         # shortfall, so it is refused in the validator AND unique here — the
         # database is the backstop if a code path ever forgets to check.
         Index("ux_manual_txn_active", "gateway", "transaction_ref",
-              unique=True, sqlite_where=text("lifecycle = 'active' AND shared_group IS NULL")),
+              unique=True, sqlite_where=text("lifecycle = 'active' AND shared_group IS NULL"), postgresql_where=text("lifecycle = 'active' AND shared_group IS NULL")),
         Index("ux_manual_bill_active", "bill_key",
-              unique=True, sqlite_where=text("lifecycle = 'active'")),
+              unique=True, sqlite_where=text("lifecycle = 'active'"), postgresql_where=text("lifecycle = 'active'")),
         Index("ix_manual_operator_date", "operator", "business_date"),
     )
 
@@ -525,7 +525,7 @@ class CmsOverride(Base):
     batch_id = Column(String)                               # one bulk upload = one batch
 
     __table_args__ = (Index("ux_cms_override_active", "store", "dep_date", "col", unique=True,
-                            sqlite_where=text("status = 'active'")),)
+                            sqlite_where=text("status = 'active'"), postgresql_where=text("status = 'active'")),)
 
 
 class CmsOverrideEvent(Base):
@@ -849,6 +849,8 @@ class UploadedFile(Base):
     status = Column(String, nullable=False, default="stored")  # stored | deleted
     deleted_at = Column(DateTime, nullable=True)
     deleted_by = Column(String, nullable=True)
+    # Where the file was moved on delete (outside every source folder, so a run can never read it).
+    archived_path = Column(Text, nullable=True)
 
 
 class MasterVersion(Base):
@@ -865,6 +867,23 @@ class MasterVersion(Base):
     content_hash = Column(String, nullable=False)     # sha256 of the row content — lets
                                                        # a reload detect "unchanged" and
                                                        # skip creating a duplicate version
+    # Who/why (2026-11-21, masters move into the database and are edited on screen only): every version records
+    # the person, the reason, and where it came from - 'excel_import' (the one-off import of a workbook),
+    # 'snapshot_import' (the same, carried to another database), 'screen_edit' (the Masters page).
+    created_by = Column(String, nullable=True)
+    change_note = Column(Text, nullable=True)
+    source_kind = Column(String, nullable=True)
+    meta_json = Column(Text, nullable=True)           # e.g. an opening balance's as-at date and the file's grand total
+
+
+class AppSetting(Base):
+    """A small key/value table for settings that must survive and be audited, e.g. 'masters_source'."""
+    __tablename__ = "app_settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+    updated_by = Column(String, nullable=True)
 
 
 class MasterRow(Base):
@@ -875,21 +894,77 @@ class MasterRow(Base):
     row_json = Column(Text, nullable=False)  # the raw row, e.g. {"MID": "...", "Store Code": "..."}
 
 
-def get_engine(db_path: Path = DEFAULT_DB_PATH):
-    """Every caller — scripts, tests, and the dashboard alike — gets a
-    thread-safe engine: `check_same_thread=False` plus `NullPool` (no
-    connection is ever held open and handed to a different thread than the
-    one that opened it) is what makes it SAFE for the dashboard to cache
-    this engine object across Streamlit reruns, which each run in their own
-    thread. A live SESSION must never be cached the same way — see
-    `dashboard_common.db_session()` — this only makes the ENGINE itself
-    shareable.
+# --- Which database? (2026-11-20: PostgreSQL is the production database; SQLite stays for local rehearsals) ---
+# MOP_DATABASE_URL, e.g.  postgresql+psycopg://mopfinance_app:<password>@10.0.0.205:5432/MOPfinanceapp
+# points the whole application at PostgreSQL. The password may be left out of the URL and supplied separately in
+# MOPFINANCE_DB_PASSWORD (so the URL can be shown in a log without it). Without MOP_DATABASE_URL the application
+# uses the SQLite file `db_path`, exactly as before.
+_TEST_PG_URL = _os.environ.get("MOP_TEST_PG_URL")      # test hook: every test gets its own schema in this database
 
-    A short-lived script or test still works identically: NullPool simply
-    means each checkout opens a fresh sqlite3 connection rather than
-    reusing one from a pool, which costs nothing worth noticing against a
-    local SQLite file.
+
+def database_url():
+    """The PostgreSQL URL from the environment, or None (= use the SQLite file)."""
+    url = _os.environ.get("MOP_DATABASE_URL")
+    if not url:
+        if _os.environ.get("MOP_REQUIRE_POSTGRES", "").strip().lower() in ("1", "true", "yes"):
+            # Production sets this: a missing address must stop the app, never quietly fall back to a local SQLite
+            # file that would look like a working (but empty and separate) system.
+            raise RuntimeError("MOP_REQUIRE_POSTGRES is set but MOP_DATABASE_URL is not - refusing to start on a local "
+                               "SQLite file. Set MOP_DATABASE_URL (and MOPFINANCE_DB_PASSWORD) for the production database.")
+        return None
+    pw = _os.environ.get("MOPFINANCE_DB_PASSWORD")
+    if pw and "@" in url and ":" not in url.split("://", 1)[1].split("@", 1)[0]:
+        from sqlalchemy.engine import make_url
+        u = make_url(url).set(password=pw)
+        return u.render_as_string(hide_password=False)
+    return url
+
+
+def is_postgres(engine) -> bool:
+    return engine.dialect.name == "postgresql"
+
+
+def _postgres_engine(url: str, schema: str = None):
+    connect_args = {"connect_timeout": 10}
+    if schema:
+        connect_args["options"] = f"-c search_path={schema}"
+    # A small pool: Streamlit runs each rerun in its own thread, each call opens its own Session, and a
+    # connection is only ever used by one thread at a time (pool_pre_ping drops one the server closed).
+    engine = create_engine(url, pool_size=8, max_overflow=8, pool_pre_ping=True, pool_recycle=1800,
+                           connect_args=connect_args)
+    engine._mop_schema = schema or ""      # lets caches tell two schemas on one server apart
+    return engine
+
+
+def _test_schema_engine(url: str, key: str):
+    """TEST HOOK (MOP_TEST_PG_URL): a fresh, empty schema per `key` (the test's temporary database path), so the
+    unchanged test suite runs against PostgreSQL with the same isolation a temporary SQLite file gave it."""
+    import hashlib
+    from sqlalchemy import text as _t
+    schema = "t_" + hashlib.sha1(key.encode()).hexdigest()[:16]
+    admin = create_engine(url, poolclass=NullPool, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(_t(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        c.execute(_t(f'CREATE SCHEMA "{schema}"'))
+    admin.dispose()
+    return _postgres_engine(url, schema)
+
+
+def get_engine(db_path: Path = DEFAULT_DB_PATH):
+    """Every caller - scripts, tests, and the dashboard alike - gets a thread-safe engine.
+
+    PostgreSQL (MOP_DATABASE_URL set): a small connection pool; a Session is still created per call and never
+    cached across threads (`dashboard_common.db_session()`), only the ENGINE is shared.
+
+    SQLite (no URL): `check_same_thread=False` plus `NullPool` - no connection is ever held open and handed to a
+    different thread than the one that opened it - which is what makes it SAFE for the dashboard to cache this
+    engine object across Streamlit reruns, which each run in their own thread.
     """
+    if _TEST_PG_URL and Path(db_path) != DEFAULT_DB_PATH:
+        return _test_schema_engine(_TEST_PG_URL, str(db_path))
+    url = database_url()
+    if url:
+        return _postgres_engine(url)
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     engine = create_engine(
@@ -901,7 +976,7 @@ def get_engine(db_path: Path = DEFAULT_DB_PATH):
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_connection, connection_record):
         # WAL matters because the Run stage writes while the UI reads
-        # (CLAUDE.md 6.14's two-phase design) — WAL lets a reader and a
+        # (CLAUDE.md 6.14's two-phase design) - WAL lets a reader and a
         # writer proceed without blocking each other. busy_timeout gives a
         # writer time to finish rather than the reader raising "database is
         # locked" immediately.
@@ -950,6 +1025,11 @@ _ADDED_COLUMNS = [
     ("manual_matches", "amount_2", "NUMERIC"),
     ("manual_matches", "shared_group", "TEXT"),
     ("transaction_refunds", "source", "TEXT"),
+    ("uploaded_files", "archived_path", "TEXT"),
+    ("master_versions", "created_by", "TEXT"),
+    ("master_versions", "change_note", "TEXT"),
+    ("master_versions", "source_kind", "TEXT"),
+    ("master_versions", "meta_json", "TEXT"),
 ]
 
 
@@ -964,16 +1044,17 @@ _ADDED_INDEXES = [
 
 
 def _add_missing_columns(engine):
+    from sqlalchemy import inspect as _inspect
+    pg = is_postgres(engine)
     with engine.connect() as conn:
         for _name, ddl in _ADDED_INDEXES:
             conn.exec_driver_sql(ddl)
             conn.commit()
+        insp = _inspect(conn)
         for table, column, ddl_type in _ADDED_COLUMNS:
-            existing = {row[1] for row in
-                       conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            existing = {c["name"] for c in insp.get_columns(table)}
             if column not in existing:
-                conn.exec_driver_sql(
-                    f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {ddl_type}")
                 conn.commit()
         conn.exec_driver_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_manual_txn2_active ON manual_matches (gateway_2, transaction_ref_2) "
@@ -981,7 +1062,12 @@ def _add_missing_columns(engine):
         conn.exec_driver_sql("DROP INDEX IF EXISTS ux_refund_zoho")
         # "One transaction, one bill" stays the rule for every ordinary match; a SHARED payment (two bills, one transaction)
         # is the one recorded exception. An older database carries the unconditional index: replace it once.
-        old = conn.exec_driver_sql("SELECT sql FROM sqlite_master WHERE type='index' AND name='ux_manual_txn_active'").fetchone()
+        if pg:
+            old = conn.exec_driver_sql(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'ux_manual_txn_active'"
+            ).fetchone()
+        else:
+            old = conn.exec_driver_sql("SELECT sql FROM sqlite_master WHERE type='index' AND name='ux_manual_txn_active'").fetchone()
         if old is not None and "shared_group" not in (old[0] or ""):
             conn.exec_driver_sql("DROP INDEX ux_manual_txn_active")
             old = None

@@ -42,6 +42,21 @@ def session(tmp_path):
     sess.close()
 
 
+
+@pytest.fixture
+def db_masters(session):
+    """The real masters as the database holds them (the one-time snapshot, every version at its original date).
+    These tests used to read the live Excel workbooks, which drift (PICKUP LOCATION MASTER.xlsx lost its column)."""
+    import json
+    from pathlib import Path as _P
+    from mop_reco import masters_db
+    snap = _P(__file__).resolve().parents[1] / "snapshots" / "masters_snapshot.json"
+    if not snap.exists():
+        pytest.skip("snapshots/masters_snapshot.json not present")
+    masters_db.import_snapshot(session, json.loads(snap.read_text(encoding="utf-8")), "test")
+    return session
+
+
 @pytest.fixture
 def config():
     return load_config()
@@ -116,19 +131,16 @@ def test_axis_edc_row_count(config, session, daily_files):
     assert len(df) == 453
 
 
-def test_axis_edc_store_resolution_matches_known_inventory_gap(config, session, daily_files):
-    """452 of 453 rows resolve to a store. The one that doesn't (MID
-    037135034530134) is a real, previously-confirmed master-data gap (see
-    docs/DATA_INVENTORY.md) — not something this stage should paper over."""
+def test_axis_edc_store_resolution_matches_known_inventory_gap(config, session, daily_files, db_masters):
+    """All 453 rows resolve to a store. MID 037135034530134 was the one master-data gap in the 2026-08-24 inventory
+    (docs/DATA_INVENTORY.md); a later master version added it (store DMR) and CLAUDE.md 6.25 resolves an identifier
+    absent from the as-at version through the earliest later version that holds it - recorded, never guessed."""
     df, report = ingest_axis_edc(config, session, file_path=daily_files['axis_edc'])
 
-    assert report.rows_with_store == 452
-    assert len(report.unmapped) == 1
-    assert report.unmapped[0].identifier == "037135034530134"
-
-    unresolved_rows = df[df["store"].isna()]
-    assert len(unresolved_rows) == 1
-    assert unresolved_rows.iloc[0]["MID"] == "037135034530134"
+    assert report.rows_with_store == 453
+    assert len(report.unmapped) == 0
+    late = df[df["MID"] == "037135034530134"]
+    assert len(late) == 1 and late.iloc[0]["store"] == "DMR"
 
 
 # ---------------------------------------------------------------------------
@@ -137,14 +149,14 @@ def test_axis_edc_store_resolution_matches_known_inventory_gap(config, session, 
 # the acceptance figures quoted in the prompt.)
 # ---------------------------------------------------------------------------
 
-def test_axis_cms_row_count_and_type_breakdown(config, session, daily_files):
+def test_axis_cms_row_count_and_type_breakdown(config, session, daily_files, db_masters):
     df, report = ingest_axis_cms(config, session, file_path=daily_files['axis_cms'])
 
     assert report.rows_read == 365
     assert report.breakdown["TYPE"] == {"COL": 357, "ZPO": 8}
 
 
-def test_axis_cms_all_dated_rows_resolve_to_a_store(config, session, daily_files):
+def test_axis_cms_all_dated_rows_resolve_to_a_store(config, session, daily_files, db_masters):
     """All 357 COL rows resolve. The 8 ZPO rows have no DEPDATE at all in this
     file, so they're never passed to resolve_store — reported as
     rows_without_date, not silently dropped and not guessed a store."""
@@ -158,7 +170,7 @@ def test_axis_cms_all_dated_rows_resolve_to_a_store(config, session, daily_files
     assert dated_rows["store"].notna().all()
 
 
-def test_axis_cms_splits_the_shared_pickup_code_by_location(config, session, daily_files):
+def test_axis_cms_splits_the_shared_pickup_code_by_location(config, session, daily_files, db_masters):
     """Defect A (2026-09-12): AX31918 is APM/MMR's shared pickup code. The
     21-Jul file carries both locations under it — ARRAH must resolve to APM,
     MADHB to MMR, and neither shows up as unmapped or triggers the
@@ -175,7 +187,7 @@ def test_axis_cms_splits_the_shared_pickup_code_by_location(config, session, dai
     assert not any("AX31918" in n for n in report.notes)
 
 
-def test_axis_cms_credit_lag_distribution_is_reported(config, session, daily_files):
+def test_axis_cms_credit_lag_distribution_is_reported(config, session, daily_files, db_masters):
     """Not asserted against an external figure — just confirm the shape is
     right so the number in the reply text can be trusted. See the reply for
     the actual counts to compare against your separate workbook."""
@@ -191,7 +203,7 @@ def test_axis_cms_credit_lag_distribution_is_reported(config, session, daily_fil
 # real file, not by inspecting the position table.
 # ---------------------------------------------------------------------------
 
-def test_axis_cms_preflight_flags_an_unregistered_shared_code(config, session, tmp_path, daily_files):
+def test_axis_cms_preflight_flags_an_unregistered_shared_code(config, session, tmp_path, daily_files, db_masters):
     """The pre-flight check (CLAUDE.md 6.11, added 2026-09-12): a pickup code
     seen against more than one location that ISN'T in the pickup_location
     master must be reported, not silently resolved on the code alone — that
@@ -234,7 +246,7 @@ def test_axis_cms_preflight_flags_an_unregistered_shared_code(config, session, t
     assert not any("AX31918" in n for n in report.notes)
 
 
-def test_cms_column_position_assertion_fires_on_shuffled_header(config, session, tmp_path, daily_files):
+def test_cms_column_position_assertion_fires_on_shuffled_header(config, session, tmp_path, daily_files, db_masters):
     real_file = daily_files["axis_cms"]
 
     wb = openpyxl.load_workbook(real_file, read_only=True, data_only=True)

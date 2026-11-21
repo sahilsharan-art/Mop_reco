@@ -133,3 +133,66 @@ def test_the_reader_refuses_a_cell_that_is_not_the_declared_type(tmp_path):
     with pytest.raises(Exception) as e:
         io_.read_xlsb_table(p, ["BILLNO"], ["BASEAMT"], [], [])
     assert "strict" in str(e.value).lower() or "coerc" in str(e.value).lower() or "type" in str(e.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# an .xlsx POS export is split across sheets at Excel's row limit - EVERY sheet is read (2026-11-20)
+# ---------------------------------------------------------------------------
+
+def _two_sheet_pos_xlsx(path, time_as_text=True):
+    import openpyxl
+    from datetime import datetime, time as dtime
+    wb = openpyxl.Workbook()
+    cols = ["PSITE_POSBILL_CODE", "ADMSITE_CODE", "MOPDESC", "MOPSTLMDESC", "TPEDCRESPONSE", "TPBILLREFNUMBER",
+            "BILLDATE", "BILL_TIME", "STORE_NAME", "BASETENDER", "BASEBALANCE", "BASEAMT", "BILLNO", "CREATEBY"]
+    rows = {"Data": [datetime(2026, 10, 1), datetime(2026, 10, 15)], "Data(2)": [datetime(2026, 10, 16), datetime(2026, 10, 31)]}
+    for i, (name, dates) in enumerate(rows.items()):
+        ws = wb.active if i == 0 else wb.create_sheet()
+        ws.title = name
+        ws.append(cols)
+        for n, d in enumerate(dates):
+            ws.append([f"S-{i}{n}", 1, "Cash", "x", None, None, d, "17:23:26" if time_as_text else dtime(17, 23, 26),
+                       "ABD", 100.0, 0.0, 100.0, f"B{i}{n}/1026", "CASH1"])
+    wb.save(path)
+
+
+@pytest.mark.parametrize("time_as_text", [True, False])
+def test_every_sheet_of_an_xlsx_pos_export_is_read(tmp_path, time_as_text):
+    f = tmp_path / "pos.xlsx"
+    _two_sheet_pos_xlsx(f, time_as_text)
+    df, per_sheet = ing._read_pos_raw(f)
+    assert per_sheet == {"Data": 2, "Data(2)": 2}, "a lost sheet must show up as a number"
+    assert len(df) == 4
+    assert sorted(df["BILLNO"]) == ["B00/1026", "B01/1026", "B10/1026", "B11/1026"]
+
+
+def test_the_xlsx_fallback_reader_also_reads_every_sheet(tmp_path, monkeypatch):
+    f = tmp_path / "pos.xlsx"
+    _two_sheet_pos_xlsx(f)
+    monkeypatch.setattr(io_, "read_xlsb_table", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("force fallback")))
+    df, per_sheet = ing._read_pos_raw(f)
+    assert per_sheet == {"Data": 2, "Data(2)": 2} and len(df) == 4
+
+
+def test_a_file_with_the_time_as_text_in_one_sheet_and_a_time_in_the_next_reads_fast_and_saves_to_parquet(tmp_path):
+    """The October 2026 export: BILL_TIME is text ('15:42:34') in one sheet and a real time in the other. It must
+    read through the fast reader (one numeric type for every sheet) and the result must be writable to Parquet."""
+    import openpyxl
+    from datetime import datetime, time as dtime
+    cols = ["PSITE_POSBILL_CODE", "ADMSITE_CODE", "MOPDESC", "MOPSTLMDESC", "TPEDCRESPONSE", "TPBILLREFNUMBER",
+            "BILLDATE", "BILL_TIME", "STORE_NAME", "BASETENDER", "BASEBALANCE", "BASEAMT", "BILLNO", "CREATEBY"]
+    wb = openpyxl.Workbook()
+    for i, t in enumerate(["15:42:34", dtime(17, 23, 26)]):
+        ws = wb.active if i == 0 else wb.create_sheet()
+        ws.title = f"Data{i}"
+        ws.append(cols)
+        ws.append([f"S-{i}", 1, "Cash", "x", None, None, datetime(2026, 10, 1 + i), t, "ABD", 10.0, 0.0, 10.0,
+                   f"B{i}/1026", "C1"])
+    f = tmp_path / "mixed.xlsx"
+    wb.save(f)
+    df, per_sheet = ing._read_pos_raw(f)
+    assert per_sheet == {"Data0": 1, "Data1": 1}
+    assert str(df["BILL_TIME"].dtype) == "float64"
+    assert io_.parse_bill_time_series(df["BILL_TIME"]) == ["15:42:34", "17:23:26"]
+    df["bill_time"] = io_.parse_bill_time_series(df["BILL_TIME"])
+    df.drop(columns=["BILL_TIME"]).to_parquet(tmp_path / "out.parquet", index=False)      # must not raise

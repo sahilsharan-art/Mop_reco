@@ -167,24 +167,30 @@ def test_bajaj_ref_extracted_from_flat_payload():
 
 def test_bill_wise_reports_parse_failures_when_present(config, session, monkeypatch, daily_pos_file):
     """Prove a genuine parse failure surfaces in the report, not just in the
-    unit-level helper — inject one via a monkeypatched reader."""
+    unit-level helper - inject one into the reader the ingest actually uses (an .xlsx now goes through
+    calamine, `io_.read_xlsb_table`, like an .xlsb; it used to go through `read_any`)."""
+    import polars as pl
     import mop_reco.io_ as io_mod
 
-    real_read_any = io_mod.read_any
+    real = io_mod.read_xlsb_table
 
-    def _corrupting_read_any(path, *args, **kwargs):
-        result = real_read_any(path, *args, **kwargs)
-        grid = [list(r) for r in result.grid]
-        header = [str(c).strip() for c in grid[0]]
-        tpedc_idx = header.index("TPEDCRESPONSE")
-        for i, row in enumerate(grid[1:], start=1):
-            if row[tpedc_idx] not in (None, "") and not (isinstance(row[tpedc_idx], float)):
-                row[tpedc_idx] = "{this is not json"
-                break
-        from dataclasses import replace
-        return replace(result, grid=grid)
+    def _corrupting(path, *a, sheet_transform=None, **k):
+        done = {"x": False}
 
-    monkeypatch.setattr(ingest_module.io_, "read_any", _corrupting_read_any)
+        def tf(frame):
+            if not done["x"] and "TPEDCRESPONSE" in frame.columns:
+                vals = frame["TPEDCRESPONSE"].to_list()
+                for i, v in enumerate(vals):
+                    if v not in (None, ""):
+                        vals[i] = "{this is not json"
+                        done["x"] = True
+                        break
+                frame = frame.with_columns(pl.Series("TPEDCRESPONSE", vals, dtype=pl.String))
+            return sheet_transform(frame) if sheet_transform else frame
+
+        return real(path, *a, sheet_transform=tf, **k)
+
+    monkeypatch.setattr(ingest_module.io_, "read_xlsb_table", _corrupting)
 
     df, report = ingest_pos_bill_wise(config, session, file_path=daily_pos_file)
     assert report.breakdown["reference_extraction"]["parse_failed"] == 1
@@ -302,3 +308,29 @@ def test_rows_per_business_date_reported(config, session, daily_pos_file):
     # Sale-universe rows, consistent with every other count in the report:
     # 40,870 read − 628 non-bill = 40,242.
     assert report.breakdown["rows_per_business_date"] == {"2026-07-20": 40242}
+
+
+# ---------------------------------------------------------------------------
+# A new MOP is tagged "other", reported, and in no figure (operator's ruling, 2026-11-20)
+# ---------------------------------------------------------------------------
+
+def test_a_new_mop_does_not_stop_ingestion_it_is_tagged_other_and_reported(tmp_path, config, monkeypatch, caplog):
+    import openpyxl
+    from datetime import datetime
+    from mop_reco import ingest as ing
+    f = tmp_path / "2026-10.xlsx"
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Data"
+    ws.append(["PSITE_POSBILL_CODE", "ADMSITE_CODE", "MOPDESC", "MOPSTLMDESC", "TPEDCRESPONSE", "TPBILLREFNUMBER",
+               "BILLDATE", "BILL_TIME", "STORE_NAME", "BASETENDER", "BASEBALANCE", "BASEAMT", "BILLNO", "CREATEBY"])
+    for i, (mop, amt) in enumerate([("Cash", 100.0), ("NEPALI RUPPES", 12.0)]):
+        ws.append([f"S-{i}", 1, mop, "x", None, None, datetime(2026, 10, 31), "17:23:26", "NTV", amt, 0.0, amt,
+                   f"B{i}/1026", "CASH1"])
+    wb.save(f)
+    with caplog.at_level("WARNING"):
+        df, meta = ing._ingest_pos_bill_wise_one_file(config, f, datetime.now(), use_warehouse=False)
+    assert dict(zip(df["mop"], df["mop_class"])) == {"Cash": "cash", "NEPALI RUPPES": "other"}
+    assert "UNCLASSIFIED MOP 'NEPALI RUPPES'" in caplog.text
+    rep = ing._pos_report_from_df(df, [(f, datetime.now())], {str(f): meta}, {}, [], 0, False)
+    assert rep.breakdown["unclassified_mops"]["NEPALI RUPPES"]["total_amount"] == 12.0
+    assert rep.breakdown["unclassified_mops"]["NEPALI RUPPES"]["stores"] == ["NTV"]
+    assert any("UNCLASSIFIED MOP" in n for n in rep.notes)

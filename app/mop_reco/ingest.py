@@ -338,7 +338,7 @@ def _load_manifest_file(source: str) -> dict:
 
 # A cached parse is only valid for the parser that produced it. Bump a source's version when what the reader extracts
 # changes, so every cached file of that source is re-read once (the cache is otherwise keyed on mtime and size only).
-PARSER_VERSION = {"pos_bill_wise": "2026-10-26 axis_ref = retrievalReferenceNo whether or not a card is indicated"}
+PARSER_VERSION = {"pos_bill_wise": "2026-11-20 .xlsx read through every sheet (was sheet 1 only); axis_ref = retrievalReferenceNo whether or not a card is indicated"}
 
 
 def _write_manifest(source: str, file_path, warehouse_paths: dict, extra: dict = None):
@@ -980,6 +980,14 @@ def _read_bajaj_file(file_path: Path, mtime) -> pd.DataFrame:
     header = [str(c).strip() for c in result.grid[0]]
     df = pd.DataFrame(data_rows, columns=header)
 
+    # The November 2026 export carries the transaction moment as two columns, DATE (a date) and TIME (hh:mm:ss),
+    # instead of one "Transaction Date" ('14-11-2026 22:46:28'). Same fact, same format once joined - so the one
+    # column is rebuilt from the two; nothing else about the file differs. Only when "Transaction Date" is absent.
+    if "Transaction Date" not in df.columns and {"DATE", "TIME"} <= set(df.columns):
+        day = pd.to_datetime(df["DATE"], errors="coerce").dt.strftime("%d-%m-%Y")
+        df["Transaction Date"] = day + " " + df["TIME"].astype(str).str.strip()
+        df.loc[day.isna(), "Transaction Date"] = None
+
     missing = [c for c in BAJAJ_REQUIRED_COLUMNS if c not in df.columns]
     if missing:
         raise IngestError(f"{file_path.name}: Bajaj settlement file is missing column(s) {missing}")
@@ -1211,7 +1219,7 @@ def _read_pos_raw(file_path: Path):
     asserts the ingested frame identical, cell for cell). Anything calamine cannot
     serve - another format, a header that is not on row 1, fastexcel not installed,
     a required column missing - takes the original pyxlsb/grid path, unchanged."""
-    if Path(file_path).suffix.lower() == ".xlsb":
+    if Path(file_path).suffix.lower() in (".xlsb", ".xlsx"):
         try:
             df, per_sheet = io_.read_xlsb_table(
                 file_path, _POS_TEXT_COLUMNS, _POS_FLOAT_COLUMNS, _POS_DATE_COLUMNS, _POS_TIME_COLUMNS,
@@ -1233,6 +1241,29 @@ def _read_pos_raw(file_path: Path):
                 return df, per_sheet
             logger.info(f"ingest_pos_bill_wise: '{Path(file_path).name}' has no row-1 header "
                         "calamine can use - reading it with the original pyxlsb path")
+    if Path(file_path).suffix.lower() == ".xlsx":
+        # `read_any` reads ONE sheet of an .xlsx (the first); a monthly POS export is split across sheets at Excel's
+        # row limit (CLAUDE.md 5). Never take sheets[0] alone: read every sheet, header identical or fail loudly.
+        import openpyxl
+        wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+        try:
+            names = list(wb.sheetnames)
+        finally:
+            wb.close()
+        frames, per_sheet, first_header = [], {}, None
+        for name in names:
+            res = io_.read_any(file_path, sheet_name=name)
+            hdr_idx = io_.find_header_row(res.grid, POS_BILL_WISE_REQUIRED_COLUMNS)
+            hdr = [str(c).strip() for c in res.grid[hdr_idx]]
+            if first_header is None:
+                first_header = hdr
+            elif hdr != first_header:
+                raise IngestError(f"{Path(file_path).name}: sheet '{name}' header differs from the first sheet's - "
+                                  "refusing to concatenate mismatched columns")
+            rows = res.grid[hdr_idx + 1:]
+            per_sheet[name] = len(rows)
+            frames.append(pd.DataFrame(rows, columns=hdr))
+        return pd.concat(frames, ignore_index=True), per_sheet
     result = io_.read_any(file_path)
     header_idx = io_.find_header_row(result.grid, POS_BILL_WISE_REQUIRED_COLUMNS)
     header = [str(c).strip() for c in result.grid[header_idx]]
@@ -1310,12 +1341,23 @@ def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
     # (§ above) — those rows get a genuinely blank bill_time, never a guess.
     if "BILL_TIME" in df.columns:
         df["bill_time"] = io_.parse_bill_time_series(df["BILL_TIME"])
+        # The raw column is not used after this and can hold mixed types (text in one sheet, a number or a
+        # datetime.time in another), which Parquet refuses: keep the parsed `bill_time` only.
+        df = df.drop(columns=["BILL_TIME"])
     else:
         df["bill_time"] = None
     if "created_by" not in df.columns:
         df["created_by"] = None
 
-    _assert_known_mops(df.rename(columns={"mop": "MOPDESC", "store": "STORE_NAME"}), config)
+    # An UNKNOWN MOP no longer stops the run (operator's ruling, 2026-11-20: "any new MOP goes to OTHER and is
+    # reported - classify nothing"). It is tagged class "other" below, which no reconciliation reads (not digital,
+    # not cash), so it is in NO figure; it is named - MOP, rows, amount, stores, dates - in the load report and the
+    # run notes (_pos_report_from_df), so it is never silent. `_assert_known_mops` stays as the strict check.
+    _unknown = ~df["mop"].isin(set(config.mop_classification.keys()))
+    if _unknown.any():
+        for _m, _g in df.loc[_unknown].groupby("mop"):
+            logger.warning(f"ingest_pos_bill_wise: UNCLASSIFIED MOP {_m!r} - {len(_g)} row(s), "
+                           f"{float(_g['amount'].sum()):,.2f} - tagged 'other', excluded from every figure")
 
     # CLAUDE.md 6.13 — a row with no bill number is not a bill. It is a cash
     # in/out movement, excluded from the sale universe whatever its MOP, but
@@ -1374,7 +1416,7 @@ def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
     df["line_seq"] = df.groupby("bill_no").cumcount() + 1
 
     mop_class = {mop: entry["class"] for mop, entry in config.mop_classification.items()}
-    df["mop_class"] = df["mop"].map(mop_class)
+    df["mop_class"] = df["mop"].map(mop_class).fillna("other")
 
     rows_without_date = int(df["business_date"].isna().sum())
     if rows_without_date:
@@ -1536,6 +1578,31 @@ def _pos_report_from_df(df, files, per_file_meta: dict, sheet_row_counts: dict,
         notes.append(f"Read from the raw workbook (new or changed since last ingested): {raw_read_files}")
     if supersede_report:
         notes.append(f"superseded_by_more_recent_file: {supersede_report}")
+    unclassified = {}
+    other_rows = df.loc[df["mop_class"] == "other"]
+    for _m, _g in other_rows.groupby("mop"):
+        unclassified[str(_m)] = {
+            "rows": int(len(_g)), "total_amount": round(float(_g["amount"].sum()), 2),
+            "stores": sorted(str(x) for x in _g["store"].dropna().unique()),
+            "dates": sorted(str(x) for x in _g["business_date"].dropna().unique()),
+            "bill_nos": [str(x) for x in _g["bill_no"].dropna().unique()[:10]],
+        }
+    if unclassified:
+        notes.append("UNCLASSIFIED MOP (class 'other' - in NO reconciliation or figure, reported only; "
+                     f"ruling needed): {unclassified}")
+
+    # Is the export complete? (CLAUDE.md 6.37) Excel's row limit on a file's last sheet, and gaps in each store's
+    # consecutive bill numbers. A failure of the check itself must never stop a load - but it is said, not hidden.
+    try:
+        from . import pos_completeness as _pc
+        rows_by_file = {str(fp): (per_file_meta.get(str(fp), {}).get("sheet_row_counts") or {}) for fp, _mt in files}
+        completeness = _pc.assess(sale, rows_by_file)
+        for line in _pc.warning_lines(completeness):
+            notes.append("POS COMPLETENESS WARNING: " + line)
+            logger.warning("POS COMPLETENESS WARNING: " + line)
+    except Exception as exc:  # noqa: BLE001
+        completeness = {"ok": None, "error": f"{type(exc).__name__}: {exc}"}
+        logger.warning(f"POS completeness check could not run ({type(exc).__name__}: {exc})")
 
     return LoadReport(
         source="pos_bill_wise",
@@ -1556,6 +1623,8 @@ def _pos_report_from_df(df, files, per_file_meta: dict, sheet_row_counts: dict,
                 "excluded_total_amount": float(excluded["amount"].sum()) if len(excluded) else 0.0,
             },
             "sheet_row_counts": sheet_row_counts or {},
+            "unclassified_mops": unclassified,
+            "completeness": completeness,
             "reference_extraction": {
                 "paytm_ref_found": int(df["paytm_ref"].notna().sum()),
                 "axis_ref_found": int(df["axis_ref"].notna().sum()),
@@ -1938,35 +2007,50 @@ def ingest_opening_cash(config: Config, session, file_path: Path = None,
     """
     load_master(config, session, "store")
 
-    if file_path is None:
-        # NEWEST ONLY, deliberately - see NEWEST_ONLY_SOURCES["opening_cash"] for the reason.
-        file_path, mtime = io_.latest_file(config, "opening_cash")
+    from . import masters_db
+    if file_path is None and masters_db.in_database(session):
+        # The opening balances live in the database (2026-11-21), a master like the others: no workbook is read.
+        version = masters_db.current_version(session, "opening_balance")
+        if version is None:
+            raise IngestError("The opening cash balance has not been loaded into the database - import the masters first.")
+        meta = masters_db.meta_of(session, "opening_balance")
+        df = pd.DataFrame(masters_db.version_rows(session, version.id))
+        df["cost_centre"] = df["cost_centre"].astype(str).str.strip()
+        df["opening"] = df["opening"].map(_to_float)
+        grand_total = meta.get("grand_total")
+        file_path = Path(f"database:opening_balance/version-{version.id}")
+        mtime = version.loaded_at
+        as_of = as_of or (io_.parse_business_date(meta["as_at"]) if meta.get("as_at") else None)
     else:
-        file_path = Path(file_path)
-        mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
+        if file_path is None:
+            # NEWEST ONLY, deliberately - see NEWEST_ONLY_SOURCES["opening_cash"] for the reason.
+            file_path, mtime = io_.latest_file(config, "opening_cash")
+        else:
+            file_path = Path(file_path)
+            mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
 
-    result = io_.read_any(file_path)
-    header_idx = io_.find_header_row(result.grid, OPENING_CASH_REQUIRED_COLUMNS)
-    header = [str(c).strip() if c is not None else "" for c in result.grid[header_idx]]
-    df = pd.DataFrame(result.grid[header_idx + 1:], columns=header)
+        result = io_.read_any(file_path)
+        header_idx = io_.find_header_row(result.grid, OPENING_CASH_REQUIRED_COLUMNS)
+        header = [str(c).strip() if c is not None else "" for c in result.grid[header_idx]]
+        df = pd.DataFrame(result.grid[header_idx + 1:], columns=header)
 
-    # Grand Total sits in Sub-Ledger with no Cost Centre, and the print footers
-    # have no Cost Centre either — so requiring one drops all three without
-    # matching on their text.
-    grand_total = None
-    if "Sub-Ledger" in df.columns:
-        totals = df[df["Sub-Ledger"].astype(str).str.strip().eq("Grand Total :")]
-        if not totals.empty:
-            grand_total = _to_float(totals.iloc[0]["Opening"])
+        # Grand Total sits in Sub-Ledger with no Cost Centre, and the print footers
+        # have no Cost Centre either — so requiring one drops all three without
+        # matching on their text.
+        grand_total = None
+        if "Sub-Ledger" in df.columns:
+            totals = df[df["Sub-Ledger"].astype(str).str.strip().eq("Grand Total :")]
+            if not totals.empty:
+                grand_total = _to_float(totals.iloc[0]["Opening"])
 
-    df = df[df["Cost Centre"].notna()].copy()
-    df["cost_centre"] = df["Cost Centre"].astype(str).str.strip()
-    df = df[df["cost_centre"].ne("") & df["cost_centre"].ne("nan")]
-    for column in ("Opening", "Debit", "Credit", "Closing"):
-        if column in df.columns:
-            df[column.lower()] = df[column].map(_to_float)
+        df = df[df["Cost Centre"].notna()].copy()
+        df["cost_centre"] = df["Cost Centre"].astype(str).str.strip()
+        df = df[df["cost_centre"].ne("") & df["cost_centre"].ne("nan")]
+        for column in ("Opening", "Debit", "Credit", "Closing"):
+            if column in df.columns:
+                df[column.lower()] = df[column].map(_to_float)
 
-    as_of = as_of or _opening_period_start(result.grid)
+        as_of = as_of or _opening_period_start(result.grid)
     if as_of is None:
         raise IngestError(
             f"{file_path.name}: no 'Period:' line found, so the as-at date cannot "

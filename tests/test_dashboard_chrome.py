@@ -678,8 +678,8 @@ def test_theme_css_exists_and_defines_the_palette():
                "--accent", "--accent-deep", "--good", "--warn", "--bad"):
         assert f"{var}:" in css
     assert "font-variant-numeric: tabular-nums" in css
-    assert "Plus Jakarta Sans" in css
-    assert "Inter" in css
+    assert "Manrope" in css          # the CK Desk design language (2026-11-21)
+    assert "JetBrains Mono" in css
 
 
 def test_theme_is_injected_from_one_place_only():
@@ -722,8 +722,8 @@ def test_status_styler_tints_only_the_given_column():
     # ._todict()/.ctx is pandas' own internal Styler state — asserting through
     # the public render path instead, which is what st.dataframe consumes.
     html = computed.to_html()
-    assert "background-color: #FDF2E3" in html  # warn tint, "open"
-    assert "background-color: #E7F6EF" in html  # good tint, "closed"
+    assert f"background-color: {STATUS_TINT['warn'][0]}" in html  # warn tint, "open"
+    assert f"background-color: {STATUS_TINT['good'][0]}" in html  # good tint, "closed"
 
 
 def test_status_styler_handles_an_unmapped_value_without_colour():

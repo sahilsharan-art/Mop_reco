@@ -24,6 +24,7 @@ Streamlit import (CLAUDE.md section 8).
 
 from __future__ import annotations
 
+import logging
 import shutil
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -35,6 +36,8 @@ import pandas as pd
 from . import io_
 from .config import Config
 from .db import RunFile, UploadedFile
+
+logger = logging.getLogger(__name__)
 
 MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -76,8 +79,9 @@ SOURCE_REGISTRY = [
     SourceSpec("axis_edc", "Axis EDC settlement", (".xlsx",), True,
               ("RRN", "TRAN_DATE", "TRAN_TIME", "MID", "GROSS_AMT", "NET_AMT")),
     SourceSpec("bajaj", "Bajaj Pay settlement", (".xlsx",), True,
-              ("Transaction Id", "Transaction Date", "Transaction Amount",
-               "Transaction Status", "TID", "MID")),
+              ("Transaction Id", "Transaction Amount", "Transaction Status", "TID", "MID"),
+              note="The transaction date is either one 'Transaction Date' column or, in the November 2026 export, "
+                   "the two columns DATE and TIME."),
     SourceSpec("axis_cms", "CMS received (Axis)", (".zip", ".xlsx"), True,
               ("TYPE", "DEPDATE", "CRDATE", "PICKUPPOINTCODE"),
               note="Production reads this file by column POSITION, not name "
@@ -156,8 +160,21 @@ def _month_bounds(month: str) -> tuple:
     return date(year, mon, 1), date(year, mon, last_day)
 
 
+def _clean_date_text(series: pd.Series) -> pd.Series:
+    """Text dates as the sources write them: Paytm wraps every value in single quotes and appends a time
+    ("'31-08-2026 17:48:23'"), Bajaj appends a time too. Strip the quotes and keep the date part only; anything that
+    is not text (real datetimes, Excel serials) is left exactly as it is."""
+    if not (series.dtype == object or pd.api.types.is_string_dtype(series)):
+        return series
+    def one(v):
+        if isinstance(v, str):
+            return v.strip().strip("'").strip().split(" ")[0]
+        return v
+    return series.map(one)
+
+
 def _extract_dates(df: pd.DataFrame, date_col: str) -> pd.Series:
-    return pd.Series(io_.parse_business_date_series(df[date_col])).dropna()
+    return pd.Series(io_.parse_business_date_series(_clean_date_text(df[date_col]))).dropna()
 
 
 def validate_upload(spec: SourceSpec, temp_path: Path, original_name: str,
@@ -182,6 +199,13 @@ def validate_upload(spec: SourceSpec, temp_path: Path, original_name: str,
     if suffix in (".csv", ".zip"):
         encoding = config.encoding_for(spec.key) or "utf-8"
     prev.encoding_used = encoding
+
+    if (suffix in (".xlsx", ".xlsb", ".xlsm") and not spec.sheet_names
+            and temp_path.stat().st_size >= FAST_VALIDATE_BYTES):
+        fast_result = _validate_workbook_fast(spec, temp_path, original_name, month)
+        if fast_result is not None:
+            fast_result.encoding_used = encoding
+            return fast_result
 
     try:
         if spec.sheet_names:
@@ -209,6 +233,14 @@ def validate_upload(spec: SourceSpec, temp_path: Path, original_name: str,
 
     header = [str(c).strip() for c in grid[header_idx]]
     data_rows = grid[header_idx + 1:]
+    # Some exports are ragged (CMS: every row carries one field more than the 67-column header; Paytm: 105 against
+    # 100). The run trims to the header width and reports it; so does this check, instead of failing on it.
+    width = len(header)
+    ragged = sum(1 for r in data_rows if len(r) != width)
+    if ragged:
+        data_rows = [list(r[:width]) + [None] * (width - len(r)) for r in data_rows]
+        prev.warnings.append(f"{ragged:,} row(s) have a different number of fields from the header ({width}); "
+                             "the run trims or pads them to the header width and reports the count.")
     df = pd.DataFrame(data_rows, columns=header)
     df = df[[c for c in df.columns if c and str(c).strip() and not str(c).startswith("Unnamed")]]
     prev.columns_found = list(df.columns)
@@ -223,7 +255,12 @@ def validate_upload(spec: SourceSpec, temp_path: Path, original_name: str,
                 "month — the file will still be stored, but the month/date-range "
                 "check could not run.")
         else:
-            dates = _extract_dates(df, date_col)
+            try:
+                dates = _extract_dates(df, date_col)
+            except Exception as exc:  # noqa: BLE001 - say so; the month cannot be checked
+                prev.ok = False
+                prev.errors.append(f"Could not read the dates in column '{date_col}': {exc}")
+                return prev
             if dates.empty:
                 prev.warnings.append(f"No parseable dates found in column '{date_col}'.")
             else:
@@ -240,6 +277,102 @@ def validate_upload(spec: SourceSpec, temp_path: Path, original_name: str,
     return prev
 
 
+# A workbook this big is checked from its header, its first rows and its date column only (calamine, ~25 s for a
+# 264 MB / 1.7 M-row POS file) instead of being read cell by cell into memory (minutes, several GB). Smaller files keep
+# the original whole-file read. Any problem on the fast path falls back to the original path - never a guess.
+FAST_VALIDATE_BYTES = 30 * 1024 * 1024
+
+
+def _validate_workbook_fast(spec: SourceSpec, temp_path: Path, original_name: str,
+                            month: Optional[str]) -> Optional[UploadPreview]:
+    """Returns the preview, or None when the fast path cannot serve this file (the caller then reads it the long way)."""
+    try:
+        import fastexcel
+        import polars as pl
+    except Exception:  # noqa: BLE001 - not installed: use the original path
+        return None
+    if not spec.required_columns:
+        return None
+    try:
+        wb = fastexcel.read_excel(str(temp_path))
+        sheets = list(wb.sheet_names)
+        if not sheets:
+            return None
+        wanted = {_normalise(c) for c in spec.required_columns}
+        prev = UploadPreview(ok=True)
+        date_col_name = _guess_date_column_names(spec)
+        rows, mins, maxs, months, first_rows, columns = 0, [], [], set(), None, None
+        per_sheet_rows = {}
+        for i, name in enumerate(sheets):
+            head = wb.load_sheet_by_name(name, n_rows=5).to_pandas()
+            cols = [str(c).strip() for c in head.columns]
+            if not wanted <= {_normalise(c) for c in cols}:
+                return None          # header not on row 1 / not the expected one: the original path decides
+            if columns is None:
+                columns, first_rows = cols, head
+            elif cols != columns:
+                prev.ok = False
+                prev.errors.append(f"Sheet '{name}' has a different header from '{sheets[0]}' - the sheets of one "
+                                   "export must carry the same columns.")
+                return prev
+            date_col = next((c for c in cols if c == date_col_name), None) if date_col_name else None
+            if date_col is None and spec.key == "bajaj" and "DATE" in cols:
+                date_col = "DATE"
+            if date_col is None:
+                n_rows = wb.load_sheet_by_name(name, use_columns=[cols[0]]).to_polars().height
+                rows += n_rows
+                per_sheet_rows[name] = n_rows
+                continue
+            col = wb.load_sheet_by_name(name, use_columns=[date_col]).to_polars()[date_col]
+            rows += col.len()
+            per_sheet_rows[name] = col.len()
+            if col.dtype in (pl.Datetime, pl.Date):
+                col = col.drop_nulls().dt.date()
+                if col.len():
+                    mins.append(col.min())
+                    maxs.append(col.max())
+                    months |= {f"{d.year:04d}-{d.month:02d}" for d in col.unique().to_list()}
+            else:
+                dates = pd.Series(io_.parse_business_date_series(_clean_date_text(col.to_pandas()))).dropna()
+                if len(dates):
+                    mins.append(min(dates))
+                    maxs.append(max(dates))
+                    months |= {f"{d.year:04d}-{d.month:02d}" for d in dates.unique()}
+        prev.columns_found = [c for c in columns if c and not c.startswith("Unnamed")]
+        prev.row_count = rows
+        prev.first_rows = first_rows[[c for c in first_rows.columns if str(c).strip() and not str(c).startswith("Unnamed")]]
+        if spec.month_specific and month:
+            if not mins:
+                prev.warnings.append("No parseable dates found in the date column - the month check could not run.")
+            else:
+                prev.date_range = (str(min(mins)), str(max(maxs)))
+                if month not in months:
+                    prev.ok = False
+                    prev.errors.append(
+                        f"Selected month is {month}, but the file's own dates fall in "
+                        f"{', '.join(sorted(months))}. A file dropped into the wrong "
+                        "month is the most likely mistake - rejected rather than "
+                        "guessed which one is right.")
+        from . import pos_completeness as _pc
+        for hit in _pc.excel_row_limit_hits({original_name: per_sheet_rows}):
+            prev.warnings.append(
+                f"POSSIBLY CUT OFF: the last sheet ('{hit['last_sheet']}') holds {hit['data_rows']:,} data rows, which is "
+                f"Excel's limit ({_pc.EXCEL_SHEET_ROW_LIMIT:,}). The export most likely stopped there and rows are "
+                "missing. Ask for it split across several sheets or as .xlsb before relying on it.")
+        prev.warnings.append("Large workbook: checked from its header, first rows and date column (fast check); "
+                             "the whole file is read in full by the run.")
+        return prev
+    except Exception as exc:  # noqa: BLE001 - never block an upload on the fast path; the original path decides
+        logger.warning(f"fast upload check could not read '{original_name}' ({type(exc).__name__}: {exc}) - "
+                       "using the full read")
+        return None
+
+
+def _guess_date_column_names(spec: SourceSpec) -> Optional[str]:
+    return {"pos_bill_wise": "BILLDATE", "paytm_settlement": "transaction_date", "axis_edc": "TRAN_DATE",
+            "bajaj": "Transaction Date", "axis_cms": "DEPDATE"}.get(spec.key)  # bajaj: or DATE, see below
+
+
 def _guess_date_column(spec: SourceSpec, columns) -> Optional[str]:
     by_source = {
         "pos_bill_wise": "BILLDATE",
@@ -253,6 +386,8 @@ def _guess_date_column(spec: SourceSpec, columns) -> Optional[str]:
     wanted = by_source.get(spec.key)
     if wanted and wanted in columns:
         return wanted
+    if spec.key == "bajaj" and "DATE" in columns:
+        return "DATE"
     return None
 
 
@@ -437,10 +572,21 @@ def history(session) -> list:
     return session.query(UploadedFile).order_by(UploadedFile.uploaded_at.desc()).all()
 
 
-def delete_upload(session, upload_id: int, operator: str, run_in_progress: bool) -> tuple:
-    """Removes the file on disk, marks the history row deleted — the row
-    itself is never removed (rule 4). Refused outright while a run is in
-    progress. Returns (ok, message)."""
+ARCHIVE_DIR_NAME = "uploads_archive"
+
+
+def archive_dir(config: Config) -> Path:
+    """Where a deleted upload is kept. Directly under the project base folder, NOT inside any source folder, so
+    source discovery (depth 1 below each configured source root) can never see an archived file."""
+    return Path(config.base_dir) / ARCHIVE_DIR_NAME
+
+
+def delete_upload(session, upload_id: int, operator: str, run_in_progress: bool,
+                  config: Optional[Config] = None) -> tuple:
+    """Withdraws an upload: the file is MOVED out of its source folder into `uploads_archive/` (never erased - rule
+    7 and rule 4), so the next run no longer reads it, and the history row is marked deleted with who and when and
+    where the file went. The row itself is never removed. Refused outright while a run is in progress.
+    Returns (ok, message)."""
     if run_in_progress:
         return False, "A run is currently in progress — deletion is refused until it finishes."
 
@@ -451,11 +597,25 @@ def delete_upload(session, upload_id: int, operator: str, run_in_progress: bool)
         return False, "Already deleted."
 
     path = Path(row.stored_path)
+    archived = None
     if path.exists():
-        path.unlink()
+        if config is None:
+            return False, "Cannot archive the file: no configuration was supplied. Nothing was changed."
+        target_dir = archive_dir(config) / row.source_key
+        target_dir.mkdir(parents=True, exist_ok=True)
+        archived = target_dir / f"{row.id}__{path.name}"
+        n = 1
+        while archived.exists():
+            archived = target_dir / f"{row.id}__{n}__{path.name}"
+            n += 1
+        shutil.move(str(path), str(archived))
 
     row.status = "deleted"
     row.deleted_at = datetime.now()
     row.deleted_by = operator
+    row.archived_path = str(archived) if archived else None
     session.commit()
-    return True, f"Deleted '{row.original_file_name}'."
+    if archived is None:
+        return True, (f"'{row.original_file_name}' was already missing from its folder; the history row is marked "
+                      "deleted.")
+    return True, f"'{row.original_file_name}' removed from the source folder and kept in {archived}."

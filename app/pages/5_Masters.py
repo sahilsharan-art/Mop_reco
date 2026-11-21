@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sys
-import zipfile
 from datetime import date
 from pathlib import Path
 
@@ -13,16 +12,16 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import masters_editor
 from dashboard_common import db_session, frame_export_button, latest_run, page, sidebar
 from mop_reco import master_gaps as mg
+from mop_reco import masters_db
 from mop_reco.export import ExportMeta
 from mop_reco.config import load_config
 from mop_reco.formatting import display_date, money_table
 from mop_reco.masters import (
     MASTER_SPECS,
-    build_unmapped_report,
     check_mid_integrity,
-    derive_provisional_store_master,
     due_date,
     get_rows_asof,
     load_all_masters_safe,
@@ -51,6 +50,10 @@ st.header("Masters")
 for _name, _message in load_failures.items():
     st.error(_message + ". The version loaded earlier is still the one in force; "
              "restore the file and reload.")
+_in_db = masters_db.in_database(session)
+if _in_db:
+    st.caption("The masters live in the database. They are changed only on this page - no workbook is read.")
+masters_editor.render(session)
 _run = latest_run(session)
 if _run is not None:
     _notes = json.loads(_run.notes or "{}")
@@ -110,7 +113,7 @@ for master_name in MASTER_SPECS:
             {
                 "id": v.id,
                 "loaded_at": v.loaded_at,
-                "effective_to": v.effective_to or "(current)",
+                "effective_to": str(v.effective_to)[:16] if v.effective_to else "(current)",
                 "row_count": v.row_count,
                 "is_current": v.is_current,
                 "content_hash": v.content_hash[:12] + "...",
@@ -121,7 +124,14 @@ for master_name in MASTER_SPECS:
 
 # --- Health: MID integrity check -------------------------------------------
 st.header("Health checks")
-business_date = st.date_input("Check as of business date", value=date(2026, 7, 20),
+# No fixed date (rule 8): the default is the last business date of the latest run, else today.
+_default_check_date = date.today()
+if _run is not None:
+    try:
+        _default_check_date = date.fromisoformat(str(max(json.loads(_run.business_dates)))[:10])
+    except (ValueError, TypeError):
+        pass
+business_date = st.date_input("Check as of business date", value=_default_check_date,
                               format="DD/MM/YYYY")
 
 violations = check_mid_integrity(session, business_date)
@@ -137,87 +147,9 @@ if violations:
 else:
     st.success(f"No MID maps to more than one store as of {business_date}.")
 
-# --- Health: unmapped identifiers, cross-checked against real gateway data --
-st.subheader("Unmapped identifiers (cross-checked against real files)")
-
-
-# Reading these real files (especially the three Paytm zip parts, ~17k rows)
-# is the expensive part of this page. Streamlit reruns the whole script on
-# every widget interaction (e.g. changing the date below), so without caching
-# this would re-read and re-parse every file on every single rerun. Cached on
-# the resolved file path + its mtime, not on `config` itself (which holds
-# dicts and isn't hashable) — a re-dump still busts the cache correctly.
-
-@st.cache_data(show_spinner="Reading Axis EDC file...")
-def _axis_mid_records(file_path_str: str, _mtime: float):
-    import openpyxl
-
-    wb = openpyxl.load_workbook(file_path_str, read_only=True, data_only=True)
-    # Never hardcode a sheet name — the daily Axis file uses 'Sheet1', the
-    # monthly one uses 'Axis'.
-    ws = wb[wb.sheetnames[0]]
-    it = ws.iter_rows(values_only=True)
-    header = list(next(it))
-    mid_idx = header.index("MID")
-    amt_idx = header.index("NET_AMT")
-    return [(row[mid_idx], row[amt_idx]) for row in it]
-
-
-@st.cache_data(show_spinner="Reading Paytm settlement export (3 parts)...")
-def _paytm_mid_records(file_paths_and_mtimes: tuple):
-    import csv
-
-    records = []
-    for file_path_str, _mtime in file_paths_and_mtimes:
-        with zipfile.ZipFile(file_path_str) as zf:
-            csv_names = [n for n in zf.namelist() if n.endswith(".csv")]
-            for name in csv_names:
-                with zf.open(name) as fh:
-                    reader = csv.DictReader(line.decode("utf-8", errors="replace") for line in fh)
-                    for row in reader:
-                        mid = row["original_mid"].strip("'")
-                        amt = row["amount"].strip("'")
-                        records.append((mid, amt))
-    return records
-
-
-axis_status = config.source_status("axis_edc")
-axis_records = []
-if axis_status.files:
-    axis_file = max(axis_status.files, key=lambda p: p.stat().st_mtime)
-    axis_records = _axis_mid_records(str(axis_file), axis_file.stat().st_mtime)
-
-paytm_status = config.source_status("paytm_settlement")
-paytm_zip_info = tuple(
-    (str(p), p.stat().st_mtime) for p in paytm_status.files if p.suffix.lower() == ".zip"
-)
-paytm_records = _paytm_mid_records(paytm_zip_info)
-
-axis_unmapped = build_unmapped_report(session, "axis_mid", axis_records, business_date)
-paytm_unmapped = build_unmapped_report(session, "paytm_mid", paytm_records, business_date)
-
-col1, col2 = st.columns(2)
-with col1:
-    st.caption(f"Axis MIDs — {len(axis_unmapped)} unmapped")
-    if axis_unmapped:
-        st.dataframe(pd.DataFrame(axis_unmapped), width='stretch', hide_index=True)
-with col2:
-    st.caption(f"Paytm MIDs — {len(paytm_unmapped)} unmapped")
-    if paytm_unmapped:
-        st.dataframe(pd.DataFrame(paytm_unmapped), width='stretch', hide_index=True)
-
-# --- No store master: provisional list --------------------------------------
-st.header("Store master")
-st.error("No store master exists — confirmed absent, not just unsupplied (see CLAUDE.md section 5).")
-provisional, note = derive_provisional_store_master(config)
-st.warning(note)
-st.metric("Stores derived from POS", len(provisional))
-with st.expander("Provisional store list"):
-    st.dataframe(
-        pd.DataFrame([{"store": p.store, "cms_cycle_days": p.cms_cycle_days, "cms_cycle_source": p.cms_cycle_source} for p in provisional]),
-        width='stretch',
-        hide_index=True,
-    )
+# The old "unmapped identifiers cross-checked against real files" section re-read the raw Axis and Paytm files on
+# every load (slow, and a link back to Excel). The run's own list of unresolved identifiers, at the top of this
+# page, is that check - computed once at run time from the same data.
 
 # --- Working-day helper demo --------------------------------------------------
 st.header("Working-day due date")

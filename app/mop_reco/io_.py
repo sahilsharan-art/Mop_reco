@@ -229,6 +229,19 @@ def read_xlsb_table(path: Path, text_columns: list, float_columns: list, date_co
             elif c in time_columns:
                 if dtype == pl.Float64:
                     pass
+                elif dtype == pl.String:
+                    # An .xlsx export can hold the time as text ('17:23:26'); parse_bill_time reads that exactly as
+                    # it reads a serial. Anything that is not hh:mm:ss text is refused, never passed through.
+                    nonblank = pl.col(c).is_not_null() & (pl.col(c).str.strip_chars() != "")
+                    bad = frame.select((nonblank & ~pl.col(c).str.contains(r"^\d{1,2}:\d{2}:\d{2}$")).sum()).item()
+                    if bad:
+                        raise IOError_(f"{path.name} [{name}] column {c!r}: {bad} value(s) are not hh:mm:ss text")
+                    # Turned into the same fraction-of-a-day number the other sheets / .xlsb carry, so every sheet
+                    # of one file has ONE type (a file can hold the time as text in one sheet and as a number in
+                    # the next - the October 2026 export did).
+                    parts = pl.col(c).str.strip_chars().str.split(":")
+                    exprs.append(((parts.list.get(0).cast(pl.Float64) * 3600 + parts.list.get(1).cast(pl.Float64) * 60
+                                   + parts.list.get(2).cast(pl.Float64)) / 86_400.0).alias(c))
                 elif isinstance(dtype, pl.Datetime):
                     t = pl.col(c).cast(pl.Datetime("us"))
                     exprs.append(((t.dt.hour().cast(pl.Float64) * 3600 + t.dt.minute().cast(pl.Float64) * 60

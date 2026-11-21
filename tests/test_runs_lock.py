@@ -120,3 +120,41 @@ def test_no_blocking_run_once_the_stale_one_is_marked_failed(config, session, mo
     # A new Run row WAS created this time (the lock let it through) — two
     # rows total: the marked-failed blocker, plus this new attempt.
     assert session.query(Run).count() == 2
+
+
+# --- a failing stage must neither hide its own error nor leave the run 'running' (run #28, 2026-11-20) ---------------
+
+def test_stage_failure_with_a_broken_session_still_reports_the_original_error(tmp_path):
+    from datetime import datetime
+    from mop_reco import runs
+    from mop_reco.db import Run, get_engine, get_session, init_db
+    engine = init_db(get_engine(tmp_path / "t.sqlite"))
+    session = get_session(engine)
+    run = Run(started_at=datetime.now(), business_dates="[]", status="running")
+    session.add(run); session.commit()
+
+    class Boom(Exception):
+        pass
+
+    timings = {}
+    with pytest.raises(Boom):
+        with runs._stage(session, run, timings, "manual_overlay"):
+            # leave the Session unusable exactly as a mid-query MemoryError did
+            session.commit()
+            session.get_transaction().close() if session.get_transaction() else None
+            raise Boom("the real problem")
+    assert "manual_overlay" in timings
+
+
+def test_manual_overlay_reads_only_the_bills_it_needs(tmp_path):
+    """reconcile_after_run used to load every bill line of the run. It must query only the matched bills."""
+    from datetime import datetime
+    from mop_reco import manual_match as mm
+    from mop_reco.db import ManualMatch, R1BillLine, Run, get_engine, get_session, init_db
+    engine = init_db(get_engine(tmp_path / "t.sqlite"))
+    s = get_session(engine)
+    s.add(Run(id=1, started_at=datetime.now(), business_dates="[]", status="completed")); s.commit()
+    src = open(mm.__file__, encoding="utf-8").read()
+    body = src[src.index("def reconcile_after_run"):src.index("def _transition")]
+    assert "R1BillLine.bill_no.in_(" in body, "reconcile_after_run must filter bill lines by the matched bill numbers"
+    assert ".filter(R1BillLine.run_id == run_id).all()" not in body.replace("\n", "").replace("                 ", "")

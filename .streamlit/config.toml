@@ -7,17 +7,22 @@
 # depends on this file rather than on CSS.
 [theme]
 base = "light"
-primaryColor = "#16A5C4"
+primaryColor = "#1A4D8F"
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F4F7FB"
-textColor = "#0F2B46"
+secondaryBackgroundColor = "#EEF1F5"
+textColor = "#17202B"
 
 [client]
+# No Deploy button / developer toolbar for operators (it rendered dark-on-dark in the brand bar and has no use here).
+toolbarMode = "minimal"
 # The page list is the top bar now (dashboard_common.top_nav); the native sidebar list is hidden.
 showSidebarNavigation = false
 
 [server]
 headless = true
+# Upload page: largest single file accepted, in MB (Streamlit's default is 200). A monthly POS .xlsb is ~220 MB,
+# which the default refused. The upload is held in memory while it is validated, so keep this as low as practical.
+maxUploadSize = 1024
 
 [browser]
 gatherUsageStats = false

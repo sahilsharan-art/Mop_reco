@@ -1081,12 +1081,19 @@ def reconcile_after_run(session, run_id: int, operator: str = "system",
     if not entries:
         return outcome
 
+    # Only the bills the manual matches are about (a bill number is globally unique, CLAUDE.md 5). This used to
+    # load EVERY bill line of the run (5.2M ORM objects, 20+ minutes, ~8 GB) to look at a few hundred matches, and
+    # ran the machine out of memory on run #28 (2026-11-20).
+    wanted = sorted({(e.bill_no or str(e.bill_key).split("|")[2:3] and str(e.bill_key).split("|")[2]) or ""
+                     for e in entries} - {""})
     lines = {}
-    for line in (session.query(R1BillLine)
-                 .filter(R1BillLine.run_id == run_id).all()):
-        lines[bill_key_of({"business_date": line.business_date,
-                           "store": line.store, "bill_no": line.bill_no,
-                           "mop": line.mop})] = line
+    for i in range(0, len(wanted), 500):
+        for line in (session.query(R1BillLine)
+                     .filter(R1BillLine.run_id == run_id,
+                             R1BillLine.bill_no.in_(wanted[i:i + 500])).all()):
+            lines[bill_key_of({"business_date": line.business_date,
+                               "store": line.store, "bill_no": line.bill_no,
+                               "mop": line.mop})] = line
 
     now = datetime.now()
     for entry in entries:

@@ -91,12 +91,23 @@ def test_bucket_sales_by_store_date_groups_correctly():
     assert out.loc[("2026-07-02", "XYZ", "gift_voucher"), "sale"] == 10.0
 
 
-def test_bucket_sales_by_store_date_raises_on_an_unmapped_mop_naming_it():
+def test_an_unmapped_mop_is_left_out_of_every_bucket_and_named_not_guessed_and_not_fatal(caplog):
+    """Operator's ruling 2026-11-20: a new MOP goes to OTHER and is reported; nothing is classified. It is in no
+    bucket (so no figure moves) and the log names it with its rows and amount."""
     pos = pd.DataFrame([
+        {"business_date": "2026-07-01", "store": "ABD", "mop": "Cash", "amount": 100.0},
         {"business_date": "2026-07-01", "store": "ABD", "mop": "Some New MOP", "amount": 5.0},
     ])
-    with pytest.raises(ValueError, match="Some New MOP"):
-        mm.bucket_sales_by_store_date(pos, {"Cash": "cash"})
+    with caplog.at_level("WARNING"):
+        out = mm.bucket_sales_by_store_date(pos, {"Cash": "cash"})
+    assert list(out["bucket"]) == ["cash"] and float(out["sale"].sum()) == 100.0
+    assert "Some New MOP" in caplog.text and "5.00" in caplog.text
+
+
+def test_only_unmapped_rows_gives_an_empty_matrix_not_a_crash():
+    pos = pd.DataFrame([{"business_date": "2026-07-01", "store": "ABD", "mop": "Some New MOP", "amount": 5.0}])
+    out = mm.bucket_sales_by_store_date(pos, {"Cash": "cash"})
+    assert out.empty and list(out.columns) == ["business_date", "store", "bucket", "sale"]
 
 
 def test_bucket_sales_by_store_date_on_an_empty_frame():

@@ -176,7 +176,7 @@ def _open_value(session, run_id: int) -> float:
     base = session.query(func.coalesce(func.sum(R1BillLine.amount), 0)).filter(
         R1BillLine.run_id == run_id, R1BillLine.matched.is_(False)).scalar() or 0
     manual = session.execute(text(
-        "select coalesce(sum(r.amount),0) from r1_bill_lines r where r.run_id=:r and r.matched=0 and r.bill_no in "
+        "select coalesce(sum(r.amount),0) from r1_bill_lines r where r.run_id=:r and r.matched = false and r.bill_no in "
         "(select bill_no from manual_matches where lifecycle='active' and status='matched_manual')"),
         {"r": run_id}).scalar() or 0
     return round(float(base) - float(manual), 2)

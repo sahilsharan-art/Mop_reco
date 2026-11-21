@@ -104,7 +104,7 @@ def prefetch(session, run_id: int, bill_nos=(), refs=(), zohos=()):
         marks, params = _in("t", chunk)
         rows = session.execute(text(
             "select matched_txn_ref, bill_no, store, business_date from r1_bill_lines "
-            f"where run_id=:r and matched=1 and matched_txn_ref in ({marks})"), {"r": run_id, **params})
+            f"where run_id=:r and matched = true and matched_txn_ref in ({marks})"), {"r": run_id, **params})
         pf.queries += 1
         for r in rows:
             pf.engine_owner.setdefault(r.matched_txn_ref, {"bill_no": r.bill_no, "store": r.store,
