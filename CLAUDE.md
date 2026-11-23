@@ -4481,4 +4481,16 @@ as_probe.json`).
   `logs\erp_probe_<timestamp>.txt`. Verified: it reports a superuser and the tables it could write as a WARNING, and a purely read-only role as such; a planted "secret" row value and the password appeared in no report.
 * **Not done yet:** the ERP database name is not known (the probe's `--list-databases` shows the choices); no ERP reader exists; nothing in the reconciliation reads the ERP. Next: run the probe, send its report to the
   ERP session / DBA, agree the mapping, then build one reader per source and run it side by side with the Excel file (brief sections 6 and 8).
+* **First ERP link results, 2026-11-23 (DBA session: database `data_extraction` on 10.0.0.82, `ckpost`, read-only, no SSL; MOP uses 2-4 of 30 shared connections).** The DBA's reply
+  (no password in it) names `gold_mop.pos_bill_lines` (bill_no, site_ref, store_code, store_name, business_date timestamp, bill_time, mop, mop_type, mop_short_code, amount = BASEAMT, bill_loaded_at),
+  `silver.dim_site` (store list) and `meta.v_freshness`. ALWAYS filter `business_date >= d AND business_date < d+1` (never a function on the column); a month takes 7-19 s. `scripts/erp_probe.py`
+  (privilege audit: not superuser, no write right, no CREATE right, 321 tables/views readable) and `scripts/erp_compare_pos.py` (ERP vs our warehouse, per date x payment mode, then per bill) were run on 98.
+  * **Matches to the rupee.** 20 Jul 2026 and every month April-October EXCEPT September: identical amount per payment mode and per month (difference 0.00). Cash, every digital mode and Bajaj agree.
+  * **The ERP has a few hundred MORE lines a month, with the same amounts**: it keeps credit-note lines separately (one bill = two lines of 199 and 199) where the Excel export carried one line of 398.
+    Bill totals agree; credit notes are non-settling, so R1 and the cash book are unaffected. It is NOT deleted duplicate bills (those would add amount; the difference is 0.00 every month).
+  * **18 September 2026 is EMPTY in the ERP** (0 rows; 17 and 19 September normal at ~51,600): our Excel copy holds 50,060 lines / Rs 3,20,74,620 for that day. A gap in the platform load - to be reported to the DBA.
+  * **November: the ERP is COMPLETE where our Excel file is cut off.** 1-14 Nov: ERP 1,212,309 lines / Rs 123.78 Cr against our truncated file 982,124 / Rs 100.47 Cr: +230,185 lines / Rs 23.32 Cr (6.37 / 6.37's cut-off).
+  * **Not yet available (owner decision pending): `TPEDCRESPONSE`, `TPBILLREFNUMBER`, `BASETENDER`, `BASEBALANCE`, `CREATEBY`, `MOPSTLMDESC`, and the PTC vouchers.** `TPEDCRESPONSE` is what R1 matches on, so the POS Excel
+    cannot be retired and R1 cannot read from the ERP until it is supplied; without PTC the cash side (R3a, Float, CMS) keeps its files. The shared login hides a column named `remarks`.
+  * **What can be done now, without those fields:** use the ERP as an INDEPENDENT COMPLETENESS CONTROL on the Excel POS file (per store-day lines and amount) - it would have caught the cut-off November file on day one.
 
