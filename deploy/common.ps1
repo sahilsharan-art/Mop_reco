@@ -44,6 +44,18 @@ function Unprotect-Secret([string]$File) {
     return [Text.Encoding]::UTF8.GetString($bytes)
 }
 
+# The account may be written ".\name" (local account). icacls and some Windows APIs do not understand that form, so resolve it to
+# its real name (COMPUTER\name) and SID. Throws a clear message if the account does not exist.
+function Resolve-ServiceAccount([string]$Account) {
+    $full = if ($Account.StartsWith('.\')) { $env:COMPUTERNAME + '\' + $Account.Substring(2) } else { $Account }
+    try {
+        $sid = (New-Object Security.Principal.NTAccount($full)).Translate([Security.Principal.SecurityIdentifier])
+    } catch {
+        throw "The account '$Account' (looked up as '$full') does not exist on this computer."
+    }
+    return [pscustomobject]@{ Name = $full; Sid = $sid.Value }
+}
+
 function Protect-SecretsFolder([string]$ServiceAccount = '') {
     $acl = Get-Acl $script:SecretsDir
     $acl.SetAccessRuleProtection($true, $false)
@@ -51,7 +63,7 @@ function Protect-SecretsFolder([string]$ServiceAccount = '') {
         $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
     }
     if ($ServiceAccount) {      # the account the app runs as may READ (never change) the secrets
-        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($ServiceAccount, 'Read', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((Resolve-ServiceAccount $ServiceAccount).Name, 'Read', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
     }
     Set-Acl $script:SecretsDir $acl
 }

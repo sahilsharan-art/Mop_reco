@@ -25,6 +25,7 @@ try {
         throw "That password was NOT accepted for $Account (one attempt used; nothing was registered). Do not retry blindly - confirm the password first, because repeated failures lock the account and stop CkDesk's services."
     }
     Write-Host "Password accepted for $Account."
+    $resolvedName = (Resolve-ServiceAccount $Account).Name
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
         -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f (Join-Path $PSScriptRoot 'start_app.ps1')) `
         -WorkingDirectory $script:Root
@@ -32,7 +33,7 @@ try {
     $settings = New-ScheduledTaskSettingsSet -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) `
         -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName $script:TaskName -Action $action -Trigger $trigger -Settings $settings `
-        -User $Account -Password $plain -RunLevel Limited -Force | Out-Null
+        -User $resolvedName -Password $plain -RunLevel Limited -Force | Out-Null
 } finally { $plain = $null; [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
 Write-Host "Registered scheduled task '$($script:TaskName)' (starts at boot as $Account, restarts up to 5 times)."
 Write-Host "Start now : Start-ScheduledTask -TaskName $($script:TaskName)"
