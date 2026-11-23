@@ -4519,4 +4519,8 @@ as_probe.json`).
     Found in OUR Paytm master: store codes in lower/mixed case (`MPr`, `pkr`) - a data defect to fix on the Masters page.
   * **`payment_heads`**: every MOP in our config is among the 27; `NEPALI RUPPES` is typed `CSH` (cash) with settlement applicable, which bears on the pending ruling for that MOP.
   * **`bank_postings` has no UTR**: usable for day-level bank totals only (October Axis credits Rs 185.66 Cr; Paytm payouts in our file Rs 70.85 Cr = 38%).
+* **Store master version #17, 2026-11-23: the 26 ACTIVE stores the ERP lists and our master lacked were added** (214 -> 240 rows, 213 -> 239 codes; nothing removed or renamed; previous version #15 is kept and restorable). Source: `gold_mop.store_master`, status ACTIVE, full names as the ERP
+  holds them; the set was checked first (exactly 26, all `CITYKART STORES PVT. LTD. (...)`, no duplicate code or name): AAC AKN BRN BWR CHB CPA CTA DBH DBY DLT GWG GWH GWL JVC KDR LMS MCN MIC MKG MSW NAH NEG PAR PDH SAH SBW (opened 21 Mar to 8 Nov 2026; NEG and MKG are the new codes of NLD and KGP,
+  6.30). Recorded as: Aditi Agarwal, applied by Claude Code on her instruction in chat. Written by a separate process, so the running dashboard keeps its date-keyed master cache until its next restart (restart is pending the POS shadow proof, which shares the same Python).
+  Still open: our Paytm MID master holds lower-case store codes (`MPr`, `pkr`), 6 terminals disagree with `gold_mop.tid_master`, and `KGP` / `FARUKHNAGAR` remain in the master (KGP is covered by the alias; FARUKHNAGAR is malformed).
 
