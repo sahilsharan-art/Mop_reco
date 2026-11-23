@@ -237,3 +237,11 @@ exception_pairing:
     paytm: [PAYTM EDC, PaytmDQR, PAYTM DQR MOREFUN]
     axis: [EDC OTHER AXIS]
     bajaj: [Bajajpay UPI, Bajajpay Card]
+
+# Sign-in (2026-11-23). Every value is optional; these are the defaults.
+auth:
+  min_password_length: 10
+  max_failed_attempts: 5
+  lockout_minutes: 15
+  idle_minutes: 120
+  absolute_hours: 12

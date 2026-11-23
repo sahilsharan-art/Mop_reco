@@ -19,6 +19,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+import auth_gate
 import selfcheck
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -60,7 +61,7 @@ def inject_theme():
     rerun — restyling must not cost render time (per the operator's own
     instruction: "if any change adds render time, drop it").
     """
-    st.markdown(f"<style>{_theme_css(THEME_CSS_PATH.stat().st_mtime)}</style>", unsafe_allow_html=True)
+    st.markdown(f"<style>{_theme_css(THEME_CSS_PATH.stat().st_mtime)}{_brand_logo_css()}</style>", unsafe_allow_html=True)
 
 
 def page(title: str, purpose: str = "", icon: str = None, nav: bool = True):
@@ -88,6 +89,11 @@ def page(title: str, purpose: str = "", icon: str = None, nav: bool = True):
     selfcheck.mark_process_start()
     if not selfcheck.render(st):
         st.stop()
+
+    # Nobody sees anything - no navigation, no filter, no query - until they have signed in (2026-11-23). Every
+    # page calls page() before it touches data, so this one call covers them all. It returns None only when the
+    # login is switched off for development (MOP_AUTH=off, refused in production).
+    auth_gate.require_login(db_session, login_brand_html())
 
     # The navigation bar is the FIRST thing on every page, above the logo and title (2026-10-26, on instruction;
     # it sat below the opening block from 2026-10-14). `nav` is kept so an old caller still works, but it is
@@ -125,17 +131,39 @@ def logo_missing() -> bool:
 
 
 def _title_html(title: str) -> str:
-    """Logo (32px high, aspect ratio kept) at the top left, the title to its right. With
-    no logo file the title stands alone and a warning is logged once - no broken-image icon."""
+    """The page title, text only. The logo is in the brand bar on every page (2026-11-23), so it is not repeated here."""
+    return f"<div class='mop-titlebar'><h1>{html.escape(title)}</h1></div>"
+
+
+def _brand_logo_css() -> str:
+    """The brand bar shows the supplied logo (app/assets/citykart-logo.png) on a white plate - the artwork has dark navy
+    lettering, so it needs a light ground and cannot sit on the dark bar directly. With no valid file the "CK" tile from
+    theme.css stays and a warning is logged once - never a broken image."""
     uri = _logo_data_uri(LOGO_PATH.stat().st_mtime if LOGO_PATH.is_file() else 0.0)
     if uri is None:
         if not st.session_state.get("_logo_warned"):
             st.session_state["_logo_warned"] = True
             logging.getLogger(__name__).warning(
-                "Logo file missing or not a PNG: %s - showing the title alone", LOGO_PATH)
-        return f"<div class='mop-titlebar'><h1>{html.escape(title)}</h1></div>"
-    return (f"<div class='mop-titlebar'><img class='mop-logo' src='{uri}' alt='Citykart' "
-            f"style='height:{LOGO_HEIGHT_PX}px;width:auto'><h1>{html.escape(title)}</h1></div>")
+                "Logo file missing or not a PNG: %s - the CK tile is shown instead", LOGO_PATH)
+        return ""
+    return (
+        'header[data-testid="stHeader"]::before {'
+        f' content: ""; background: #FFFFFF url("{uri}") center / contain no-repeat; background-origin: content-box;'
+        ' box-sizing: border-box; padding: 5px 8px; width: 138px; height: calc(var(--header-h) - 12px); border-radius: 10px;'
+        ' border: 1px solid rgba(255, 255, 255, .6); left: 56px; display: block; }'
+        'header[data-testid="stHeader"]::after { left: 208px; }'
+        '@media (max-width: 640px) {'
+        ' header[data-testid="stHeader"]::before { width: 112px; padding: 4px 6px; left: 52px; }'
+        ' header[data-testid="stHeader"]::after { content: ""; } }')
+
+
+def login_brand_html() -> str:
+    """The logo, large, for the top of the sign-in card (white card, so no plate needed)."""
+    uri = _logo_data_uri(LOGO_PATH.stat().st_mtime if LOGO_PATH.is_file() else 0.0)
+    if uri is None:
+        return _title_html(APP_NAME)
+    return (f"<div class='mop-login-brand'><img src='{uri}' alt='CityKart MOP Reco' "
+            "style='height:64px;width:auto'></div>")
 
 
 # The pages, left to right (2026-10-13). The bar is `st.page_link`s - the separate page
@@ -154,12 +182,16 @@ NAV_PAGES = [
 ]
 
 
+# Shown to administrators only (the Users page also refuses anyone else on its own).
+ADMIN_NAV_PAGE = ("pages/9_Users.py", "Users")
+
+
 # Page title -> nav item, so the bar can mark the open page (Streamlit 1.57 sets no
 # aria-current on a page_link; the active link differs only by a generated class name,
 # which must not be styled against).
 NAV_LABEL_BY_TITLE = {
     APP_NAME: "Summary", "MOP RECO_Store Wise": "Summary", "Exceptions": "Exceptions", "Cash position": "Cash position",
-    "Float": "Float", "Store Task": "Store Task", "Upload": "Upload", "Master data": "Masters",
+    "Float": "Float", "Store Task": "Store Task", "Upload": "Upload", "Master data": "Masters", "Users": "Users",
 }
 
 
@@ -168,13 +200,16 @@ def top_nav(active: str = None):
     status pill's slot, which `sidebar()` fills once it knows the run and the filters.
     The open page (`active`) is drawn as a plain label with the accent underline; every
     other page is a link."""
+    pages = NAV_PAGES + ([ADMIN_NAV_PAGE] if auth_gate.is_admin() else [])
     with st.container(key="topnav"):
-        cols = st.columns([len(label) + 3 for _, label in NAV_PAGES] + [14], gap="small")
-        for col, (path, label) in zip(cols, NAV_PAGES):
+        cols = st.columns([len(label) + 3 for _, label in pages] + [14], gap="small")
+        for col, (path, label) in zip(cols, pages):
             if label == active:
                 col.markdown(f"<div class='mop-nav-active'>{label}</div>", unsafe_allow_html=True)
             else:
                 col.page_link(path, label=label)
+        with cols[-1]:
+            auth_gate.account_menu()
 
 
 def build_stamp() -> str:
@@ -267,6 +302,9 @@ def require_operator(action: str = "record this", key: str = "op") -> str:
     current = st.session_state.get(K_OPERATOR)
     if current:
         return current
+    # With the login on, the name is the signed-in person's and is never typed (so it cannot be someone else's).
+    if auth_gate.current_user():
+        return auth_gate.current_user()["display_name"]
 
     st.caption(f"Your name is recorded against this. Who is {action}?")
     cols = st.columns([2, 1])
@@ -748,6 +786,10 @@ def _operator_footer():
     """
     name = st.session_state.get(K_OPERATOR)
     st.markdown("<div class='op-footer'></div>", unsafe_allow_html=True)
+    if auth_gate.current_user():
+        st.markdown(f"<div class='mop-sidebar-stamp'>Signed in as: <b>{html.escape(name or '')}</b></div>",
+                    unsafe_allow_html=True)         # the account menu in the top bar has Sign out; the name is not changeable
+        return
     with st.container():
         if name:
             left, right = st.columns([2, 1])

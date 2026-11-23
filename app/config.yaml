@@ -249,3 +249,11 @@ exception_pairing:
     paytm: [PAYTM EDC, PaytmDQR, PAYTM DQR MOREFUN]
     axis: [EDC OTHER AXIS]
     bajaj: [Bajajpay UPI, Bajajpay Card]
+
+# Sign-in (2026-11-23). Every value here is optional; these are the defaults (mop_reco/auth.py).
+auth:
+  min_password_length: 10
+  max_failed_attempts: 5      # wrong passwords in a row before the account locks
+  lockout_minutes: 15         # how long it stays locked (an administrator can unlock it at once)
+  idle_minutes: 120           # signed out after this long without use
+  absolute_hours: 12          # signed out after this long in all, however busy

@@ -886,6 +886,50 @@ class AppSetting(Base):
     updated_by = Column(String, nullable=True)
 
 
+class AppUser(Base):
+    """Someone who may sign in (2026-11-23). No password is stored - only a salted scrypt hash (mop_reco/auth.py)."""
+    __tablename__ = "app_users"
+
+    id = Column(Integer, primary_key=True)
+    username = Column(String, nullable=False, unique=True)      # lower-case
+    display_name = Column(String, nullable=False)               # what is recorded against remarks, matches, uploads, runs
+    role = Column(String, nullable=False)                       # admin | user
+    password_hash = Column(String, nullable=False)
+    must_change_password = Column(Boolean, nullable=False, default=True)
+    active = Column(Boolean, nullable=False, default=True)
+    failed_attempts = Column(Integer, nullable=False, default=0)
+    locked_until = Column(DateTime, nullable=True)
+    last_login_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False)
+    created_by = Column(String, nullable=True)
+
+
+class AppSession(Base):
+    """One signed-in browser. Only the SHA-256 of the random token is stored."""
+    __tablename__ = "app_sessions"
+
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String, nullable=False, unique=True)
+    user_id = Column(Integer, ForeignKey("app_users.id"), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False)
+    last_seen_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    revoked = Column(Boolean, nullable=False, default=False)
+    ip = Column(String, nullable=True)
+
+
+class AuthEvent(Base):
+    """Append-only: every sign-in, failure, lock-out, sign-out, password and user change. Never updated or deleted."""
+    __tablename__ = "auth_events"
+
+    id = Column(Integer, primary_key=True)
+    at = Column(DateTime, nullable=False, index=True)
+    username = Column(String, nullable=True)
+    event = Column(String, nullable=False)
+    detail = Column(String, nullable=True)
+    ip = Column(String, nullable=True)
+
+
 class MasterRow(Base):
     __tablename__ = "master_rows"
 

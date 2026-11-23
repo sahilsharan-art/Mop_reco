@@ -3634,7 +3634,7 @@ which stays the truth until September is reconciled, then is extended to APR_SEP
   logo + title + period, the Live pill, the matrix, the bar. `theme.css` is cached per process: restart to see CSS edits.
 * **Logo:** `app/assets/citykart-logo.png`, 32px high, aspect kept, left of the title on the same line (data: URI, read
   once per file version). If the file is missing or is not a PNG the title stands alone and a warning is logged - never a
-  broken image. THE FILE IS NOT IN THE REPOSITORY YET; it has to be supplied.
+  broken image. SUPERSEDED 2026-11-23: the logo was supplied and now lives in the brand bar on every page (see 6.40); it is no longer beside the page title.
 * **Store Task** (`pages/7_Store_Task.py`, `mop_reco/store_tasks.py`, tables `store_tasks` + append-only
   `store_task_events`). Tasks are generated from data, close themselves when the data clears them, and a store's reply
   never closes one. Types and conditions:
@@ -4432,3 +4432,32 @@ as_probe.json`).
 * **Not built yet, stated in the runbook:** login / access control; the NAS write-once evidence archive for uploaded files (the NAS is connected and tested, uploads still land in the application's own folders); a backup job (database backup is a decision for the DBA or an app-written `pg_dump` to the NAS); the data-lake daily refresh.
 * **Deployment log, 2026-11-21:** steps 5-7 done on production. 10.0.1.98 and 10.0.0.205 checked read-only (98: Windows Server 2022, 27 GB RAM, 385 GB free on D:, port 8501 free, six other apps behind Caddy; 205: PostgreSQL 18.6, default memory settings, 52 of 100 connections used by other apps, `MOPfinanceapp` empty, no WAL archiving, no SSL). Package `787ed87` unpacked and verified on 98, packages installed in the app's own venv, DB and NAS passwords stored machine-encrypted via stdin, the six masters imported into `MOPfinanceapp` and verified by read-back (fingerprint `f0c9bc2d...`); `masters_source = database`. The application is NOT started on 98 yet. Remaining: NAS connection test, the first production run and comparison, the service, the firewall port, removal of the temporary SSH key.
 * **First production reconciliation, 2026-11-23 (run 2 on `MOPfinanceapp`, 01/04-14/11, from the original files copied to 98):** source copy verified file by file (68 files: size, SHA-256 and modified time identical to the originals); run time about 36 minutes (POS read cold 9m22s, matching, saving results day by day; faster than the 40-75 min estimate). Compared with the development PC's PostgreSQL run by `scripts/run_fingerprint.py` + `scripts/compare_fingerprints.py` (an MD5 per business date over every row of every result table, run on each side): **ALL IDENTICAL** - 5,584,483 bill lines, `store_day_agg` 45,580 rows, `mop_day_agg` 174,879, `digital_mode_agg` 87,045, `txn_day_agg` 82,080, the R1 summary, the open exceptions and 31,468 CMS slips, across all 228 dates. The November POS completeness warning (209,757 of 1,187,732 bill numbers missing) reproduced on production. Lessons: a native program's stderr must not terminate a redirected PowerShell launcher (`run_in_app_env.ps1` now sets `Continue`); `ssh` inside a `while read` loop swallows stdin (use `ssh -n`); a copy of 2+ GB over this route needs per-file retry because the PC sleeping drops the connection.
+
+### 6.40 Sign-in, users, and the CityKart MOP Reco logo (2026-11-23)
+
+* **Nothing is drawn or read until a person has signed in.** `dashboard_common.page()` calls `auth_gate.require_login()` right after the
+  stale-module self-check and BEFORE the navigation bar, the filters or any query; every page calls `page()` first, and
+  `tests/test_login_gate.py` fails if a page reads data before it or a new page lacks it. The Users page also refuses non-administrators itself.
+* **Rules (`mop_reco/auth.py`, pure engine; tables `app_users`, `app_sessions`, `auth_events`).** Passwords are stored only as a salted scrypt hash
+  (standard library, no new dependency). A wrong username and a wrong password give the SAME message. 5 wrong passwords in a row lock the account
+  for 15 minutes (an administrator unlocks at once); success resets the count. A browser holds a random token in the cookie `mop_session`
+  (SameSite=Strict, set by a one-line script because Streamlit cannot set cookies; so not HttpOnly); only its SHA-256 is stored. A session ends after
+  120 idle minutes or 12 hours in all, on sign-out, on deactivation, on a password change (all OTHER sessions) and on an administrator's reset. The last
+  active administrator can never be deactivated or demoted. Every sign-in, failure, lock-out, sign-out, password and user change is appended to
+  `auth_events` (never updated or deleted, rule 4). Limits are in `config.yaml` `auth:`. A password needs 10+ characters, a letter and a digit, and
+  must not contain the username.
+* **Two roles only: `admin` (manages users, plus everything) and `user` (everything else).** Finer permissions (for example read-only viewers, or Upload / Masters
+  / Run for administrators only) are NOT built - they need a decision. Today any signed-in person can upload, run, edit masters and match.
+* **The signed-in person's full name IS the operator** stamped on every remark, match, refund, upload and run; the "who is doing this?" prompt and the
+  "Change" name link no longer appear (`require_operator` returns the signed-in name). Full names must be unique (they are the audit identity).
+* **First administrator / recovery:** `scripts/manage_users.py` (`create`, `reset`, `unlock`, `deactivate`, `activate`, `list`), password typed hidden at the
+  prompt, never on the command line. Users are then managed on the **Users** page (admins only: add, temporary password shown once, unlock, deactivate,
+  change role, reset, sign-in trail).
+* **Development switch:** `MOP_AUTH=off` turns the login off for development and tests ONLY; it is ignored when `MOP_REQUIRE_POSTGRES=1`, so a stray variable cannot open production.
+* **Transport limit, stated plainly:** the application is served over plain HTTP on the office network (direct port, no TLS), so a password crosses the LAN
+  unencrypted. HTTPS (the existing Caddy proxy, or a certificate on Streamlit itself) closes that and is the recommended next step.
+* **Logo:** `app/assets/citykart-logo.png` (the supplied "CityKart MOP Reco" artwork, transparent PNG, trimmed, 720 px wide, 96-colour palette, 17 KB because it is
+  inlined into every page's CSS). Its lettering is dark navy, so it sits on a WHITE plate in the brand bar on every page (replacing the "CK" tile) and large on
+  the sign-in card; it is no longer repeated beside the page title. With no valid PNG the "CK" tile stays and a warning is logged.
+* Verified in a browser on a throw-away database: wrong password, correct password, refresh keeps the session, sign-out clears it (also on a deep link), forced
+  password change for a temporary password, non-administrator sees no Users tab and is refused on the URL, account menu, logo on every page. 
