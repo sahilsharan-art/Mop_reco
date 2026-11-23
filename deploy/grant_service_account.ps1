@@ -8,8 +8,7 @@ param([string]$Account = '', [string]$Root = '')
 if (-not $Account) { $Account = (Get-Settings)['RUN_AS_ACCOUNT'] }
 if (-not $Root) { $Root = $script:Root }
 if (-not $Account) { throw 'no account given and RUN_AS_ACCOUNT is not set in deploy\production.env' }
-# icacls does not understand the '.
-ame' form. Resolve the account to its SID once and use that everywhere.
+# icacls does not understand the dot-backslash-name form. Resolve the account to its SID once and use that everywhere.
 $Resolved = Resolve-ServiceAccount $Account
 
 function Grant([string]$Path, [string]$Rights) {
@@ -37,7 +36,7 @@ if (Test-Path $secrets) {
     foreach ($id in @('BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM')) {
         $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($id, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
     }
-    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($Resolved.Sid, 'Read', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
+    $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier($Resolved.Sid)), 'Read', 'ContainerInherit,ObjectInherit', 'None', 'Allow')))
     Set-Acl $secrets $acl
     "  Read     $secrets"
 } else { "  (secrets folder not created yet - run set_secrets.ps1 or store_secrets_from_stdin.ps1, then run this again)" }
