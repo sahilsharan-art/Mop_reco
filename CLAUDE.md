@@ -4493,4 +4493,17 @@ as_probe.json`).
   * **Not yet available (owner decision pending): `TPEDCRESPONSE`, `TPBILLREFNUMBER`, `BASETENDER`, `BASEBALANCE`, `CREATEBY`, `MOPSTLMDESC`, and the PTC vouchers.** `TPEDCRESPONSE` is what R1 matches on, so the POS Excel
     cannot be retired and R1 cannot read from the ERP until it is supplied; without PTC the cash side (R3a, Float, CMS) keeps its files. The shared login hides a column named `remarks`.
   * **What can be done now, without those fields:** use the ERP as an INDEPENDENT COMPLETENESS CONTROL on the Excel POS file (per store-day lines and amount) - it would have caught the cut-off November file on day one.
+* **The ERP readers (built 2026-11-23, NOT yet used by any run; sources stay on `file`).** `mop_reco/erp_source.py` reads `gold_mop.pos_bill_lines` and `gold_mop.ptc_vouchers` through the read-only
+  connection (one day per query for POS, half-open date range, no function on the date column, ordered bill_no, mop, amount, bill_time so `line_seq` is deterministic) and only RENAMES the columns to the
+  headers the Excel files carry. The frame then goes through the SAME normalisers the file readers use: `ingest._normalise_pos_frame` (references from the terminal reply, `in_sale_universe`, `line_seq`, MOP
+  classes - an unknown MOP is tagged `other`) and `ingest._normalise_ptc_frame` (+ the deposit flags). Those two functions were MOVED out of `_ingest_pos_bill_wise_one_file` / `_read_ptc_file` unchanged so both
+  sources run identical code; the 1,231 existing tests were re-run to prove the move changed nothing. The view is refused with a named reason if `edc_response` (or any required column) is missing - there is no
+  substitute and no guess. The terminal reply is parsed into references and DROPPED; it is never logged, printed or stored.
+  * **`mop_reco/erp_shadow.py` + `scripts/erp_shadow.py` are the side-by-side proof.** Per business date, POS is compared at bill x payment-mode level against the warehouse partition built from the files: bills only on
+    one side, amounts, and above all the Paytm / Axis / Bajaj REFERENCES parsed from each side (what R1 matches on); extra split credit-note lines with the same amount are reported but are not a failure; bill time and
+    till operator are informational. PTC is compared by store + voucher number (amount, mode, head, ledger, deposit total). Exit code 0 only when every date agrees, 1 on any difference, 2 when the view is not ready.
+    Verified end to end against a stand-in PostgreSQL with views shaped as the DBA described: agrees on matching data (including the credit-note split); fails, naming bill and gateway, when one Paytm reference is
+    changed; fails, naming the voucher and the Rs 937 difference, when one PTC amount is changed. 56 new unit tests (`test_erp.py` 34, `test_erp_source.py` 12, `test_erp_shadow.py` 10).
+  * **Switching a source is a separate, later decision**: after the DBA's night load, run `erp_shadow.py` for April to the latest date; when POS and PTC both agree (every difference explained, the 18 September gap filled), run
+    side by side for about two weeks, then add a per-source `file | erp` setting. Excel Upload stays as the fallback for a further month.
 

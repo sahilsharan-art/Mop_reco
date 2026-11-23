@@ -1271,54 +1271,15 @@ def _read_pos_raw(file_path: Path):
     return pd.DataFrame(data_rows, columns=header), result.sheet_row_counts
 
 
-def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
-                                   use_warehouse: bool = True) -> tuple:
-    """Reads (or warehouse-caches) exactly ONE POS bill-wise file, fully
-    enriched. Split out from `ingest_pos_bill_wise` (2026-09-24) so the
-    caller can discover and read every file a source now holds — a folder
-    can hold one file per month rather than always one dominant dump — and
-    resolve any genuinely overlapping dates across them afterwards, while
-    each individual file still gets its own warehouse-Parquet cache hit/miss
-    exactly as before (the manifest is keyed per file, not per source)."""
-    manifest = warehouse_manifest("pos_bill_wise", file_path) if use_warehouse else None
-    if manifest is not None:
-        df = read_warehouse(manifest)
-        logger.info(
-            f"ingest_pos_bill_wise: read {len(df)} rows from warehouse Parquet "
-            f"({len(manifest['parquet'])} part(s)) for '{file_path.name}' — raw file untouched"
-        )
-        cached_missing = [c for c in ("bill_time", "created_by") if c not in df.columns
-                         or df[c].isna().all()]
-        return df, {
-            "sheet_row_counts": (manifest.get("extra") or {}).get("sheet_row_counts") or {},
-            "rows_without_date": (manifest.get("extra") or {}).get("rows_without_date", 0),
-            "from_warehouse": True,
-            "missing_optional_columns": cached_missing,
-        }
+def _normalise_pos_frame(config: Config, df: pd.DataFrame, label: str) -> tuple:
+    """The ONE place a raw POS bill-line frame (Excel headers: BILLNO, PSITE_POSBILL_CODE, STORE_NAME, BILLDATE, MOPDESC, BASEAMT,
+    TPEDCRESPONSE, optionally CREATEBY and BILL_TIME) becomes the normalised frame every later stage reads (bill_no, site_ref, store,
+    mop, amount, business_date, bill_time, created_by, in_sale_universe, paytm_ref / axis_ref / bajaj_ref, tpedc_parse_failed,
+    line_seq, mop_class).
 
-    df, sheet_row_counts = _read_pos_raw(file_path)
-
-    # The schema guard for bill_time/created_by (2026-09-29) — loud, not a
-    # hard raise: these two are kept OUT of POS_BILL_WISE_REQUIRED_COLUMNS
-    # on purpose (that list also anchors header-row detection, and this
-    # source folder still holds older, permanently-superseded duplicate
-    # files — MOP SALE DATA.xlsb, the retired daily .xlsx sample — that
-    # never carried these columns and never will; raising here would
-    # crash discovery on a file that is about to lose in overlap
-    # resolution anyway). A file that SHOULD have them (every real monthly
-    # export, April-August, confirmed) losing them is still a real
-    # regression worth knowing about the day it happens, so it is a named,
-    # visible WARNING here, threaded into the load report below, never
-    # silently absorbed into a blank column.
-    missing_optional = [c for c in POS_BILL_WISE_OPTIONAL_COLUMNS if c not in df.columns]
-    if missing_optional:
-        logger.warning(
-            f"ingest_pos_bill_wise: '{file_path.name}' has no {missing_optional} "
-            "column(s) — bill_time/created_by will be blank for every row of "
-            "this file. Expected on the known-retired duplicate exports; a "
-            "real monthly file losing these is a regression."
-        )
-
+    It is shared by the Excel/xlsb reader and the ERP reader (mop_reco/erp_source.py), so a frame from either source goes through
+    IDENTICAL code - which is what makes the side-by-side comparison of the two sources meaningful. `label` names the source in logs.
+    Returns (frame, rows_without_date)."""
     keep_cols = POS_BILL_WISE_REQUIRED_COLUMNS + [
         c for c in POS_BILL_WISE_OPTIONAL_COLUMNS if c in df.columns] + [
         c for c in ("paytm_ref", "axis_ref", "bajaj_ref", "tpedc_parse_failed") if c in df.columns]
@@ -1372,7 +1333,7 @@ def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
     }
     if len(excluded):
         logger.warning(
-            f"ingest_pos_bill_wise: {len(excluded)} row(s) in '{file_path.name}' have no "
+            f"ingest_pos_bill_wise: {len(excluded)} row(s) in '{label}' have no "
             f"BILLNO — excluded from the sale universe (CLAUDE.md 6.13), kept and reported. "
             f"Per MOP: {excluded_by_mop}"
         )
@@ -1394,7 +1355,7 @@ def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
     if parse_failed_count:
         failed_bills = df.loc[df["tpedc_parse_failed"], "bill_no"].tolist()
         logger.warning(
-            f"ingest_pos_bill_wise: {parse_failed_count} row(s) in '{file_path.name}' had a "
+            f"ingest_pos_bill_wise: {parse_failed_count} row(s) in '{label}' had a "
             f"TPEDCRESPONSE value that failed to parse as JSON — bill_no(s): {failed_bills[:20]}"
             + (" ..." if parse_failed_count > 20 else "")
         )
@@ -1421,10 +1382,62 @@ def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
     rows_without_date = int(df["business_date"].isna().sum())
     if rows_without_date:
         logger.warning(
-            f"ingest_pos_bill_wise: {rows_without_date} row(s) in '{file_path.name}' have no "
+            f"ingest_pos_bill_wise: {rows_without_date} row(s) in '{label}' have no "
             "business_date — kept in the returned DataFrame, excluded from the per-date "
             "Parquet written after cross-file merge"
         )
+    return df, rows_without_date
+
+
+def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
+                                   use_warehouse: bool = True) -> tuple:
+    """Reads (or warehouse-caches) exactly ONE POS bill-wise file, fully
+    enriched. Split out from `ingest_pos_bill_wise` (2026-09-24) so the
+    caller can discover and read every file a source now holds — a folder
+    can hold one file per month rather than always one dominant dump — and
+    resolve any genuinely overlapping dates across them afterwards, while
+    each individual file still gets its own warehouse-Parquet cache hit/miss
+    exactly as before (the manifest is keyed per file, not per source)."""
+    manifest = warehouse_manifest("pos_bill_wise", file_path) if use_warehouse else None
+    if manifest is not None:
+        df = read_warehouse(manifest)
+        logger.info(
+            f"ingest_pos_bill_wise: read {len(df)} rows from warehouse Parquet "
+            f"({len(manifest['parquet'])} part(s)) for '{file_path.name}' — raw file untouched"
+        )
+        cached_missing = [c for c in ("bill_time", "created_by") if c not in df.columns
+                         or df[c].isna().all()]
+        return df, {
+            "sheet_row_counts": (manifest.get("extra") or {}).get("sheet_row_counts") or {},
+            "rows_without_date": (manifest.get("extra") or {}).get("rows_without_date", 0),
+            "from_warehouse": True,
+            "missing_optional_columns": cached_missing,
+        }
+
+    df, sheet_row_counts = _read_pos_raw(file_path)
+
+    # The schema guard for bill_time/created_by (2026-09-29) — loud, not a
+    # hard raise: these two are kept OUT of POS_BILL_WISE_REQUIRED_COLUMNS
+    # on purpose (that list also anchors header-row detection, and this
+    # source folder still holds older, permanently-superseded duplicate
+    # files — MOP SALE DATA.xlsb, the retired daily .xlsx sample — that
+    # never carried these columns and never will; raising here would
+    # crash discovery on a file that is about to lose in overlap
+    # resolution anyway). A file that SHOULD have them (every real monthly
+    # export, April-August, confirmed) losing them is still a real
+    # regression worth knowing about the day it happens, so it is a named,
+    # visible WARNING here, threaded into the load report below, never
+    # silently absorbed into a blank column.
+    missing_optional = [c for c in POS_BILL_WISE_OPTIONAL_COLUMNS if c not in df.columns]
+    if missing_optional:
+        logger.warning(
+            f"ingest_pos_bill_wise: '{file_path.name}' has no {missing_optional} "
+            "column(s) — bill_time/created_by will be blank for every row of "
+            "this file. Expected on the known-retired duplicate exports; a "
+            "real monthly file losing these is a regression."
+        )
+
+    df, rows_without_date = _normalise_pos_frame(config, df, file_path.name)
 
     cache_paths = _write_parquet_single_file_cache(df, "pos_bill_wise", file_path)
     _write_manifest("pos_bill_wise", file_path, cache_paths, extra={
@@ -1863,17 +1876,10 @@ def _ptc_columns(header: list, file_label: str) -> dict:
     return resolved
 
 
-def _read_ptc_file(file_path: Path, encoding: str) -> pd.DataFrame:
-    """ONE PTC file, parsed and typed (the per-file part of `ingest_ptc`)."""
-    result = io_.read_any(file_path, encoding=encoding)
-
-    # Header is on row 3 of the supplied CSV (row 1 a Cube Name title, row 2
-    # blank) — found, not assumed, so a file without the preamble still works.
-    header_idx = _ptc_header_row(result.grid, file_path.name)
-    header = [str(c).strip() for c in result.grid[header_idx]]
-    cols = _ptc_columns(header, file_path.name)
-
-    df = pd.DataFrame(result.grid[header_idx + 1:], columns=header)
+def _normalise_ptc_frame(df: pd.DataFrame, cols: dict) -> pd.DataFrame:
+    """The ONE place a raw PTC voucher frame becomes the normalised one (store, date, voucher_no, mode, head, ledger, amount,
+    remarks, business_date). `cols` maps each logical field to the frame's actual column name (`_ptc_columns`). Shared by the file
+    reader and the ERP reader (mop_reco/erp_source.py), so both go through identical code."""
     df = df.rename(columns={actual: logical for logical, actual in cols.items()})
     df = df[list(PTC_ALIASES)]
 
@@ -1890,6 +1896,21 @@ def _read_ptc_file(file_path: Path, encoding: str) -> pd.DataFrame:
     # Drop wholly blank trailing rows the CSV pads with, without touching a row
     # that merely has a blank optional field.
     df = df[df["store"].ne("") & df["store"].ne("nan")].reset_index(drop=True)
+    return df
+
+
+def _read_ptc_file(file_path: Path, encoding: str) -> pd.DataFrame:
+    """ONE PTC file, parsed and typed (the per-file part of `ingest_ptc`)."""
+    result = io_.read_any(file_path, encoding=encoding)
+
+    # Header is on row 3 of the supplied CSV (row 1 a Cube Name title, row 2
+    # blank) — found, not assumed, so a file without the preamble still works.
+    header_idx = _ptc_header_row(result.grid, file_path.name)
+    header = [str(c).strip() for c in result.grid[header_idx]]
+    cols = _ptc_columns(header, file_path.name)
+
+    df = pd.DataFrame(result.grid[header_idx + 1:], columns=header)
+    df = _normalise_ptc_frame(df, cols)
     df.attrs["layout_columns"] = dict(cols)
     return df
 
