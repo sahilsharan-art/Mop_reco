@@ -4461,3 +4461,24 @@ as_probe.json`).
   the sign-in card; it is no longer repeated beside the page title. With no valid PNG the "CK" tile stays and a warning is logged.
 * Verified in a browser on a throw-away database: wrong password, correct password, refresh keeps the session, sign-out clears it (also on a deep link), forced
   password change for a temporary password, non-administrator sees no Users tab and is refused on the URL, account menu, logo on every page. 
+
+### 6.41 The ERP database link: a read-only login, three layers of read-only, and a discovery probe (2026-11-23)
+
+* **Decision (operator, 2026-11-23): MOP uses the existing PostgreSQL login `ckpost` on 10.0.0.82:5432** - the login the Citykart Asset Management application already uses for
+  data extraction, which the operator states is read-only and may be used by any application. Server 98 already reaches 10.0.0.82:5432 (checked) and the app already has the driver (psycopg 3).
+  Trade-offs accepted knowingly: one password shared by two applications (a rotation must reach both), one shared connection limit, and the DBA cannot tell the two apart except by `application_name`
+  (MOP sets `mop_reco`). The brief's preferred dedicated `mop_reader` plus stable views (docs/ERP_INTEGRATION_BRIEF.md section 5) remains the better end state and is not ruled out.
+* **MOP never relies on the login being read-only.** `mop_reco/erp.py` (`connect()`): (1) the session opens with `default_transaction_read_only=on` and `conn.read_only = True`; (2) it then asks the server
+  (`SHOW transaction_read_only`) and refuses and closes the connection unless the answer is `on`; (3) `run_select()` refuses anything but ONE plain SELECT / WITH / SHOW / EXPLAIN (no ANALYZE, no
+  data-modifying WITH, no SELECT INTO), so a refused statement never reaches the server. It also sets a 15-minute statement timeout, a 2-minute idle-in-transaction limit and a 5-second lock timeout. A pooler
+  that refuses startup options falls back to the same guards by SQL. Tested against fakes (`tests/test_erp.py`, 34 tests) and for real against a local PostgreSQL 18 with a read-only role.
+* **The password is never in a file, a command line, a log or a chat.** `deploy\set_erp_secret.ps1` (run once, interactively, on 98) stores it machine-encrypted in `secrets\erp.sec` exactly like `db.sec`;
+  `deploy\common.ps1` `Set-AppEnvironment` turns it into MOP_ERP_PASSWORD only inside the app's own process. Host / port / user / database name are non-secret and live in `deploy\production.env`
+  (`ERP_DB_HOST`, `ERP_DB_PORT`, `ERP_DB_USER`, `ERP_DB_NAME`). `erp.describe()` never contains the password. CKAM's own secret storage is never read or copied.
+* **`scripts/erp_probe.py` is the discovery tool** (Phase 0 of the brief). Read-only, catalogue-only: connection facts, a PRIVILEGE AUDIT of the login (superuser, any write right on any table, any CREATE right -
+  proven from the catalogue, never by trying to write), the databases and schemas it can see, candidate tables whose name or columns match bill / mop / tender / tpedc / ptc / voucher ..., and for the best candidates
+  their columns, indexes and partitioning. It never selects rows from a business table (no card numbers or customer names can appear), never runs count(*) on a big table, and saves its report to
+  `logs\erp_probe_<timestamp>.txt`. Verified: it reports a superuser and the tables it could write as a WARNING, and a purely read-only role as such; a planted "secret" row value and the password appeared in no report.
+* **Not done yet:** the ERP database name is not known (the probe's `--list-databases` shows the choices); no ERP reader exists; nothing in the reconciliation reads the ERP. Next: run the probe, send its report to the
+  ERP session / DBA, agree the mapping, then build one reader per source and run it side by side with the Excel file (brief sections 6 and 8).
+

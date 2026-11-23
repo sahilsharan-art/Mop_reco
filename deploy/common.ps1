@@ -73,6 +73,16 @@ function Set-AppEnvironment($s) {
     $env:MOP_DATABASE_URL = "postgresql+psycopg://$($s['DB_USER'])@$($s['DB_HOST']):$($s['DB_PORT'])/$($s['DB_NAME'])"
     $env:MOPFINANCE_DB_PASSWORD = Unprotect-Secret (Join-Path $script:SecretsDir 'db.sec')
     $env:MOP_REQUIRE_POSTGRES = '1'                              # never fall back to a local SQLite file
+    # The ERP database (read-only, a login shared with other applications). Only when ERP_DB_HOST is set; the password is
+    # the machine-encrypted secrets\erp.sec if it has been stored. The app itself forces every ERP session read-only.
+    if ($s['ERP_DB_HOST']) {
+        $env:MOP_ERP_HOST = $s['ERP_DB_HOST']
+        $env:MOP_ERP_PORT = $(if ($s['ERP_DB_PORT']) { $s['ERP_DB_PORT'] } else { '5432' })
+        $env:MOP_ERP_USER = $s['ERP_DB_USER']
+        $env:MOP_ERP_DBNAME = $s['ERP_DB_NAME']
+        $erpSecret = Join-Path $script:SecretsDir 'erp.sec'
+        if (Test-Path $erpSecret) { $env:MOP_ERP_PASSWORD = Unprotect-Secret $erpSecret }
+    }
     $env:PYTHONUNBUFFERED = '1'
 }
 
