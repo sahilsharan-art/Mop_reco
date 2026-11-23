@@ -14,6 +14,7 @@ Dates are arguments (CLAUDE.md rule 8). MOP_ROOT lets a copy run from elsewhere.
 import argparse
 import os
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -63,6 +64,7 @@ except erp_source.ErpSchemaError as exc:
 print(f"Shadow run {args.source.upper()} {d_from} to {d_to}: ERP ({erp.describe()}) against the warehouse built from the files\n")
 
 if args.source == "pos":
+    started = time.time()
     totals = {k: 0 for k in ("days", "days_agree", "lines_erp", "lines_file", "only_in_erp", "only_in_file", "amount_differs", "ref_differs",
                              "lines_differ", "time_differs", "operator_differs", "parse_failed_erp", "parse_failed_file", "both")}
     amount_erp = amount_file = 0.0
@@ -76,6 +78,8 @@ if args.source == "pos":
             missing_days.append(pass_day)
         r = erp_shadow.compare_pos(erp_df, file_df, args.max_examples)
         totals["days"] += 1
+        if totals["days"] % 10 == 0 or totals["days"] == (d_to - d_from).days + 1:
+            print(f"  ... {totals['days']} of {(d_to - d_from).days + 1} dates compared, {time.time() - started:,.0f} s elapsed", flush=True)
         totals["days_agree"] += int(erp_shadow.pos_agrees(r))
         for k in ("only_in_erp", "only_in_file", "amount_differs", "ref_differs", "lines_differ", "time_differs", "operator_differs",
                   "parse_failed_erp", "parse_failed_file", "both"):

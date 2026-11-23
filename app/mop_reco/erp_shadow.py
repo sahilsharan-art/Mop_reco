@@ -17,23 +17,33 @@ import pandas as pd
 GATEWAY_REFS = ("paytm_ref", "axis_ref", "bajaj_ref")
 
 
-def _refset(series: pd.Series) -> frozenset:
-    return frozenset(str(v) for v in series.dropna())
+def _joined_refs(df: pd.DataFrame, col: str) -> pd.Series:
+    """Per (bill_no, mop): the distinct non-blank references of one gateway, sorted and joined with '|'. Built with set-based pandas
+    operations on the (minority of) rows that carry a reference - not a Python function per group, which took ~100 s per day of POS."""
+    empty = pd.Series(dtype="string", index=pd.MultiIndex.from_arrays([[], []], names=["bill_no", "mop"]))
+    if col not in df.columns:
+        return empty
+    sub = df.loc[df[col].notna(), ["bill_no", "mop", col]].astype({col: "string"}).drop_duplicates()
+    if sub.empty:
+        return empty
+    return sub.sort_values(["bill_no", "mop", col]).groupby(["bill_no", "mop"])[col].agg("|".join)
 
 
 def _aggregate_pos(df: pd.DataFrame) -> pd.DataFrame:
+    cols = ["bill_no", "mop", "n", "v", "bill_time", "created_by", "parse_failed"] + list(GATEWAY_REFS)
     if df is None or df.empty:
-        cols = ["bill_no", "mop", "n", "v", "bill_time", "created_by", "parse_failed"] + list(GATEWAY_REFS)
         return pd.DataFrame(columns=cols)
-    g = df.groupby(["bill_no", "mop"], sort=False)
-    out = g.agg(n=("amount", "size"), v=("amount", "sum")).reset_index()
+    d = df.copy()
+    for c in ("bill_time", "created_by"):
+        d[c] = d[c].astype("string") if c in d.columns else pd.Series(pd.NA, index=d.index, dtype="string")
+    d["tpedc_parse_failed"] = d["tpedc_parse_failed"].astype(bool) if "tpedc_parse_failed" in d.columns else False
+    out = d.groupby(["bill_no", "mop"], sort=False).agg(
+        n=("amount", "size"), v=("amount", "sum"), bill_time=("bill_time", "min"), created_by=("created_by", "first"),
+        parse_failed=("tpedc_parse_failed", "sum")).reset_index()
     out["v"] = out["v"].astype(float).round(2)
-    out["bill_time"] = g["bill_time"].agg(lambda s: min((x for x in s if x), default=None)).values if "bill_time" in df.columns else None
-    out["created_by"] = g["created_by"].agg(lambda s: next((x for x in s if isinstance(x, str) and x), None)).values \
-        if "created_by" in df.columns else None
-    out["parse_failed"] = g["tpedc_parse_failed"].agg(lambda s: int(s.astype(bool).sum())).values if "tpedc_parse_failed" in df.columns else 0
     for ref in GATEWAY_REFS:
-        out[ref] = g[ref].agg(_refset).values if ref in df.columns else [frozenset()] * len(out)
+        out = out.merge(_joined_refs(d, ref).rename(ref).reset_index(), on=["bill_no", "mop"], how="left")
+        out[ref] = out[ref].fillna("")
     return out
 
 
@@ -49,7 +59,7 @@ def compare_pos(erp_df: pd.DataFrame, file_df: pd.DataFrame, max_examples: int =
     both["amount_differs"] = (both["v_erp"] - both["v_file"]).abs() > 0.004
     ref_cols = {}
     for ref in GATEWAY_REFS:
-        ref_cols[ref] = both[f"{ref}_erp"] != both[f"{ref}_file"]
+        ref_cols[ref] = both[f"{ref}_erp"].fillna("") != both[f"{ref}_file"].fillna("")
     both["ref_differs"] = ref_cols["paytm_ref"] | ref_cols["axis_ref"] | ref_cols["bajaj_ref"]
     both["time_differs"] = both["bill_time_erp"].fillna("") != both["bill_time_file"].fillna("")
     both["operator_differs"] = both["created_by_erp"].fillna("") != both["created_by_file"].fillna("")
@@ -57,8 +67,8 @@ def compare_pos(erp_df: pd.DataFrame, file_df: pd.DataFrame, max_examples: int =
     ref_examples = []
     for _, row in both[both["ref_differs"]].head(max_examples).iterrows():
         for ref in GATEWAY_REFS:
-            if row[f"{ref}_erp"] != row[f"{ref}_file"]:
-                short = lambda s: ",".join(sorted(x[:14] + ("..." if len(x) > 14 else "") for x in s)) or "(none)"  # noqa: E731
+            if (row[f"{ref}_erp"] or "") != (row[f"{ref}_file"] or ""):
+                short = lambda s: ",".join(x[:14] + ("..." if len(x) > 14 else "") for x in (s or "").split("|") if x) or "(none)"  # noqa: E731
                 ref_examples.append({"bill_no": row["bill_no"], "mop": row["mop"], "gateway": ref.replace("_ref", ""),
                                      "file": short(row[f"{ref}_file"]), "erp": short(row[f"{ref}_erp"])})
 
