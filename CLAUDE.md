@@ -4489,7 +4489,7 @@ as_probe.json`).
   * **The ERP has a few hundred MORE lines a month, with the same amounts**: it keeps credit-note lines separately (one bill = two lines of 199 and 199) where the Excel export carried one line of 398.
     Bill totals agree; credit notes are non-settling, so R1 and the cash book are unaffected. It is NOT deleted duplicate bills (those would add amount; the difference is 0.00 every month).
   * **18 September 2026 is EMPTY in the ERP** (0 rows; 17 and 19 September normal at ~51,600): our Excel copy holds 50,060 lines / Rs 3,20,74,620 for that day. A gap in the platform load - to be reported to the DBA.
-  * **November: the ERP is COMPLETE where our Excel file is cut off.** 1-14 Nov: ERP 1,212,309 lines / Rs 123.78 Cr against our truncated file 982,124 / Rs 100.47 Cr: +230,185 lines / Rs 23.32 Cr (6.37 / 6.37's cut-off).
+  * **November: the ERP is COMPLETE where our Excel file is cut off.** 1-14 Nov: ERP 1,212,309 lines / Rs 123.78 Cr against our truncated file 982,124 / Rs 100.47 Cr: +230,185 lines / Rs 23.32 Cr (the cut-off file described in 6.37).
   * **Not yet available (owner decision pending): `TPEDCRESPONSE`, `TPBILLREFNUMBER`, `BASETENDER`, `BASEBALANCE`, `CREATEBY`, `MOPSTLMDESC`, and the PTC vouchers.** `TPEDCRESPONSE` is what R1 matches on, so the POS Excel
     cannot be retired and R1 cannot read from the ERP until it is supplied; without PTC the cash side (R3a, Float, CMS) keeps its files. The shared login hides a column named `remarks`.
   * **What can be done now, without those fields:** use the ERP as an INDEPENDENT COMPLETENESS CONTROL on the Excel POS file (per store-day lines and amount) - it would have caught the cut-off November file on day one.
