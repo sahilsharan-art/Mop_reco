@@ -1,0 +1,5 @@
+# Add to Mop_reco's existing locked requirements, do not replace them.
+fastapi==0.135.1
+uvicorn==0.41.0
+python-multipart==0.0.22
+httpx==0.28.1

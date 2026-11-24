@@ -1,0 +1,1 @@
+export const meta = (title:string,description:string) => ({meta:[{title:`${title} | MOP Reconciliation`},{name:'description',content:description},{property:'og:title',content:`${title} | MOP Reconciliation`},{property:'og:description',content:description},{property:'og:type',content:'website'},{name:'twitter:card',content:'summary'}]});
