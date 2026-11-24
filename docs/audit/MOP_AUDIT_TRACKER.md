@@ -10,11 +10,11 @@ column meanings without approval; no secrets or internal addresses in any delive
 | Phase | Scope | Status | Notes |
 |---|---|---|---|
 | 1 | Discovery: inventory, architecture, baseline | **Complete (24 Nov 2026)** | inventory, static analysis, test discovery, risk classification, first candidate findings |
-| 2 | Functional and financial audit (R1, R2, R3a, R3b, float, sheet A-N) | Not started | independent Decimal recomputation harness is the first task |
+| 2 | Functional and financial audit (R1, R2, R3a, R3b, float, sheet A-N) | **In progress (24 Nov 2026)** | R1, Float, CMS blocks, sheet A-N and the R3a cash book re-performed independently; 3 defects found and fixed locally (section 9); R2 / R3b and boundary runs still to do |
 | 3 | Code and database audit | Started (static scan only) | the 25 silent handlers are to be read; schema/index/transaction review not started |
 | 4 | UI/UX audit (every page, 375/768/1366/1920) | Not started | |
 | 5 | Security and performance audit | Not started | two security items already known (section 5) |
-| 6 | Bug fixing (P0, P1, P2, P3) | Not started | no defect is confirmed yet - Phase 1 produced candidates only |
+| 6 | Bug fixing (P0, P1, P2, P3) | Started | D-001..D-003 fixed locally and committed (01e1e8b); NOT yet deployed to the application server; see `MOP_DEFECT_REGISTER.md` |
 | 7 | UAT | Not started | |
 | 8 | Production readiness | Not started | the ten open risks are classified in section 6 |
 | 9 | Final sign-off | Not started | classification today would be **D - Audit incomplete** |
@@ -85,3 +85,24 @@ IDs here are candidates. A candidate becomes a defect in the register only after
 3. Re-perform on the live data (read-only): daily-sheet column identities (C=D+E, G=D-F, K=I-J, M=H+E-I+L, N=H-I), store totals = date totals = grand total, matrix = sheet, exports = screen.
 4. R3a against the ERP store cash book: classify the opening-balance offsets per store (constant offset from a start date vs a mid-period break).
 5. Record every confirmed defect in the register with root cause and a regression test before any fix.
+
+## 9. Phase 2 results so far (24 Nov 2026)
+
+Everything below was run on the development PC against synthetic data, except the items marked LIVE, which were read-only checks against run #2 on the application server (nothing was written).
+
+| Area | Method | Result |
+|---|---|---|
+| R1 matching | Independent oracle written from the spec (plain loops, Decimal) vs `run_r1`: 16 hand-asserted scenarios + 300 random collision scenarios (`tests/test_audit_r1_oracle.py`) | **Agrees on all 316.** Covers exact and one-paisa amounts, FAILED/REFUND rows, case-insensitive status, one transaction one bill, gateway order, 7-day-late match (recorded), EDC OTHER with 1/2/0 candidates, refund linkage, every terminal-reply shape |
+| R1 LIVE | Independent re-performance on run #2 (`scripts/audit_live_r1_check.py`) | Every check holds |
+| Float | Independent recomputation (Decimal, own streak logic, calendar worked arithmetically): 81 tests incl. threshold boundary (10,000.00 not high, 10,000.01 high), negative float kept, per-store override, streak reset, no leak between stores, 4 years of auto-remarks (`tests/test_audit_float.py`) | **All pass** |
+| CMS blocks | Whole-paise reference (opening + deposit - same-day - next-day = closing) vs `build_model`: 88 tests incl. day+2 / before-deposit / no-date credits, ADJ and ZPO outside the grid, pseudo-store order, window clipping, 30-day cent chain (`tests/test_audit_cms_blocks.py`) | **All pass** |
+| Sheet A-N and R3a | Whole-paise reference for C=D+E, G=D-F, K=I-J, M=H+E-I+L, N=H-I, carry-forward, store start, component builders by hand: 89 tests (`tests/test_audit_store_sheet.py`) | **All pass** |
+| Sheet LIVE | Column identities, totals and independent recomputation on run #2 (`scripts/audit_live_sheet_check.py`) | Hold, **except D-001** (5 store-days, net Rs 7,22,748 of cash received understated) - fixed |
+| R3a vs ERP cash book LIVE (OB-1) | Run #2 `store_day_agg` vs `gold_mop.store_settlement_lines`: 44,337 store-days, 227 stores, 1 Apr - 14 Nov | see below |
+
+**OB-1 classified.** Opening and closing agree to the paisa on 82.5% / 82.1% of store-days over the whole range. The differences are of three kinds:
+1. **November (3,142 of 3,147 break days, net -Rs 10.29 Cr): our November cash sale comes from the truncated POS Excel file (CLAUDE.md 6.37); the ERP is complete.** Explained, not a cash-book error. It should disappear when the run reads POS from the ERP (run #3) - to be proved by repeating this comparison after that run.
+2. **Opening seed on 1 April: 21 stores differ, gross Rs 40,460.75.** One store is 99% of it: GPB (ours Rs 2,934.00, ERP -Rs 37,066.00, difference Rs 40,000). The rest are small (Rs 0.01 to Rs 200; for example UNO -200, CTR -100, GWT -76). Constant afterwards. Needs a Finance ruling on which opening is right.
+3. **Five single-day differences in April-October, net -Rs 209:** JGB 04/04 -300, SKP 02/05 +100, MCR 14/07 +50, MDB 11/07 -34, MBR 19/04 -25. Unexplained. Petty-cash vouchers are identical (150,947), so the difference is elsewhere in that day's movement. Open item OB-2, below materiality but not dismissed.
+
+Update to risk 8 in section 6: the earlier "about 12% of stores with a constant offset" is superseded - the constant opening difference is 21 stores and Rs 40,460.75 gross; the larger gap in the earlier reading was November.
