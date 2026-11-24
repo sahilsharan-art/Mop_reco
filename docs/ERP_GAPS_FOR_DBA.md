@@ -55,3 +55,17 @@ downloads each file monthly and copies it to the server; a missing or cut-off fi
 
 For each numbered item: **can the platform have it (yes / no / later), from which source, how often, and who owns it**; for the ones it can, the view name and a `GRANT SELECT` to `ckpost`.
 Nothing is read until the owner agrees and the grant exists. MOP will confirm each new view against the files it already has (the same side-by-side proof used for POS and petty cash) before it stops using the file.
+
+## 6. Added 24 Nov 2026 (audit): five vouchers where `store_settlement_lines` disagrees with `ptc_vouchers`
+
+MOP compared its cash book with the platform's `store_settlement_lines` (CashSummary) for April to November. It agrees except for five store-days in April to October, and on each the platform's **settlement summary** holds a different figure from the platform's **own voucher** for one petty-cash voucher. MOP follows the vouchers.
+
+| Store | Date | Head | `ptc_vouchers` | `store_settlement_lines` |
+|---|---|---|---|---|
+| JGB | 04/04/2026 | Printing & Stationery (SPTC/0017/Apr/26) | -782 | -482 |
+| SKP | 02/05/2026 | Repair-Computer (SPTC/0172/May/26) | -190 | -290 |
+| MCR | 14/07/2026 | Local Conveyance Charges (SPTC/0429/Jul/26) | -50 | -100 |
+| MDB | 11/07/2026 | Cashier Short/Excess (SPTC/0411/Jul/26) | -17 (PAYMENT) | +17 |
+| MBR | 19/04/2026 | Staff Welfare Exps. (SPTC/0065/Apr/26) | -125 | -100 |
+
+Question: which is the correct figure, and why does the summary differ (a voucher edited after settlement? a different rule for Cashier Short/Excess?). No action is needed from MOP either way; it is raised so the two views can be made to agree.

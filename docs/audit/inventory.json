@@ -45,7 +45,7 @@
  },
  "app/dashboard_common.py": {
   "kind": "app",
-  "lines": 1103,
+  "lines": 1108,
   "functions": 46,
   "classes": 0,
   "doc": "Shared chrome for the console: operator identity, the filter bar, exports.",
@@ -102,12 +102,14 @@
    "app/pages/9_Users.py",
    "app/run_panel.py",
    "app/store_detail_view.py",
+   "tests/test_audit_html_escaping.py",
+   "tests/test_audit_statement_card.py",
    "tests/test_dashboard_chrome.py",
    "tests/test_db.py",
    "tests/test_login_gate.py",
    "tests/test_selfcheck.py"
   ],
-  "tests_mentioning": 4,
+  "tests_mentioning": 6,
   "unused_by_app": false
  },
  "app/inline_match.py": {
@@ -307,8 +309,8 @@
  },
  "app/Summary.py": {
   "kind": "app",
-  "lines": 639,
-  "functions": 6,
+  "lines": 653,
+  "functions": 7,
   "classes": 0,
   "doc": "Summary \u2014 the daily store-wise sale and cash sheet, columns A..N in the",
   "imports": [
@@ -340,7 +342,7 @@
   "floats": 10,
   "hardcoded_dates": [
    [
-    485,
+    493,
     "\"\"\"Whole rupees, Indian grouping, rounded half up (2026-10-2"
    ]
   ],
@@ -348,7 +350,7 @@
    "store_tasks"
   ],
   "imported_by": [],
-  "tests_mentioning": 11,
+  "tests_mentioning": 14,
   "unused_by_app": false
  },
  "app/mop_reco/__init__.py": {
@@ -366,13 +368,13 @@
   "hardcoded_dates": [],
   "tables": [],
   "imported_by": [],
-  "tests_mentioning": 6,
+  "tests_mentioning": 8,
   "unused_by_app": true
  },
  "app/mop_reco/auth.py": {
   "kind": "engine",
-  "lines": 343,
-  "functions": 26,
+  "lines": 355,
+  "functions": 27,
   "classes": 2,
   "doc": "Who may open the application: users, passwords, sessions and the audit trail (2026-11-23).",
   "imports": [
@@ -404,14 +406,15 @@
    "app/auth_gate.py",
    "app/pages/9_Users.py",
    "scripts/manage_users.py",
+   "tests/test_audit_auth_timing.py",
    "tests/test_auth.py"
   ],
-  "tests_mentioning": 2,
+  "tests_mentioning": 3,
   "unused_by_app": false
  },
  "app/mop_reco/bulk_accept.py": {
   "kind": "engine",
-  "lines": 280,
+  "lines": 281,
   "functions": 13,
   "classes": 4,
   "doc": "Bulk accept of the system's own suggestions (2026-10-17).",
@@ -443,15 +446,19 @@
   "imported_by": [
    "app/pages/8_Exceptions.py",
    "scripts/apply_bulk_accept.py",
+   "scripts/audit_uat_run.py",
+   "scripts/audit_uat_run_writes.py",
    "scripts/bulk_accept_rehearsal.py",
+   "tests/test_audit_atomicity.py",
+   "tests/test_audit_matrix_cascade.py",
    "tests/test_bulk_accept.py"
   ],
-  "tests_mentioning": 1,
+  "tests_mentioning": 3,
   "unused_by_app": false
  },
  "app/mop_reco/cms_blocks.py": {
   "kind": "engine",
-  "lines": 677,
+  "lines": 679,
   "functions": 35,
   "classes": 3,
   "doc": "CMS Reco - one block per DEPOSIT DATE, chained per store (2026-10-16).",
@@ -461,6 +468,7 @@
    "datetime",
    "db",
    "io",
+   "io_",
    "masters",
    "numpy",
    "openpyxl",
@@ -489,10 +497,13 @@
    "app/mop_reco/cms_blocks_export.py",
    "app/mop_reco/runs.py",
    "app/pages/2_Cash_position.py",
+   "scripts/audit_uat_run.py",
    "scripts/backfill_cms_slips.py",
+   "tests/test_audit_cms_blocks.py",
+   "tests/test_audit_zip_guard.py",
    "tests/test_cms_blocks.py"
   ],
-  "tests_mentioning": 1,
+  "tests_mentioning": 3,
   "unused_by_app": false
  },
  "app/mop_reco/cms_blocks_export.py": {
@@ -519,7 +530,8 @@
    "runs"
   ],
   "imported_by": [
-   "app/pages/2_Cash_position.py"
+   "app/pages/2_Cash_position.py",
+   "scripts/audit_uat_run.py"
   ],
   "tests_mentioning": 0,
   "unused_by_app": false
@@ -604,6 +616,8 @@
    "scripts/run_range.py",
    "scripts/settlement_reingest_preview.py",
    "tests/test_all_sources_overlap.py",
+   "tests/test_audit_page_load_reads.py",
+   "tests/test_audit_upload_validation.py",
    "tests/test_erp_ingest.py",
    "tests/test_erp_source.py",
    "tests/test_ingest.py",
@@ -616,7 +630,7 @@
    "tests/test_r1.py",
    "tests/test_runs_lock.py"
   ],
-  "tests_mentioning": 15,
+  "tests_mentioning": 19,
   "unused_by_app": false
  },
  "app/mop_reco/db.py": {
@@ -716,6 +730,11 @@
    "app/run_panel.py",
    "scripts/add_indexes.py",
    "scripts/apply_bulk_accept.py",
+   "scripts/audit_db_integrity.py",
+   "scripts/audit_live_r1_check.py",
+   "scripts/audit_live_sheet_check.py",
+   "scripts/audit_uat_run.py",
+   "scripts/audit_uat_run_writes.py",
    "scripts/backfill_cms_slips.py",
    "scripts/backfill_digital_mode_agg.py",
    "scripts/backfill_mop_day_agg.py",
@@ -749,6 +768,12 @@
    "scripts/status_vocabulary_report.py",
    "scripts/sync_closures.py",
    "tests/test_all_sources_overlap.py",
+   "tests/test_audit_atomicity.py",
+   "tests/test_audit_auth_timing.py",
+   "tests/test_audit_concurrency.py",
+   "tests/test_audit_matrix_cascade.py",
+   "tests/test_audit_security_sql.py",
+   "tests/test_audit_upload_path.py",
    "tests/test_auth.py",
    "tests/test_bill_match_and_gateway_transactions.py",
    "tests/test_bulk_accept.py",
@@ -783,7 +808,7 @@
    "tests/test_summary_aggregates.py",
    "tests/test_uploads_delete.py"
   ],
-  "tests_mentioning": 35,
+  "tests_mentioning": 42,
   "unused_by_app": false
  },
  "app/mop_reco/erp.py": {
@@ -818,7 +843,7 @@
    "tests/test_erp_ingest.py",
    "tests/test_erp_source.py"
   ],
-  "tests_mentioning": 4,
+  "tests_mentioning": 5,
   "unused_by_app": false
  },
  "app/mop_reco/erp_ingest.py": {
@@ -941,15 +966,18 @@
    "app/mop_reco/table_upload.py",
    "app/pages/8_Exceptions.py",
    "scripts/apply_bulk_accept.py",
+   "scripts/audit_uat_run.py",
+   "scripts/audit_uat_run_writes.py",
    "scripts/bulk_accept_rehearsal.py",
    "scripts/round_trip_refusals.py",
    "scripts/round_trip_rehearsal.py",
+   "tests/test_audit_matrix_cascade.py",
    "tests/test_bulk_accept.py",
    "tests/test_exception_pairing.py",
    "tests/test_exception_tables.py",
    "tests/test_selfcheck.py"
   ],
-  "tests_mentioning": 4,
+  "tests_mentioning": 5,
   "unused_by_app": false
  },
  "app/mop_reco/exception_remarks.py": {
@@ -1015,6 +1043,7 @@
   "imported_by": [
    "app/mop_reco/table_upload.py",
    "app/pages/8_Exceptions.py",
+   "scripts/audit_uat_run_writes.py",
    "scripts/round_trip_refusals.py",
    "scripts/round_trip_rehearsal.py",
    "tests/test_bulk_accept.py",
@@ -1056,10 +1085,15 @@
    "app/mop_reco/manual_match.py",
    "app/mop_reco/queries.py",
    "app/mop_reco/runs.py",
+   "app/mop_reco/store_sheet_source.py",
    "app/mop_reco/table_upload.py",
    "app/pages/8_Exceptions.py",
+   "scripts/audit_uat_run.py",
+   "scripts/audit_uat_run_writes.py",
    "scripts/diagnose_paytm_refs.py",
    "scripts/status_vocabulary_report.py",
+   "tests/test_audit_atomicity.py",
+   "tests/test_audit_matrix_cascade.py",
    "tests/test_bulk_accept.py",
    "tests/test_exception_remarks.py",
    "tests/test_exceptions.py",
@@ -1067,13 +1101,13 @@
    "tests/test_manual_match.py",
    "tests/test_queries.py"
   ],
-  "tests_mentioning": 10,
+  "tests_mentioning": 14,
   "unused_by_app": false
  },
  "app/mop_reco/export.py": {
   "kind": "engine",
-  "lines": 218,
-  "functions": 7,
+  "lines": 241,
+  "functions": 9,
   "classes": 2,
   "doc": "Exports. No Streamlit imports \u2014 the page supplies the data and the metadata.",
   "imports": [
@@ -1084,7 +1118,8 @@
    "formatting",
    "io",
    "logging",
-   "pandas"
+   "pandas",
+   "re"
   ],
   "broad_except": 0,
   "silent_except": [],
@@ -1103,13 +1138,16 @@
    "app/pages/6_Upload.py",
    "app/pages/7_Store_Task.py",
    "app/pages/8_Exceptions.py",
+   "scripts/audit_uat_run.py",
+   "scripts/audit_uat_run_writes.py",
    "scripts/round_trip_refusals.py",
    "scripts/round_trip_rehearsal.py",
+   "tests/test_audit_export_formula_injection.py",
    "tests/test_exception_tables.py",
    "tests/test_export.py",
    "tests/test_lifecycle.py"
   ],
-  "tests_mentioning": 10,
+  "tests_mentioning": 13,
   "unused_by_app": false
  },
  "app/mop_reco/float_tracker.py": {
@@ -1146,9 +1184,11 @@
   "imported_by": [
    "app/mop_reco/store_tasks.py",
    "app/pages/1_Float.py",
+   "scripts/audit_uat_run.py",
+   "tests/test_audit_float.py",
    "tests/test_float_tracker.py"
   ],
-  "tests_mentioning": 2,
+  "tests_mentioning": 3,
   "unused_by_app": false
  },
  "app/mop_reco/formatting.py": {
@@ -1234,7 +1274,7 @@
  },
  "app/mop_reco/ingest.py": {
   "kind": "engine",
-  "lines": 2176,
+  "lines": 2182,
   "functions": 55,
   "classes": 3,
   "doc": "Raw report normalisers \u2014 Stage 2.",
@@ -1261,7 +1301,7 @@
   "broad_except": 3,
   "silent_except": [
    [
-    2173,
+    2179,
     "return None"
    ]
   ],
@@ -1296,6 +1336,8 @@
    "scripts/run_r3a.py",
    "scripts/settlement_reingest_preview.py",
    "tests/test_all_sources_overlap.py",
+   "tests/test_audit_cms_overlap_key.py",
+   "tests/test_audit_r1_oracle.py",
    "tests/test_erp_ingest.py",
    "tests/test_erp_source.py",
    "tests/test_ingest.py",
@@ -1308,13 +1350,13 @@
    "tests/test_r1.py",
    "tests/test_uploads_delete.py"
   ],
-  "tests_mentioning": 14,
+  "tests_mentioning": 16,
   "unused_by_app": false
  },
  "app/mop_reco/io_.py": {
   "kind": "engine",
-  "lines": 501,
-  "functions": 14,
+  "lines": 515,
+  "functions": 15,
   "classes": 2,
   "doc": "Raw file reading \u2014 Stage 2.",
   "imports": [
@@ -1340,6 +1382,7 @@
   "hardcoded_dates": [],
   "tables": [],
   "imported_by": [
+   "app/mop_reco/cms_blocks.py",
    "app/mop_reco/exception_remarks.py",
    "app/mop_reco/ingest.py",
    "app/mop_reco/manual_match.py",
@@ -1352,10 +1395,11 @@
    "scripts/diagnose_paytm_unmatched.py",
    "scripts/run_r3a.py",
    "scripts/status_vocabulary_report.py",
+   "tests/test_audit_zip_guard.py",
    "tests/test_ingest.py",
    "tests/test_pos_ingest_calamine.py"
   ],
-  "tests_mentioning": 4,
+  "tests_mentioning": 5,
   "unused_by_app": false
  },
  "app/mop_reco/lifecycle.py": {
@@ -1384,12 +1428,12 @@
    "app/mop_reco/runs.py",
    "scripts/sync_closures.py"
   ],
-  "tests_mentioning": 12,
+  "tests_mentioning": 14,
   "unused_by_app": false
  },
  "app/mop_reco/manual_match.py": {
   "kind": "engine",
-  "lines": 1470,
+  "lines": 1472,
   "functions": 45,
   "classes": 7,
   "doc": "Manual matching \u2014 a human overlay on R1, never an edit to source data.",
@@ -1411,22 +1455,13 @@
    "uuid"
   ],
   "broad_except": 4,
-  "silent_except": [
-   [
-    229,
-    "continue"
-   ],
-   [
-    266,
-    "continue"
-   ]
-  ],
+  "silent_except": [],
   "prints": 0,
   "raw_sql": 0,
   "floats": 20,
   "hardcoded_dates": [
    [
-    1205,
+    1207,
     "\"2026-07-20\""
    ]
   ],
@@ -1449,16 +1484,20 @@
    "app/mop_reco/upload_prefetch.py",
    "app/pages/8_Exceptions.py",
    "scripts/apply_bulk_accept.py",
+   "scripts/audit_uat_run.py",
+   "scripts/audit_uat_run_writes.py",
    "scripts/bulk_accept_rehearsal.py",
    "scripts/round_trip_refusals.py",
    "scripts/round_trip_rehearsal.py",
+   "tests/test_audit_atomicity.py",
+   "tests/test_audit_concurrency.py",
    "tests/test_bulk_accept.py",
    "tests/test_exception_pairing.py",
    "tests/test_lifecycle.py",
    "tests/test_manual_match.py",
    "tests/test_runs_lock.py"
   ],
-  "tests_mentioning": 7,
+  "tests_mentioning": 9,
   "unused_by_app": false
  },
  "app/mop_reco/master_gaps.py": {
@@ -1557,12 +1596,12 @@
    "tests/test_masters_preflight.py",
    "tests/test_store_aliases.py"
   ],
-  "tests_mentioning": 8,
+  "tests_mentioning": 10,
   "unused_by_app": false
  },
  "app/mop_reco/masters_db.py": {
   "kind": "engine",
-  "lines": 484,
+  "lines": 487,
   "functions": 27,
   "classes": 2,
   "doc": "Masters live in the DATABASE (2026-11-21).",
@@ -1585,15 +1624,7 @@
   "broad_except": 3,
   "silent_except": [
    [
-    97,
-    "session.rollback()"
-   ],
-   [
-    157,
-    "return store"
-   ],
-   [
-    397,
+    400,
     "note += f\" - workbook not usable ({str(exc)[:150]}): the stored versions stand\""
    ]
   ],
@@ -1743,6 +1774,8 @@
    "app/mop_reco/table_upload.py",
    "app/pages/8_Exceptions.py",
    "app/run_panel.py",
+   "scripts/audit_uat_run.py",
+   "scripts/audit_uat_run_writes.py",
    "scripts/backfill_txn_day_agg.py",
    "scripts/bulk_accept_rehearsal.py",
    "scripts/round_trip_refusals.py",
@@ -1757,12 +1790,12 @@
    "tests/test_selfcheck.py",
    "tests/test_summary_aggregates.py"
   ],
-  "tests_mentioning": 12,
+  "tests_mentioning": 13,
   "unused_by_app": false
  },
  "app/mop_reco/r1_bill_txn.py": {
   "kind": "engine",
-  "lines": 617,
+  "lines": 624,
   "functions": 10,
   "classes": 1,
   "doc": "R1 \u2014 POS bill line \u2194 gateway transaction. CLAUDE.md sections 6.2 / 6.3.",
@@ -1786,11 +1819,12 @@
   "imported_by": [
    "app/mop_reco/r1_chunked.py",
    "scripts/r1_equivalence.py",
+   "tests/test_audit_r1_oracle.py",
    "tests/test_r1.py",
    "tests/test_r1_chunked.py",
    "tests/test_r1_equivalence.py"
   ],
-  "tests_mentioning": 5,
+  "tests_mentioning": 6,
   "unused_by_app": false
  },
  "app/mop_reco/r1_chunked.py": {
@@ -1868,7 +1902,7 @@
  },
  "app/mop_reco/refunds.py": {
   "kind": "engine",
-  "lines": 759,
+  "lines": 766,
   "functions": 25,
   "classes": 2,
   "doc": "Customer refunds \u2014 a THIRD way an unmapped transaction closes (2026-09-20).",
@@ -1888,12 +1922,7 @@
    "upload_prefetch"
   ],
   "broad_except": 4,
-  "silent_except": [
-   [
-    143,
-    "known_stores = set()"
-   ]
-  ],
+  "silent_except": [],
   "prints": 0,
   "raw_sql": 0,
   "floats": 28,
@@ -1921,7 +1950,7 @@
    "tests/test_refund_folder.py",
    "tests/test_refunds.py"
   ],
-  "tests_mentioning": 6,
+  "tests_mentioning": 8,
   "unused_by_app": false
  },
  "app/mop_reco/run_coverage.py": {
@@ -2037,7 +2066,7 @@
    "tests/test_runs_persist.py",
    "tests/test_summary_aggregates.py"
   ],
-  "tests_mentioning": 11,
+  "tests_mentioning": 13,
   "unused_by_app": false
  },
  "app/mop_reco/store_sheet.py": {
@@ -2070,17 +2099,20 @@
    "app/mop_reco/store_sheet_export.py",
    "app/mop_reco/store_sheet_source.py",
    "app/store_detail_view.py",
+   "scripts/audit_uat_run.py",
    "scripts/perf_summary_sheet.py",
+   "tests/test_audit_cms_overlap_key.py",
+   "tests/test_audit_store_sheet.py",
    "tests/test_data_quality_rows.py",
    "tests/test_store_sheet.py",
    "tests/test_store_sheet_source_agg.py"
   ],
-  "tests_mentioning": 6,
+  "tests_mentioning": 8,
   "unused_by_app": false
  },
  "app/mop_reco/store_sheet_export.py": {
   "kind": "engine",
-  "lines": 573,
+  "lines": 574,
   "functions": 14,
   "classes": 0,
   "doc": "The store-wise sheet as Excel \u2014 five tabs, one cut of the data each,",
@@ -2111,8 +2143,8 @@
  },
  "app/mop_reco/store_sheet_source.py": {
   "kind": "engine",
-  "lines": 1346,
-  "functions": 28,
+  "lines": 1402,
+  "functions": 33,
   "classes": 4,
   "doc": "Assembling the store-wise sheet from the warehouse, and the drill-down.",
   "imports": [
@@ -2121,6 +2153,7 @@
    "dataclasses",
    "datetime",
    "db",
+   "exceptions",
    "ingest",
    "json",
    "logging",
@@ -2133,15 +2166,16 @@
    "store_sheet",
    "time"
   ],
-  "broad_except": 3,
+  "broad_except": 4,
   "silent_except": [],
   "prints": 0,
   "raw_sql": 0,
-  "floats": 48,
+  "floats": 30,
   "hardcoded_dates": [],
   "tables": [
    "date_total_agg",
    "digital_mode_agg",
+   "exceptions",
    "manual_matches",
    "mop_day_agg",
    "parked_bill_lines",
@@ -2154,6 +2188,9 @@
    "app/mop_reco/runs.py",
    "app/pages/1_Float.py",
    "app/store_detail_view.py",
+   "scripts/audit_live_sheet_check.py",
+   "scripts/audit_uat_run.py",
+   "scripts/audit_uat_run_writes.py",
    "scripts/backfill_digital_mode_agg.py",
    "scripts/backfill_mop_day_agg.py",
    "scripts/backfill_store_day_agg.py",
@@ -2162,19 +2199,22 @@
    "scripts/r1_e2e_check.py",
    "scripts/round_trip_refusals.py",
    "scripts/round_trip_rehearsal.py",
+   "tests/test_audit_matrix_cascade.py",
+   "tests/test_audit_money_storage.py",
+   "tests/test_audit_page_load_reads.py",
    "tests/test_data_quality_rows.py",
    "tests/test_mop_matrix.py",
    "tests/test_runs_persist.py",
    "tests/test_store_sheet_read.py",
    "tests/test_store_sheet_source_agg.py"
   ],
-  "tests_mentioning": 6,
+  "tests_mentioning": 9,
   "unused_by_app": false
  },
  "app/mop_reco/store_task_summary.py": {
   "kind": "engine",
-  "lines": 133,
-  "functions": 7,
+  "lines": 139,
+  "functions": 8,
   "classes": 0,
   "doc": "Store-wise summary of tasks: one row per store, three groups of (open tickets, volume in Rs) (2026-10-21).",
   "imports": [
@@ -2182,6 +2222,7 @@
    "datetime",
    "db",
    "formatting",
+   "html",
    "io",
    "openpyxl",
    "pandas",
@@ -2201,14 +2242,16 @@
   "imported_by": [
    "app/Summary.py",
    "app/pages/7_Store_Task.py",
+   "scripts/audit_uat_run.py",
+   "tests/test_audit_html_escaping.py",
    "tests/test_store_task_summary.py"
   ],
-  "tests_mentioning": 1,
+  "tests_mentioning": 2,
   "unused_by_app": false
  },
  "app/mop_reco/store_tasks.py": {
   "kind": "engine",
-  "lines": 847,
+  "lines": 850,
   "functions": 45,
   "classes": 5,
   "doc": "Store Task - items assigned to stores, their replies, tracked to closure (2026-10-14).",
@@ -2221,6 +2264,7 @@
    "db",
    "float_tracker",
    "json",
+   "logging",
    "masters",
    "pandas",
    "re",
@@ -2228,12 +2272,7 @@
    "sqlalchemy"
   ],
   "broad_except": 1,
-  "silent_except": [
-   [
-    237,
-    "return set()"
-   ]
-  ],
+  "silent_except": [],
   "prints": 0,
   "raw_sql": 0,
   "floats": 17,
@@ -2252,6 +2291,7 @@
    "app/mop_reco/runs.py",
    "app/mop_reco/store_task_summary.py",
    "app/pages/7_Store_Task.py",
+   "scripts/audit_uat_run.py",
    "tests/test_high_float_skips_cms_not_done.py",
    "tests/test_lifecycle.py",
    "tests/test_store_task_summary.py",
@@ -2302,9 +2342,10 @@
    "app/pages/8_Exceptions.py",
    "scripts/round_trip_refusals.py",
    "scripts/round_trip_rehearsal.py",
+   "tests/test_audit_atomicity.py",
    "tests/test_lifecycle.py"
   ],
-  "tests_mentioning": 1,
+  "tests_mentioning": 2,
   "unused_by_app": false
  },
  "app/mop_reco/upload_prefetch.py": {
@@ -2338,15 +2379,16 @@
    "app/mop_reco/bulk_accept.py",
    "app/mop_reco/manual_match.py",
    "app/mop_reco/refunds.py",
-   "app/mop_reco/table_upload.py"
+   "app/mop_reco/table_upload.py",
+   "tests/test_audit_security_sql.py"
   ],
-  "tests_mentioning": 0,
+  "tests_mentioning": 1,
   "unused_by_app": false
  },
  "app/mop_reco/uploads.py": {
   "kind": "engine",
-  "lines": 622,
-  "functions": 19,
+  "lines": 656,
+  "functions": 20,
   "classes": 2,
   "doc": "Upload \u2014 supplying or replacing a single report for a single month",
   "imports": [
@@ -2364,6 +2406,7 @@
    "pathlib",
    "polars",
    "pos_completeness",
+   "re",
    "shutil",
    "typing"
   ],
@@ -2400,15 +2443,17 @@
   ],
   "imported_by": [
    "app/pages/6_Upload.py",
+   "tests/test_audit_upload_path.py",
+   "tests/test_audit_upload_validation.py",
    "tests/test_uploads_delete.py"
   ],
-  "tests_mentioning": 1,
+  "tests_mentioning": 4,
   "unused_by_app": false
  },
  "app/pages/1_Float.py": {
   "kind": "page",
-  "lines": 397,
-  "functions": 4,
+  "lines": 413,
+  "functions": 5,
   "classes": 0,
   "doc": "Float \u2014 store cash float, and whether it is sitting too high (2026-09-13,",
   "imports": [
@@ -2511,12 +2556,12 @@
    "runs"
   ],
   "imported_by": [],
-  "tests_mentioning": 0,
+  "tests_mentioning": 1,
   "unused_by_app": false
  },
  "app/pages/6_Upload.py": {
   "kind": "page",
-  "lines": 313,
+  "lines": 315,
   "functions": 5,
   "classes": 0,
   "doc": "Upload \u2014 supply or replace a single report for a single month without",
@@ -2528,6 +2573,7 @@
    "db",
    "export",
    "formatting",
+   "html",
    "masters_db",
    "pandas",
    "pathlib",
@@ -2540,7 +2586,7 @@
   "broad_except": 1,
   "silent_except": [
    [
-    146,
+    147,
     "preview = up.UploadPreview(ok=False)"
    ]
   ],
@@ -2553,7 +2599,7 @@
    "uploaded_files"
   ],
   "imported_by": [],
-  "tests_mentioning": 0,
+  "tests_mentioning": 1,
   "unused_by_app": false
  },
  "app/pages/7_Store_Task.py": {
@@ -2824,6 +2870,130 @@
   "tests_mentioning": 0,
   "unused_by_app": false
  },
+ "scripts/audit_backup_rehearsal.py": {
+  "kind": "script",
+  "lines": 79,
+  "functions": 2,
+  "classes": 0,
+  "doc": "Backup and restore rehearsal (audit Phase 8): dump a database, restore it into a new one, time both, and compare the result table by table.",
+  "imports": [
+   "argparse",
+   "hashlib",
+   "pathlib",
+   "subprocess",
+   "sys",
+   "time"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 7,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "scripts/audit_build_uat_workbook.py": {
+  "kind": "script",
+  "lines": 110,
+  "functions": 0,
+  "classes": 0,
+  "doc": "Build docs/MOP_UAT_TEST_CASES.xlsx from the case catalogue and the recorded results (audit Phase 7).",
+  "imports": [
+   "audit_uat_cases",
+   "collections",
+   "json",
+   "openpyxl",
+   "pathlib",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 1,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [
+   "runs"
+  ],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "scripts/audit_build_workbooks.py": {
+  "kind": "script",
+  "lines": 64,
+  "functions": 0,
+  "classes": 0,
+  "doc": "Build the audit workbooks from the generated inventory and the manual status file. Re-run after every audit phase.",
+  "imports": [
+   "json",
+   "openpyxl",
+   "pathlib"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 1,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "scripts/audit_db_integrity.py": {
+  "kind": "script",
+  "lines": 130,
+  "functions": 3,
+  "classes": 0,
+  "doc": "Audit Phase 3 (read-only): database integrity checks. Run with the application's own environment, e.g.",
+  "imports": [
+   "argparse",
+   "db",
+   "os",
+   "pathlib",
+   "sqlalchemy",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 16,
+  "raw_sql": 2,
+  "floats": 4,
+  "hardcoded_dates": [],
+  "tables": [
+   "runs"
+  ],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "scripts/audit_gateway_arithmetic.py": {
+  "kind": "script",
+  "lines": 65,
+  "functions": 2,
+  "classes": 0,
+  "doc": "Independent check of the gateways' own settlement arithmetic in the loaded data (audit Phase 9).",
+  "imports": [
+   "glob",
+   "numpy",
+   "pandas",
+   "pathlib"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 15,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
  "scripts/audit_inventory.py": {
   "kind": "script",
   "lines": 160,
@@ -2845,6 +3015,243 @@
   "floats": 2,
   "hardcoded_dates": [],
   "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "scripts/audit_live_r1_check.py": {
+  "kind": "script",
+  "lines": 162,
+  "functions": 2,
+  "classes": 0,
+  "doc": "Audit Phase 2: independent re-performance of R1 (bill <-> gateway transaction) against a stored run. READ-ONLY.",
+  "imports": [
+   "argparse",
+   "datetime",
+   "db",
+   "numpy",
+   "os",
+   "pandas",
+   "pathlib",
+   "sqlalchemy",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 7,
+  "raw_sql": 2,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "scripts/audit_live_sheet_check.py": {
+  "kind": "script",
+  "lines": 169,
+  "functions": 2,
+  "classes": 0,
+  "doc": "Audit Phase 2: independent re-performance of the daily store sheet (columns A..N) against a stored run. READ-ONLY.",
+  "imports": [
+   "argparse",
+   "datetime",
+   "db",
+   "decimal",
+   "numpy",
+   "os",
+   "pandas",
+   "pathlib",
+   "sqlalchemy",
+   "store_sheet_source",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 6,
+  "raw_sql": 3,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "scripts/audit_set_module_status.py": {
+  "kind": "script",
+  "lines": 80,
+  "functions": 0,
+  "classes": 0,
+  "doc": "Record the audit status of every application module in docs/audit/module_status.json (audit Phase 9).",
+  "imports": [
+   "collections",
+   "json",
+   "pathlib"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 1,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [
+   "runs"
+  ],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "scripts/audit_uat_cases.py": {
+  "kind": "script",
+  "lines": 131,
+  "functions": 1,
+  "classes": 0,
+  "doc": "The UAT case catalogue (audit Phase 7). Each case is a business scenario in a person's own words: who does it, what they do, what they must ",
+  "imports": [],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [
+   "runs"
+  ],
+  "imported_by": [
+   "scripts/audit_build_uat_workbook.py",
+   "scripts/audit_uat_record.py"
+  ],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "scripts/audit_uat_record.py": {
+  "kind": "script",
+  "lines": 80,
+  "functions": 1,
+  "classes": 0,
+  "doc": "Record the UAT results that were produced by hand in the browser and by the automated test run (audit Phase 7).",
+  "imports": [
+   "audit_uat_cases",
+   "collections",
+   "datetime",
+   "json",
+   "pathlib",
+   "re",
+   "sys",
+   "xml"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 2,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [
+   "runs"
+  ],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "scripts/audit_uat_run.py": {
+  "kind": "script",
+  "lines": 198,
+  "functions": 13,
+  "classes": 0,
+  "doc": "Execute the engine-level UAT cases (audit Phase 7) against the UAT database and record the results.",
+  "imports": [
+   "bulk_accept",
+   "cms_blocks",
+   "cms_blocks_export",
+   "datetime",
+   "db",
+   "exception_pairing",
+   "exceptions",
+   "export",
+   "float_tracker",
+   "io",
+   "json",
+   "manual_match",
+   "openpyxl",
+   "os",
+   "pandas",
+   "pathlib",
+   "queries",
+   "sqlalchemy",
+   "store_sheet",
+   "store_sheet_source",
+   "store_task_summary",
+   "store_tasks",
+   "sys",
+   "time",
+   "traceback"
+  ],
+  "broad_except": 1,
+  "silent_except": [
+   [
+    62,
+    "results[cid] = {\"status\": \"FAIL\", \"evidence\": f\"raised {type(exc_).__name__}: {str(exc_)[:300]}\", \"executed_at\": datetime.now().strftime(\"%Y-%m-%d %H:%M\")}"
+   ]
+  ],
+  "prints": 3,
+  "raw_sql": 2,
+  "floats": 6,
+  "hardcoded_dates": [],
+  "tables": [
+   "exceptions",
+   "manual_matches",
+   "runs",
+   "store_tasks"
+  ],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "scripts/audit_uat_run_writes.py": {
+  "kind": "script",
+  "lines": 188,
+  "functions": 9,
+  "classes": 0,
+  "doc": "UAT cases that WRITE (audit Phase 7): manual matches, reversal, bulk accept, remarks. UAT database only.",
+  "imports": [
+   "bulk_accept",
+   "datetime",
+   "db",
+   "exception_pairing",
+   "exception_tables",
+   "exceptions",
+   "export",
+   "io",
+   "json",
+   "manual_match",
+   "openpyxl",
+   "os",
+   "pandas",
+   "pathlib",
+   "queries",
+   "sqlalchemy",
+   "store_sheet_source",
+   "sys",
+   "traceback"
+  ],
+  "broad_except": 1,
+  "silent_except": [
+   [
+    54,
+    "results[cid] = {\"status\": \"FAIL\", \"evidence\": f\"raised {type(e).__name__}: {str(e)[:300]}\", \"executed_at\": datetime.now().strftime(\"%Y-%m-%d %H:%M\")}"
+   ]
+  ],
+  "prints": 4,
+  "raw_sql": 1,
+  "floats": 3,
+  "hardcoded_dates": [],
+  "tables": [
+   "exceptions",
+   "manual_match_events",
+   "manual_matches",
+   "runs",
+   "store_tasks"
+  ],
   "imported_by": [],
   "tests_mentioning": 0,
   "unused_by_app": false
@@ -3050,8 +3457,10 @@
   "floats": 0,
   "hardcoded_dates": [],
   "tables": [],
-  "imported_by": [],
-  "tests_mentioning": 0,
+  "imported_by": [
+   "tests/test_audit_package.py"
+  ],
+  "tests_mentioning": 1,
   "unused_by_app": false
  },
  "scripts/bulk_accept_rehearsal.py": {
@@ -4132,7 +4541,7 @@
   "hardcoded_dates": [],
   "tables": [],
   "imported_by": [],
-  "tests_mentioning": 0,
+  "tests_mentioning": 1,
   "unused_by_app": false
  },
  "tests/reference_matcher.py": {
@@ -4191,6 +4600,550 @@
   "prints": 0,
   "raw_sql": 0,
   "floats": 1,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_atomicity.py": {
+  "kind": "test",
+  "lines": 141,
+  "functions": 9,
+  "classes": 0,
+  "doc": "Audit Phase 3/6: a bulk operation that fails half way leaves NOTHING behind (all-or-nothing).",
+  "imports": [
+   "bulk_accept",
+   "db",
+   "exceptions",
+   "manual_match",
+   "pandas",
+   "pathlib",
+   "pytest",
+   "sys",
+   "table_upload",
+   "test_bulk_accept",
+   "test_lifecycle"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [
+   "exceptions",
+   "manual_match_batches",
+   "manual_matches",
+   "remarks",
+   "store_tasks",
+   "transaction_refunds"
+  ],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_auth_timing.py": {
+  "kind": "test",
+  "lines": 49,
+  "functions": 5,
+  "classes": 0,
+  "doc": "Audit S-1: response time must not reveal whether a username exists.",
+  "imports": [
+   "auth",
+   "db",
+   "hashlib",
+   "pathlib",
+   "pytest",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_cms_blocks.py": {
+  "kind": "test",
+  "lines": 145,
+  "functions": 14,
+  "classes": 0,
+  "doc": "Audit Phase 2: the CMS Reco blocks against an INDEPENDENT recomputation (CLAUDE.md 6.22).",
+  "imports": [
+   "cms_blocks",
+   "datetime",
+   "numpy",
+   "pandas",
+   "pathlib",
+   "pytest",
+   "random",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 4,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_cms_overlap_key.py": {
+  "kind": "test",
+  "lines": 112,
+  "functions": 13,
+  "classes": 1,
+  "doc": "Audit defect D-001 (2026-11-24): the CMS overlap key left out the row TYPE, so a slip's collection (COL) in one monthly file and the",
+  "imports": [
+   "ingest",
+   "os",
+   "pandas",
+   "pathlib",
+   "store_sheet",
+   "sys",
+   "types"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 2,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_concurrency.py": {
+  "kind": "test",
+  "lines": 95,
+  "functions": 6,
+  "classes": 0,
+  "doc": "Audit Phase 2/3: two operators acting at the same moment cannot both win the same transaction (CLAUDE.md 6.9b).",
+  "imports": [
+   "datetime",
+   "db",
+   "manual_match",
+   "pandas",
+   "pathlib",
+   "pytest",
+   "sqlalchemy",
+   "sys",
+   "threading"
+  ],
+  "broad_except": 1,
+  "silent_except": [
+   [
+    57,
+    "s.rollback()"
+   ]
+  ],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [
+   "exceptions",
+   "manual_matches",
+   "r1_bill_lines",
+   "runs"
+  ],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_export_formula_injection.py": {
+  "kind": "test",
+  "lines": 94,
+  "functions": 11,
+  "classes": 0,
+  "doc": "Audit S-4: a typed remark that starts with = + - or @ must not become a live formula in an exported workbook or CSV.",
+  "imports": [
+   "export",
+   "io",
+   "openpyxl",
+   "pandas",
+   "pathlib",
+   "re",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_float.py": {
+  "kind": "test",
+  "lines": 145,
+  "functions": 12,
+  "classes": 0,
+  "doc": "Audit Phase 2: the Float grid against an INDEPENDENT recomputation (CLAUDE.md 6.15).",
+  "imports": [
+   "datetime",
+   "decimal",
+   "float_tracker",
+   "pandas",
+   "pathlib",
+   "pytest",
+   "random",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 6,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_html_escaping.py": {
+  "kind": "test",
+  "lines": 74,
+  "functions": 8,
+  "classes": 1,
+  "doc": "Audit S-3: text from the database or from an uploaded file must not reach raw HTML unescaped.",
+  "imports": [
+   "dashboard_common",
+   "pandas",
+   "pathlib",
+   "re",
+   "store_task_summary",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_matrix_cascade.py": {
+  "kind": "test",
+  "lines": 130,
+  "functions": 11,
+  "classes": 2,
+  "doc": "Audit D-011 (found in UAT case E04): a manual match must move the Summary matrix, whatever recorded the payment mode.",
+  "imports": [
+   "bulk_accept",
+   "datetime",
+   "db",
+   "exception_pairing",
+   "exceptions",
+   "json",
+   "pathlib",
+   "pytest",
+   "sqlalchemy",
+   "store_sheet_source",
+   "sys",
+   "test_bulk_accept",
+   "test_mop_matrix"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [
+   "exceptions",
+   "manual_matches"
+  ],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_money_storage.py": {
+  "kind": "test",
+  "lines": 56,
+  "functions": 6,
+  "classes": 0,
+  "doc": "Audit defect D-002 (2026-11-24): stored money carried float noise (74017.9999999999, 86044.0600000001). Rounding to the whole paisa when",
+  "imports": [
+   "decimal",
+   "pathlib",
+   "store_sheet_source",
+   "sys",
+   "types"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_package.py": {
+  "kind": "test",
+  "lines": 44,
+  "functions": 7,
+  "classes": 0,
+  "doc": "Audit Phase 8: what the release package contains, and that its install list is the proven one.",
+  "imports": [
+   "build_package",
+   "pathlib",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_page_load_reads.py": {
+  "kind": "test",
+  "lines": 104,
+  "functions": 8,
+  "classes": 0,
+  "doc": "Audit D-006: a page view must never re-read the raw CMS files (and so rewrite warehouse partitions).",
+  "imports": [
+   "ast",
+   "config",
+   "pathlib",
+   "pytest",
+   "store_sheet_source",
+   "sys",
+   "types"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_r1_oracle.py": {
+  "kind": "test",
+  "lines": 278,
+  "functions": 24,
+  "classes": 0,
+  "doc": "Audit Phase 2: R1 against an INDEPENDENT ORACLE written from the specification (CLAUDE.md 6.1-6.3), not from the engine's code.",
+  "imports": [
+   "datetime",
+   "decimal",
+   "ingest",
+   "pandas",
+   "pathlib",
+   "pytest",
+   "r1_bill_txn",
+   "random",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 4,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_security_sql.py": {
+  "kind": "test",
+  "lines": 59,
+  "functions": 4,
+  "classes": 0,
+  "doc": "Audit Phase 3/5: the string-built SQL flagged by bandit (upload_prefetch._in) cannot be injected into (candidate C-005).",
+  "imports": [
+   "datetime",
+   "db",
+   "pathlib",
+   "pytest",
+   "re",
+   "sqlalchemy",
+   "sys",
+   "upload_prefetch"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 3,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [
+   "r1_bill_lines",
+   "runs"
+  ],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_statement_card.py": {
+  "kind": "test",
+  "lines": 35,
+  "functions": 5,
+  "classes": 0,
+  "doc": "Audit D-007: the Cash Position card showed a NEGATIVE closing balance as a positive figure (\"Rs 1.23 Cr\") marked only by red.",
+  "imports": [
+   "dashboard_common",
+   "pathlib",
+   "re",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_store_sheet.py": {
+  "kind": "test",
+  "lines": 176,
+  "functions": 14,
+  "classes": 0,
+  "doc": "Audit Phase 2: the daily store sheet (columns A-N) and the cash book (R3a) against an INDEPENDENT recomputation (CLAUDE.md 6.6, 6.9d).",
+  "imports": [
+   "datetime",
+   "pandas",
+   "pathlib",
+   "pytest",
+   "random",
+   "store_sheet",
+   "sys"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 1,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_theme_contrast.py": {
+  "kind": "test",
+  "lines": 49,
+  "functions": 5,
+  "classes": 0,
+  "doc": "Audit D-008: text colours the theme puts on a tint or white must meet WCAG AA (4.5:1 for normal text).",
+  "imports": [
+   "pathlib",
+   "re"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_upload_path.py": {
+  "kind": "test",
+  "lines": 73,
+  "functions": 5,
+  "classes": 0,
+  "doc": "Audit S-5: an uploaded file's name comes from the browser and must never decide where on disk the file is written.",
+  "imports": [
+   "datetime",
+   "db",
+   "pathlib",
+   "pytest",
+   "sys",
+   "types",
+   "uploads"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_upload_validation.py": {
+  "kind": "test",
+  "lines": 70,
+  "functions": 7,
+  "classes": 0,
+  "doc": "UAT U01-U03 (audit Phase 7): the Upload page refuses a file for a plain reason, before anything is stored.",
+  "imports": [
+   "config",
+   "datetime",
+   "openpyxl",
+   "pathlib",
+   "pytest",
+   "sys",
+   "uploads"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
+  "hardcoded_dates": [],
+  "tables": [],
+  "imported_by": [],
+  "tests_mentioning": 0,
+  "unused_by_app": false
+ },
+ "tests/test_audit_zip_guard.py": {
+  "kind": "test",
+  "lines": 46,
+  "functions": 5,
+  "classes": 0,
+  "doc": "Audit S-6: a zip member that declares an enormous uncompressed size is refused before it is read (memory exhaustion).",
+  "imports": [
+   "cms_blocks",
+   "io",
+   "io_",
+   "pathlib",
+   "pytest",
+   "sys",
+   "zipfile"
+  ],
+  "broad_except": 0,
+  "silent_except": [],
+  "prints": 0,
+  "raw_sql": 0,
+  "floats": 0,
   "hardcoded_dates": [],
   "tables": [],
   "imported_by": [],
@@ -4297,7 +5250,10 @@
    "runs",
    "store_tasks"
   ],
-  "imported_by": [],
+  "imported_by": [
+   "tests/test_audit_atomicity.py",
+   "tests/test_audit_matrix_cascade.py"
+  ],
   "tests_mentioning": 0,
   "unused_by_app": false
  },
@@ -4329,7 +5285,7 @@
  },
  "tests/test_dashboard_chrome.py": {
   "kind": "test",
-  "lines": 760,
+  "lines": 761,
   "functions": 61,
   "classes": 0,
   "doc": "The console's chrome: which filters are global, how they persist, and where",
@@ -4886,7 +5842,9 @@
    "transaction_refunds",
    "txn_day_agg"
   ],
-  "imported_by": [],
+  "imported_by": [
+   "tests/test_audit_atomicity.py"
+  ],
   "tests_mentioning": 0,
   "unused_by_app": false
  },
@@ -5085,7 +6043,9 @@
    "runs",
    "store_day_agg"
   ],
-  "imported_by": [],
+  "imported_by": [
+   "tests/test_audit_matrix_cascade.py"
+  ],
   "tests_mentioning": 0,
   "unused_by_app": false
  },
@@ -5471,8 +6431,8 @@
  },
  "tests/test_refunds.py": {
   "kind": "test",
-  "lines": 365,
-  "functions": 24,
+  "lines": 380,
+  "functions": 26,
   "classes": 0,
   "doc": "Customer refunds (Request B, part 3) \u2014 a THIRD way an unmapped",
   "imports": [

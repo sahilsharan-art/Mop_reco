@@ -15,9 +15,9 @@ column meanings without approval; no secrets or internal addresses in any delive
 | 4 | UI/UX audit (every page, 375/768/1366/1920) | **Complete for the pages and widths (24 Nov 2026)** | seven pages and the sign-in page at four widths; five defects found and fixed locally (D-006 to D-010); see section 11 |
 | 5 | Security and performance audit | **Substantially complete (24 Nov 2026)** | six security defects found and fixed locally (S-1, S-3 to S-6; S-5 is P1); six infrastructure / decision items recorded (S-2, S-7 to S-12); performance measured on production; see section 12 |
 | 6 | Bug fixing (P0, P1, P2, P3) | Started | D-001..D-003 fixed locally and committed (01e1e8b); NOT yet deployed to the application server; see `MOP_DEFECT_REGISTER.md` |
-| 7 | UAT | Not started | |
-| 8 | Production readiness | Not started | the ten open risks are classified in section 6 |
-| 9 | Final sign-off | Not started | classification today would be **D - Audit incomplete** |
+| 7 | UAT | **Complete for what the audit team can run (24 Nov 2026)** | 83 cases; 82 pass, 1 not run; two defects found (D-011 P2, D-012 P3) and fixed; business-user sign-off still needed; see section 13 |
+| 8 | Production readiness | **Complete (24 Nov 2026)** | readiness checklist, runbook, rollback, backup rehearsal; the ten open risks classified; see sections 14 |
+| 9 | Final sign-off | **Complete (24 Nov 2026)** | classification **C - Not Production Ready**, with a route to B; see section 15 and `MOP_FINAL_SIGNOFF_REPORT.md` |
 
 ## 2. Baseline (what was true when the audit started)
 
@@ -160,3 +160,38 @@ Float: 82 s on the old path, about 3.6 s warm now (D-007). Cold page loads on th
 **Database observations for the DBA:** PostgreSQL is on near-default memory settings (`shared_buffers` 128 MB, `work_mem` 4 MB, `random_page_cost` 4) while the largest table is 3.1 GB and 52 of 100 connections are used by other applications. Tables are vacuumed and the visibility map is 100% (so index-only scans are effective). The bill-lines table grows about 0.65 million rows a month.
 
 **Not done:** no penetration test of the live server's other services (out of scope: they belong to other applications); no load test beyond 4 users; no TLS test (there is no TLS); the lock-out and session-expiry timings were verified by unit tests, not on the server.
+
+## 13. Phase 7 results - user acceptance test (24 Nov 2026)
+
+**Setup.** A throw-away copy of the local full run (database `mopuat`, 5,584,483 bill lines, 228 dates, April to 14 November) so that matching, reversal, bulk accept and remarks could really be written without touching anything else. The application was run against it at 1366 px, with and without sign-in. Production was not used.
+
+**Cases.** 83 scenarios in plain business language, by five roles (finance analyst, head-office operator, store-operations lead, administrator, auditor), in `scripts/audit_uat_cases.py`; results with the evidence seen in `docs/audit/uat_results.json`; the workbook is `docs/MOP_UAT_TEST_CASES.xlsx` (generated; `scripts/audit_build_uat_workbook.py`). How each was run: 21 driven in the running application; 29 by calling the function the page calls and comparing with an independent SQL figure; 32 by named automated tests (a case passes only if every test in its files passes: 562 tests); 1 needs real infrastructure and was not run.
+
+**Result: 82 pass, 0 fail, 1 not run.** Not run: R01 (the Run section, because a run changes the database).
+
+**What it found.**
+* **D-011 (P2).** Case E04 failed on its first run. After a match of Rs 149 the store sheet moved by 149 and the Summary matrix by 0.00. Cause: bulk accept recorded no payment mode, and the matrix left a matched bill with an unknown mode counted as open UPI. On the full run, after a bulk accept the matrix (Rs 24,71,612) and the store sheet's column G disagreed on the same page. Fixed (the mode is carried, looked up when missing, a matched bill is never left receivable, an asserted match moves nothing), 8 regression tests (5 fail on the old code); re-run: the matrix and column G both read Rs 24,69,514 after matching Rs 2,098. This is the kind of defect the earlier unit tests could not see, because it needed a real bulk accept on real data.
+* **D-012 (P3).** The Masters page printed ISO dates. Fixed.
+* Two case descriptions were corrected after seeing the real behaviour: a year with no data now says the period is not reconciled (the later rule, not zeros); Store Task type summary counts live tasks.
+
+**Things seen and judged correct.** Closed-after-match flows: a match closed the bill's exception, the transaction's exception and the bill's open-bill task together; reversal reopened all three and raised a new task (generation 2) with the history kept; an already-used transaction was refused naming its bill; a different amount needed an override reason; an id found nowhere was only asserted. Strips and cards add up to the displayed precision and agree with SQL to the paisa on the whole range, one month, six days and one store. Control (d) on the Summary reports 1,643 negative-closing store-days, the known effect of the cut-off November POS file, not a new fault.
+
+**Honest limits.** The cases were executed by the audit team, not by business users: their acceptance is still needed. Production, a real file picker, a real run, typing a correct password, screen readers and more than 4 concurrent users were not covered. The UAT database and the throw-away test user remain on the development PC and can be dropped.
+
+## 14. Phase 8 results - production readiness (24 Nov 2026)
+
+* **Server (read-only):** Windows Server 2022, 27 GB memory (23 GB free), data drive 376 GB free, time in sync. Deployed build: the 23 Nov build (commit 108bbad), before the ERP work and every audit fix. The scheduled task starts the application at boot; it was started at 07:19 and **was found not running**: the logs stop at about 12:00 and give no reason. The rollback package for the deployed build is on the server. The application's own database tools: none (no backup client installed). A temporary administrator password file is still in the server's secrets folder.
+* **No schema change since the deployed build** (the only `db.py` change is a hash flag), so a rollback needs no data change.
+* **Production log shows D-006 live:** a CMS re-ingest on a page view at 11:57.
+* **Backup and restore rehearsal** (development PostgreSQL, 5.3 GB, 9.9M bill lines, twice production's size): dump 135 s, restore 351 s, about 8 minutes; all 25 tables and 7 content checksums identical. Script `scripts/audit_backup_rehearsal.py`. No production backup exists.
+* **Package:** `requirements.lock.txt` (the server's exact 63 packages) is now part of the package and preferred by the installer (S-9); six tests guard the package contents (no secrets, databases, data or business workbooks). The package itself is built from committed code at deployment time and was not built for release in this audit (a package built from uncommitted code is named `_dirty` by the builder).
+* **Deliverables:** `docs/MOP_PRODUCTION_READINESS_CHECKLIST.md` (verdict, ten risks classified, eight go/no-go gates, 12-step runbook, rollback, monitoring gaps), `MOP_SECURITY_AUDIT.md`, `MOP_PERFORMANCE_REPORT.md`.
+
+## 15. Phase 9 results - final sign-off (24 Nov 2026)
+
+* **R2 and R3b:** neither exists in the code (no `r2_settlement`, no `r3b_cms`, no settlement-to-bank calculation outside ingestion). The gateways' own arithmetic was checked instead: Paytm exact on all 5,540,794 successful sales (every credit T+1, one UTR per payout); Axis 237 of 200,720 rows differ (Rs -204.66 net); Bajaj 323 of 20,351 differ, of which 228 are the known id-less rows. Tool: `scripts/audit_gateway_arithmetic.py`.
+* **Module workbook** now carries a status for every application module (38 verified, 28 working with limitations, 2 unable to verify, 57 not yet audited, mostly operating scripts); `scripts/audit_set_module_status.py`.
+* **Defect workbook** generated from the register: `scripts/audit_build_defect_workbook.py` (20 defect rows, 15 observations).
+* **Documents:** `MOP_COMPLETE_APPLICATION_AUDIT.md`, `MOP_FINANCIAL_VALIDATION_REPORT.md`, `MOP_FINAL_SIGNOFF_REPORT.md`; all ten required deliverables now exist.
+* **Classification: C. Not Production Ready**, with the route to B in the sign-off report.
+* **Final full test run (24 Nov 2026, after all fixes):** 1,968 passed, 0 failed, 26 minutes; the 6 package tests added after it started pass separately.

@@ -1,0 +1,417 @@
+{
+ "UAT-S02": {
+  "status": "Pass",
+  "evidence": "digital 5,219,060,086.49 = SQL 5,219,060,086.49; cash 4,778,779,914.41 = SQL 4,778,779,914.41; C = D + E over 45,580 store-days = 9,997,840,000.90",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-S06": {
+  "status": "Pass",
+  "evidence": "page: open 1,866 + auto 5,582,617 + manual 0 = total 5,584,483; SQL: 1,866 / 5,582,617 / 5,584,483",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-S10": {
+  "status": "Pass",
+  "evidence": "6 dates, 1,164 store-days; digital 113,176,779.65 = SQL 113,176,779.65",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-S12": {
+  "status": "Pass",
+  "evidence": "228 date rows + TOTAL; TOTAL total_sale 9,997,840,000.90 = sum of rows 9,997,840,000.90",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-S13": {
+  "status": "Pass",
+  "evidence": "5 rows on the first page; columns ['date', 'store', 'bill_no', 'mop', 'amount', 'gateway', 'transaction_id', 'txn_date', 'lag', 'match_source']",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-S14": {
+  "status": "Pass",
+  "evidence": "Summary/Exceptions: bills 1,864 = SQL 1,864; transactions 113,522 = SQL 113,522",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-E01": {
+  "status": "Pass",
+  "evidence": "tiles equal the database; merged lines explain the rest (bills +2, transactions +92)",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-S17": {
+  "status": "Pass",
+  "evidence": "net cash receivable 7,747,098.10 (never negative); 554 store-days with credit above deposit = Data quality count 554",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-F05": {
+  "status": "Pass",
+  "evidence": "2,982 negative-float store-days = SQL 2,982; most negative first (-1,313,679.00)",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-F01": {
+  "status": "Pass",
+  "evidence": "stores above threshold on 2026-11-14: grid 6 = SQL 6",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-T01": {
+  "status": "Pass",
+  "evidence": "open+pending+wip+closed = 6,084 = all tasks 6,084; tiles {'open': (1942, 19471313.0), 'pending': (0, 0.0), 'wip': (0, 0.0), 'closed': (4142, 159862178.34)}",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-T06": {
+  "status": "Pass",
+  "evidence": "type summary counts 1,942 = live tasks in the table 1,942; volume 19,471,313.00",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-C03": {
+  "status": "Pass",
+  "evidence": "2,684 credits later than day+1 listed = SQL 2,684; 12 flagged T+10 or more",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-C07": {
+  "status": "Pass",
+  "evidence": "ZPO rows listed 744 = SQL 744; ADJ.CR. 13, ADJ.DB. 13",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-C06": {
+  "status": "Pass",
+  "evidence": "workbook for April: 6 tab(s) ['CMS Reco', 'Read me', 'Credited later', 'Unresolved stores']; 14,329 live formula cells",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-Z03": {
+  "status": "Pass",
+  "evidence": "whole range 4.49 s; one month 0.59 s; one day 0.04 s (this PC; production figures are in the tracker)",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-Z04": {
+  "status": "Pass",
+  "evidence": "4 unresolved identifier(s) listed by name: [('paytm_mid', 'CITYKA06926777950163', 7338), ('paytm_mid', 'CITYKA31555184412489', 4197), ('cms_bnk', 'AX38733', 168), ('axis_mid', '037136036380008', 21)]",
+  "executed_at": "2026-11-24 15:37"
+ },
+ "UAT-E03": {
+  "status": "Pass",
+  "evidence": "bill SC31/015807/0626 (Rs 149.00) matched to paytm 20260607011070...; bill and transaction exceptions closed; recorded by 'UAT tester' at 15:59 source inline",
+  "executed_at": "2026-11-24 15:59"
+ },
+ "UAT-E05": {
+  "status": "Pass",
+  "evidence": "a used transaction offered to SC55/035175/1026: refused/needs override; message: Transaction 20260607011070000270468344675787195 is already matched manually to bill SC31/015807/0626 (JRC, 2026-06-07, Rs 149.00) by UAT tester on 24 Nov 2026 1",
+  "executed_at": "2026-11-24 15:59"
+ },
+ "UAT-E08": {
+  "status": "Pass",
+  "evidence": "after reversal: bill and transaction exceptions open again; match kept with lifecycle 'reversed'; events 1 -> 2; a new task raised (generation 2)",
+  "executed_at": "2026-11-24 15:59"
+ },
+ "UAT-E09": {
+  "status": "Pass",
+  "evidence": "submitted 5: applied 5, refused 0 ([]); one batch #1 with 5 matches; Rs 2,098.00; controls hold",
+  "executed_at": "2026-11-24 16:00"
+ },
+ "UAT-E12": {
+  "status": "Pass",
+  "evidence": "2 remarks kept with who and when: ['UAT remark one', 'UAT remark two']",
+  "executed_at": "2026-11-24 16:00"
+ },
+ "UAT-E13": {
+  "status": "Pass",
+  "evidence": "3,000 filtered rows exported as xlsx; header block lines: ['Application', 'Report', 'Run', 'Run timestamp', 'Business date range', 'Filters applied', 'Rows in this export', 'Total value (Rs)', 'Exported at', 'Note']; first 50 transaction ids are all stored as text, the long Paytm ones with every digit (e.g. 20261103011000000324450766421683081)",
+  "executed_at": "2026-11-24 16:00"
+ },
+ "UAT-E04": {
+  "status": "Pass",
+  "evidence": "no re-run: open bills 1,866 -> 1,865; manual 0 -> 1; unmapped 113,614 -> 113,613; digital receivable down 149.00 (bill Rs 149.00); both controls still hold [first run FAILED: the matrix did not move after a bulk-style match - defect D-011, fixed and re-run]",
+  "executed_at": "2026-11-24 15:59"
+ },
+ "UAT-T04": {
+  "status": "Pass",
+  "evidence": "open-bill task for SC31/015807/0626: live before 1, live after 0, closed 1",
+  "executed_at": "2026-11-24 15:59"
+ },
+ "UAT-E15": {
+  "status": "Pass",
+  "evidence": "open_only off: 1,864 bill exceptions listed, 5 closed = SQL 5 (the bulk-accepted ones); nothing deleted",
+  "executed_at": "2026-11-24 16:00"
+ },
+ "UAT-E06": {
+  "status": "Pass",
+  "evidence": "amount differs by Rs 1: case b, override required: True; problems: Amount differs: the bill is Rs 404.00 and the transaction is Rs 149.00 (a difference of Rs -255.00). | Store differs: the bill is SDH and th",
+  "executed_at": "2026-11-24 15:59"
+ },
+ "UAT-E07": {
+  "status": "Pass",
+  "evidence": "an id in no gateway: case c (asserted, unverified); the bill is not closed: open",
+  "executed_at": "2026-11-24 15:59"
+ },
+ "UAT-S19": {
+  "status": "Pass",
+  "evidence": "after a bulk accept of 5 bills (Rs 2,098) the matrix total digital receivable is 2,469,514.00 and the store sheet's column G total is 2,469,514.00: the two tables agree",
+  "executed_at": "2026-11-24"
+ },
+ "UAT-C02": {
+  "status": "Pass",
+  "evidence": "Cash position page (November block) shows no control failure; the three structural controls recomputed over the whole run (225 stores x 228 days): holds: Every block: CLOSING = OPENING + Deposit - CMS(1) ; holds: Every chain: block N+1 OPENING = block N CLOSING, ; holds: Summary Diff = the last block's CLOSING, per store",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-A01": {
+  "status": "Pass",
+  "evidence": "Fresh session at the sign-in address: page text is only 'Sign in to continue / Username / Password / Sign in / Access is recorded...'. No menu, no filters, no figures, no session cookie.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-A02": {
+  "status": "Pass",
+  "evidence": "Real username + wrong password and a made-up username gave the identical message 'The username or password is not correct.' (once each).",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-A03": {
+  "status": "Pass",
+  "evidence": "Session cookie accepted: app shown, account menu 'UAT Tester', matrix drawn. After a full page reload still signed in (matrix 3 rows, no sign-in card).",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-A04": {
+  "status": "Pass",
+  "evidence": "Sign out showed the sign-in card with no figures and cleared the cookie. The browser had no Back history, so the stronger check was done: the signed-out token put back in the cookie is refused (sign-in card, cookie cleared).",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-S01": {
+  "status": "Pass",
+  "evidence": "Screen: Total sale 999.74 - 999.57 = 0.17; UPI 476.74 - 476.49 = 0.25; Card 45.17 - 45.17 = 0.00; Total digital 521.91 - 521.66 = 0.25; Total cash 477.88 - 477.88 = 0.00 (Rs Cr).",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-S03": {
+  "status": "Pass",
+  "evidence": "Screen: UPI 476.74 + Card 45.17 = Total digital 521.91 Cr.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-S04": {
+  "status": "Pass",
+  "evidence": "Screen: 4.05 + 477.88 - 478.19 - 4.97 = -1.23; the card reads '-Rs 1.23 Cr' (sign shown, defect D-008 fixed).",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-S05": {
+  "status": "Pass",
+  "evidence": "Screen: handed over 478.19, credited 477.41, receivable 0.77 Cr; exact values 478.1874 - 477.4127 = 0.7747, so 0.77 is the correctly rounded figure.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-S07": {
+  "status": "Pass",
+  "evidence": "Screen: unmapped 113,609 + auto 5,582,617 + manual 5 + refunded 0 = 5,696,231 total; bills 1,861 + 5,582,617 + 5 = 5,584,483. No MISMATCH banner.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-S08": {
+  "status": "Pass",
+  "evidence": "Clicked Jul: pill '01/07/2026 to 31/07/2026'; matrix Total sale 103.10, UPI+Card 54.16, cash 48.94 Cr = SQL 103.10 / 54.16 / 48.94.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-S09": {
+  "status": "Pass",
+  "evidence": "Chose ABD: pill '... ABD only'; July Total sale 0.49, digital 0.25, cash 0.23 Cr = SQL 0.49 / 0.25 / 0.23.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-S11": {
+  "status": "Pass",
+  "evidence": "Clicked 2027: no figures and no error; the page says 'Run #2 covers 01/04 to 14/11. January ... December are not reconciled - no source files for them have arrived.' (the later rule 6.24: say it, never show zeros; the case wording was corrected to match).",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-S15": {
+  "status": "Pass",
+  "evidence": "Data notes opened at once with the 8 controls (control (d) failing: 1,643 negative-closing store-days, the known cut-off November effect). 'Check the CMS source files' loaded on press with no error; no CMS ingest line appeared in the server log on page load.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-S16": {
+  "status": "Pass",
+  "evidence": "Red banner on every page: 'The POS export looks INCOMPLETE ... 209,757 of 1,187,732 bill numbers are missing (17.66%, limit 1.0%) - most affected: BTA 2,755 ...'.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-E02": {
+  "status": "Pass",
+  "evidence": "Show offers exactly Open and Under investigation; choosing Under investigation emptied both lists ('Nothing in this view') and the header went to 'Exception bills 0 - Exception transactions 0'. Default sort is 'Amount (high to low)'. After the bulk accept the page showed 'Manual match bills 5 - Rs 2,098' and 'Bulk accept batches (1)'.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-F06": {
+  "status": "Pass",
+  "evidence": "Pressed 'Show the store-days': 'Total: 554 store-day(s), Rs 9.42 Cr' equals the header '554 store-day(s) ... Rs 9.42 Cr'; export button offered; no error.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-T02": {
+  "status": "Pass",
+  "evidence": "Searched bill SC55/035175/1026: the view narrowed to that one task (Closed 1, Rs 403 - closed by the earlier bulk accept); 0 open in the default status filter, as expected. Store Task tiles after the bulk accept: Open 1,937 (was 1,942), Closed 4,148.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-U06": {
+  "status": "Pass",
+  "evidence": "Phase 5: a file name containing <img src=x onerror=...> was shown as plain text on the real Upload page (no image element in the page); tests/test_audit_html_escaping.py (5).",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-Z01": {
+  "status": "Pass",
+  "evidence": "Phase 4: every page at 375, 768, 1366 and 1920 px had no horizontal overflow, no error panel, no traceback.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-R03": {
+  "status": "Pass",
+  "evidence": "Evidence from earlier work (CLAUDE.md 6.39): the full 01/04-14/11 run on the application server was compared with the development PC's run by a per-date fingerprint of every result table: ALL IDENTICAL on 228 dates (5,584,483 bill lines).",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-R01": {
+  "status": "Not run",
+  "evidence": "The Run section needs a real run configuration and live source folders; not exercised in this audit (a run changes the database). Layout was reviewed in Phase 4 only.",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-A05": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 7 passed, 0 failed in test_login_gate.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-A06": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 19 passed, 0 failed in test_auth.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-A07": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 19 passed, 0 failed in test_auth.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-S18": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 67 passed, 0 failed in test_store_sheet.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-E14": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 28 passed, 0 failed in test_lifecycle.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-E16": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 82 passed, 0 failed in test_manual_match.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-E17": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 4 passed, 0 failed in test_audit_atomicity.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-C04": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 9 passed, 0 failed in test_cms_blocks.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-C05": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 9 passed, 0 failed in test_cms_blocks.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-F02": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 81 passed, 0 failed in test_audit_float.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-F03": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 81 passed, 0 failed in test_audit_float.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-F04": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 41 passed, 0 failed in test_float_tracker.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-T03": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 39 passed, 0 failed in test_store_tasks.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-T05": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 39 passed, 0 failed in test_store_tasks.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-U01": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 7 passed, 0 failed in test_audit_upload_validation.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-U02": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 7 passed, 0 failed in test_audit_upload_validation.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-U03": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 7 passed, 0 failed in test_audit_upload_validation.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-U04": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 14 passed, 0 failed in test_audit_upload_path.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-U05": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 9 passed, 0 failed in test_uploads_delete.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-M01": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 16 passed, 0 failed in test_masters_db.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-M02": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 16 passed, 0 failed in test_masters_db.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-M03": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 16 passed, 0 failed in test_masters_db.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-M04": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 5 passed, 0 failed in test_store_aliases.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-R02": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 10 passed, 0 failed in test_run_coverage.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-V01": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 19 passed, 0 failed in test_auth.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-V02": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 19 passed, 0 failed in test_auth.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-V03": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 19 passed, 0 failed in test_auth.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-V04": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 19 passed, 0 failed in test_auth.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-E10": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 5 passed, 0 failed in test_bulk_accept.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-E11": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 28 passed, 0 failed in test_lifecycle.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-C01": {
+  "status": "Pass",
+  "evidence": "covered by automated tests: 88 passed, 0 failed in test_audit_cms_blocks.py (run 24 Nov 2026 as one batch of 562)",
+  "executed_at": "2026-11-24 16:12"
+ },
+ "UAT-Z02": {
+  "status": "Pass",
+  "evidence": "Scanned all seven pages: no ISO date (2026-11-14) and no Western-grouped money on six; the Masters page showed three ISO dates (found as D-012) - fixed and re-scanned: none. Dates read 14/11/2026; money reads Rs 24,69,514.00. (Counts, which are not money, are grouped the Western way, for example 5,582,617: noted as O-7.)",
+  "executed_at": "2026-11-24 16:55"
+ }
+}

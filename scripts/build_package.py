@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 INCLUDE_DIRS = ["app", "scripts", "deploy"]
-INCLUDE_FILES = ["requirements.txt", ".streamlit/config.toml", "CLAUDE.md", "README.md"]
+INCLUDE_FILES = ["requirements.txt", "requirements.lock.txt", ".streamlit/config.toml", "CLAUDE.md", "README.md"]
 EXCLUDE_PARTS = {"__pycache__", ".pytest_cache", ".git"}
 EXCLUDE_NAMES = {"production.env", "reco.sqlite"}
 EXCLUDE_SUFFIX = {".pyc", ".sqlite", ".sqlite-wal", ".sqlite-shm", ".parquet", ".sec"}

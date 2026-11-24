@@ -62,3 +62,12 @@ def test_no_other_page_interpolates_an_upload_or_remark_field_into_html():
             if "unsafe_allow_html=True" in window and risky.search(line) and "html.escape" not in line and "_esc(" not in line:
                 offenders.append(f"{path.name}:{i + 1}")
     assert not offenders, offenders
+
+
+def test_dates_on_the_masters_page_use_the_shared_formatter():
+    """UAT Z02: the Masters page showed '2026-11-14' (ISO) while every other page reads DD/MM/YYYY."""
+    src = (Path(__file__).resolve().parents[1] / "app" / "pages" / "5_Masters.py").read_text(encoding="utf-8")
+    for line in src.splitlines():
+        if ("st.error(" in line or "st.success(" in line or "st.info(" in line) and "{business_date}" in line:
+            raise AssertionError(f"raw business_date in a message: {line.strip()}")
+    assert src.count("display_date(business_date)") >= 3 and "display_date(sample.date)" in src

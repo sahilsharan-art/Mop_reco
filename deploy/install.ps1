@@ -8,7 +8,11 @@ if (-not (Test-Path $script:Python)) {
 foreach ($d in 'logs', 'secrets', 'warehouse', 'db', 'exports', 'uploads_archive') {
     New-Item -ItemType Directory -Force -Path (Join-Path $script:Root $d) | Out-Null
 }
-& $script:Python -m pip install --disable-pip-version-check -r (Join-Path $script:Root 'requirements.txt')
+# Prefer the lock file (the exact 63 packages proven on the server, audit S-9); fall back to the 17 direct pins.
+$req = Join-Path $script:Root 'requirements.lock.txt'
+if (-not (Test-Path $req)) { $req = Join-Path $script:Root 'requirements.txt' }
+Write-Host "Installing packages from $(Split-Path $req -Leaf)"
+& $script:Python -m pip install --disable-pip-version-check -r $req
 if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
 
 # smoke test: every pinned package imports, and the application's own modules load

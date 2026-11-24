@@ -36,7 +36,7 @@ def window_settings(config_raw: dict) -> tuple:
 
 def unmapped_pool(session) -> pd.DataFrame:
     """Open / under-investigation unmapped transactions that no person has since matched or
-    refunded. Columns: gateway, txn_id, store, amount, date, time, exception_key."""
+    refunded. Columns: gateway, txn_id, store, amount, date, time, exception_key, payment_mode (as the gateway reported it, or None)."""
     rows = (session.query(Exception_.exception_key, Exception_.business_date, Exception_.store,
                           Exception_.amount, Exception_.detail, Exception_.transaction_time)
             .filter(Exception_.type == "unmapped_gateway_transaction",
@@ -58,8 +58,8 @@ def unmapped_pool(session) -> pd.DataFrame:
         if not gw or not tid or (gw, tid) in taken or not store:
             continue
         out.append({"gateway": gw, "txn_id": str(tid), "store": store, "amount": round(float(amount), 2),
-                    "date": bdate, "time": ttime or "", "exception_key": key})
-    pool = pd.DataFrame(out, columns=["gateway", "txn_id", "store", "amount", "date", "time", "exception_key"])
+                    "date": bdate, "time": ttime or "", "exception_key": key, "payment_mode": d.get("payment_mode")})
+    pool = pd.DataFrame(out, columns=["gateway", "txn_id", "store", "amount", "date", "time", "exception_key", "payment_mode"])
     return pool.drop_duplicates(["gateway", "txn_id"]).reset_index(drop=True)
 
 

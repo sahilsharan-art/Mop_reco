@@ -167,7 +167,8 @@ class ApplyReport:
 
 def _pool_row(gateway, txn) -> pd.DataFrame:
     return pd.DataFrame([{"gateway": gateway, "txn_ref": txn.txn_id, "business_date": txn.date, "store": txn.store,
-                          "amount": txn.amount, "status": "SUCCESS", "txn_type": "ACQUIRING", "payment_mode": None}])
+                          "amount": txn.amount, "status": "SUCCESS", "txn_type": "ACQUIRING",
+                          "payment_mode": getattr(txn, "payment_mode", None)}])
 
 
 def _open_value(session, run_id: int) -> float:

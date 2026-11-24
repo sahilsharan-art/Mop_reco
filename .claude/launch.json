@@ -4,21 +4,53 @@
     {
       "name": "mop_reco_dashboard",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "streamlit", "run", "app/Summary.py",
-                      "--server.port", "8501", "--server.headless", "true"],
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "app/Summary.py",
+        "--server.port",
+        "8501",
+        "--server.headless",
+        "true"
+      ],
       "port": 8501
     },
     {
       "name": "mop_ui_audit",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-c", "import os,sys; os.environ['MOP_DATABASE_URL']='postgresql+psycopg://postgres@127.0.0.1:55432/mopimport'; os.environ['MOP_AUTH']='off'; sys.argv=['streamlit','run','app/Summary.py','--server.port','8502','--server.headless','true']; from streamlit.web.cli import main; main()"],
+      "runtimeArgs": [
+        "-c",
+        "import os,sys; os.environ['MOP_DATABASE_URL']='postgresql+psycopg://postgres@127.0.0.1:55432/mopimport'; os.environ['MOP_AUTH']='off'; sys.argv=['streamlit','run','app/Summary.py','--server.port','8502','--server.headless','true']; from streamlit.web.cli import main; main()"
+      ],
       "port": 8502
     },
     {
       "name": "mop_ui_audit_login",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-c", "import os,sys; os.environ['MOP_DATABASE_URL']='postgresql+psycopg://postgres@127.0.0.1:55432/mopimport'; os.environ.pop('MOP_AUTH',None); sys.argv=['streamlit','run','app/Summary.py','--server.port','8503','--server.headless','true']; from streamlit.web.cli import main; main()"],
+      "runtimeArgs": [
+        "-c",
+        "import os,sys; os.environ['MOP_DATABASE_URL']='postgresql+psycopg://postgres@127.0.0.1:55432/mopimport'; os.environ.pop('MOP_AUTH',None); sys.argv=['streamlit','run','app/Summary.py','--server.port','8503','--server.headless','true']; from streamlit.web.cli import main; main()"
+      ],
       "port": 8503
+    },
+    {
+      "name": "mop_uat",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-c",
+        "import os,sys; os.environ['MOP_DATABASE_URL']='postgresql+psycopg://postgres@127.0.0.1:55432/mopuat'; os.environ['MOP_AUTH']='off'; sys.argv=['streamlit','run','app/Summary.py','--server.port','8504','--server.headless','true']; from streamlit.web.cli import main; main()"
+      ],
+      "port": 8504
+    },
+    {
+      "name": "mop_uat_login",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-c",
+        "import os,sys; os.environ['MOP_DATABASE_URL']='postgresql+psycopg://postgres@127.0.0.1:55432/mopuat'; os.environ.pop('MOP_AUTH',None); sys.argv=['streamlit','run','app/Summary.py','--server.port','8505','--server.headless','true']; from streamlit.web.cli import main; main()"
+      ],
+      "port": 8505
     }
   ]
 }

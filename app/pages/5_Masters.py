@@ -136,7 +136,7 @@ business_date = st.date_input("Check as of business date", value=_default_check_
 
 violations = check_mid_integrity(session, business_date)
 if violations:
-    st.error(f"{len(violations)} MID-integrity violation(s) as of {business_date}:")
+    st.error(f"{len(violations)} MID-integrity violation(s) as of {display_date(business_date)}:")
     st.dataframe(
         pd.DataFrame(
             [{"master": v.master_name, "mid": v.mid, "stores": ", ".join(v.stores)} for v in violations]
@@ -145,7 +145,7 @@ if violations:
         hide_index=True,
     )
 else:
-    st.success(f"No MID maps to more than one store as of {business_date}.")
+    st.success(f"No MID maps to more than one store as of {display_date(business_date)}.")
 
 # The old "unmapped identifiers cross-checked against real files" section re-read the raw Axis and Paytm files on
 # every load (slow, and a link back to Excel). The run's own list of unresolved identifiers, at the top of this
@@ -154,7 +154,7 @@ else:
 # --- Working-day helper demo --------------------------------------------------
 st.header("Working-day due date")
 sample = due_date(business_date, 1)
-st.info(f"T+1 due date for {business_date}: **{sample.date}** — basis: *{sample.basis}*")
+st.info(f"T+1 due date for {display_date(business_date)}: **{display_date(sample.date)}** — basis: *{sample.basis}*")
 
 # --- Admin: settings, not information ---------------------------------------
 # These are configuration values, so they live behind a fold on the masters

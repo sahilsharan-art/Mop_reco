@@ -722,6 +722,24 @@ def digital_mode_add_day(session, run_id: int, bill_lines: pd.DataFrame):
     return len(records), other_count, other_value
 
 
+def _payment_modes_from_exceptions(session, gateway: str, refs: list) -> dict:
+    """{transaction_ref: payment_mode} from the unmapped-transaction exceptions, for the references given (one query per 500)."""
+    from .db import Exception_
+    from .exceptions import txn_exception_key
+    keys = {txn_exception_key(gateway, r): r for r in set(refs)}
+    out = {}
+    key_list = list(keys)
+    for i in range(0, len(key_list), 500):
+        for key, detail in session.query(Exception_.exception_key, Exception_.detail).filter(Exception_.exception_key.in_(key_list[i:i + 500])).all():
+            try:
+                mode = (json.loads(detail) if detail else {}).get("payment_mode")
+            except (ValueError, TypeError):
+                mode = None
+            if mode:
+                out[keys[key]] = mode
+    return out
+
+
 def _digital_mode_sales(session, run_id: int, date_from: date, date_to: date,
                         store: str = None) -> dict:
     """{"card", "upi", "card_collected", "upi_collected", "provisional_upi",
@@ -795,7 +813,8 @@ def _digital_mode_sales(session, run_id: int, date_from: date, date_to: date,
     open_pool = sums["unclassified"]  # engine has no matched txn for these
 
     active = session.query(ManualMatch.bill_no, ManualMatch.gateway, ManualMatch.mop,
-                          ManualMatch.amount, ManualMatch.validation_detail).filter(
+                          ManualMatch.amount, ManualMatch.validation_detail, ManualMatch.status,
+                          ManualMatch.transaction_ref).filter(
         ManualMatch.lifecycle == "active",
         ManualMatch.business_date >= date_from.isoformat(),
         ManualMatch.business_date <= date_to.isoformat(),
@@ -811,8 +830,12 @@ def _digital_mode_sales(session, run_id: int, date_from: date, date_to: date,
             still_unmatched = {b for (b,) in session.query(R1BillLine.bill_no).filter(
                 R1BillLine.run_id == run_id, R1BillLine.matched == False,  # noqa: E712
                 R1BillLine.bill_no.in_(bill_nos)).all()}
-        for bill_no, gateway, mop, amount, detail in active_rows:
-            if bill_no not in still_unmatched:
+        # A match recorded WITHOUT a payment mode (every bulk-accepted Paytm match before audit D-011) is looked up from the
+        # transaction's own exception record, in one query for all of them.
+        no_mode = []
+        parsed = []
+        for bill_no, gateway, mop, amount, detail, status, ref in active_rows:
+            if bill_no not in still_unmatched or status != "matched_manual":      # an asserted, unverified match is NOT a match
                 continue
             payment_mode = None
             if detail:
@@ -820,7 +843,17 @@ def _digital_mode_sales(session, run_id: int, date_from: date, date_to: date,
                     payment_mode = (json.loads(detail).get("txn") or {}).get("payment_mode")
                 except (ValueError, TypeError):
                     payment_mode = None
+            if not payment_mode and (gateway or "").strip().lower() == "paytm" and ref:
+                no_mode.append(ref)
+            parsed.append((bill_no, gateway, mop, amount, payment_mode, ref))
+        looked_up = _payment_modes_from_exceptions(session, "paytm", no_mode) if no_mode else {}
+        for bill_no, gateway, mop, amount, payment_mode, ref in parsed:
+            payment_mode = payment_mode or looked_up.get(ref)
             mode = mm.classify_digital_mode(gateway, payment_mode, mop)
+            if mode not in ("card", "upi"):
+                # The money IS confirmed received, only the mode was never recorded. Never leave a matched bill counted as receivable
+                # (audit D-011): use the system's documented default for an unknown mode.
+                mode = mm.PROVISIONAL_DIGITAL_MODE
             if mode in ("card", "upi"):
                 amt = float(amount or 0.0)
                 open_pool -= amt
