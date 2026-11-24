@@ -10,6 +10,7 @@ the file to uploads_archive/ (never erases it) and keeps the history row.
 
 from __future__ import annotations
 
+import html
 import sys
 import tempfile
 from datetime import date
@@ -263,8 +264,9 @@ else:
         used_run = used_by[r.id]
         cols = st.columns(widths)
         month_txt = _month_label(r.month) if r.month else "not month-specific"
-        cols[0].markdown(f"{r.original_file_name}<br><small>by {r.uploaded_by}</small>", unsafe_allow_html=True)
-        cols[1].markdown(f"{r.report_name}<br><small>{month_txt}</small>", unsafe_allow_html=True)
+        # A file name is chosen by whoever uploads it and is shown to everyone: escape it (audit S-3; an <img> in a name rendered).
+        cols[0].markdown(f"{html.escape(str(r.original_file_name))}<br><small>by {html.escape(str(r.uploaded_by))}</small>", unsafe_allow_html=True)
+        cols[1].markdown(f"{html.escape(str(r.report_name))}<br><small>{html.escape(str(month_txt))}</small>", unsafe_allow_html=True)
         cols[2].write(fmt_count(r.row_count) if r.row_count is not None else "—")
         cols[3].write(f"{r.date_range_start} to {r.date_range_end}" if r.date_range_start else "—")
         cols[4].write(r.uploaded_at.strftime("%d/%m/%Y %H:%M"))

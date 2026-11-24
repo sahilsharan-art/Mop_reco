@@ -270,7 +270,8 @@ def test_the_range_label_includes_the_store_or_says_all_stores():
     # and the store, so that is where "all stores" / "ABD only" must still be said.
     body = source[source.index("def _write_status_pill("):
                  source.index("def range_label_ddmmyyyy(")]
-    assert 'store_words = f"{store} only" if store else "all stores"' in body
+    # The store is escaped before it reaches raw HTML (audit S-3); the wording is unchanged.
+    assert 'store_words = html.escape(f"{store} only") if store else "all stores"' in body
 
 
 # ---------------------------------------------------------------------------

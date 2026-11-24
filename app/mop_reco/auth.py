@@ -90,6 +90,17 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(got, want)
 
 
+_DUMMY_HASH: Optional[str] = None
+
+
+def _dummy_hash() -> str:
+    """A valid hash of a throw-away value, made once per process, that an unknown username is checked against."""
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = hash_password(base64.b64encode(os.urandom(12)).decode())
+    return _DUMMY_HASH
+
+
 def password_problems(password: str, username: str = "", cfg: Optional[dict] = None) -> list:
     """Why a password is not acceptable (empty list = fine)."""
     cfg = cfg or DEFAULTS
@@ -246,8 +257,9 @@ def authenticate(session, username: str, password: str, cfg: Optional[dict] = No
     now = now or datetime.now()
     user = get_user(session, username)
     if user is None:
-        # Spend the same time as a real check so the response time does not reveal whether the username exists.
-        verify_password(password, hash_password("x"))
+        # Spend the same time as a real check so the response time does not reveal whether the username exists. One scrypt run, exactly
+        # as a real account costs: the dummy hash is made once, not on every attempt (making it each time cost TWO runs - audit S-1).
+        verify_password(password, _dummy_hash())
         log_event(session, "login_failed", normalise_username(username), "unknown username", ip)
         return SignIn(None, GENERIC_FAILURE)
     if user.locked_until and user.locked_until > now:

@@ -520,22 +520,56 @@ def resolve_destination_dir(spec: SourceSpec, month: Optional[str], config: Conf
     return base / folder_name, gap_note
 
 
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+_MAX_NAME_CHARS = 120
+
+
+def safe_file_name(name: str) -> str:
+    """The name a file is stored under on disk, from the name the browser sent.
+
+    The browser's name is attacker-controlled: on Windows `..\\..\\x.csv` climbs out of the folder, `C:\\Windows\\x.csv` replaces it and
+    `\\\\server\\share\\x.csv` opens a network path (audit S-5). Only the LAST path component is kept (both separators), characters Windows
+    forbids become `_`, leading/trailing dots and spaces go, a reserved device name (CON, NUL, COM1 ...) is prefixed, and the length is
+    capped keeping the extension. An empty result is refused, never replaced by a guess."""
+    import re
+    last = str(name or "").replace("\\", "/").split("/")[-1].strip()
+    last = re.sub(r'[<>:"|?*\x00-\x1f]', "_", last).strip(" .")
+    if not last or last in {".", ".."}:
+        raise ValueError(f"The file name {name!r} is not usable - rename the file and upload it again.")
+    stem, dot, suffix = last.rpartition(".")
+    if not dot:
+        stem, suffix = last, ""
+    if stem.upper() in _RESERVED_NAMES:
+        stem = "_" + stem
+    suffix = ("." + suffix) if suffix else ""
+    stem = stem[:max(1, _MAX_NAME_CHARS - len(suffix))]
+    return stem + suffix
+
+
 def store_file(spec: SourceSpec, temp_path: Path, original_name: str,
               month: Optional[str], operator: str, session, config: Config,
               row_count: int, date_range: Optional[tuple]) -> UploadedFile:
     """Moves the validated temp file into its real destination — never
     overwriting (a colliding name gets a timestamp suffix, and that is
-    reported back to the caller via the returned row's own file name)."""
+    reported back to the caller via the returned row's own file name).
+
+    Only a sanitised form of the browser's file name is used as a path (see `safe_file_name`); the name as supplied is still what the
+    history records, escaped when shown."""
     dest_dir, gap_note = resolve_destination_dir(spec, month, config)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    dest_path = dest_dir / original_name
+    disk_name = safe_file_name(original_name)
+    dest_path = dest_dir / disk_name
     renamed = False
     if dest_path.exists():
         stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        stem, suffix = Path(original_name).stem, Path(original_name).suffix
+        stem, suffix = Path(disk_name).stem, Path(disk_name).suffix
         dest_path = dest_dir / f"{stem}__uploaded-{stamp}{suffix}"
         renamed = True
+
+    # Belt and braces: whatever the name was, the final path must sit inside the folder chosen from the source and month.
+    if dest_dir.resolve() not in dest_path.resolve().parents:
+        raise ValueError(f"Refusing to store {original_name!r}: it would be written outside {dest_dir}.")
 
     shutil.move(str(temp_path), str(dest_path))
 

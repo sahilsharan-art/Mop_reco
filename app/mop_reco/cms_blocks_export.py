@@ -35,7 +35,7 @@ def build_workbook(m: cb.Model, date_from: str, date_to: str, remarks: dict, lat
                    meta: dict, overrides: pd.DataFrame = None) -> bytes:
     a, b = m.window(date_from, date_to)
     buf = io.BytesIO()
-    wb = xlsxwriter.Workbook(buf, {"in_memory": True})
+    wb = xlsxwriter.Workbook(buf, {"in_memory": True, "strings_to_formulas": False, "strings_to_urls": False})
     f_num = wb.add_format({"num_format": NUM})
     f_head = wb.add_format({"bold": True, "align": "center", "bg_color": "#EEF2F6", "border": 1})
     f_date = wb.add_format({"bold": True, "align": "center", "num_format": "dd/mm/yyyy", "bg_color": "#EEF2F6", "border": 1})

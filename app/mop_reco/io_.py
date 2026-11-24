@@ -312,6 +312,19 @@ def _read_csv(path: Path, encoding: str, max_rows: Optional[int] = None) -> Read
     return ReadResult(grid=grid, file_format="csv", encoding_used=encoding, sheet_name=None, zip_member=None)
 
 
+# A zip is read member by member into memory (never extracted to disk). A crafted one can declare a huge member; refuse it before reading.
+MAX_ZIP_MEMBER_BYTES = 4 * 1024 ** 3
+
+
+def check_zip_member_size(zf: "zipfile.ZipFile", member: str, label: str = "") -> None:
+    """Refuse a zip member whose declared uncompressed size is above MAX_ZIP_MEMBER_BYTES (audit S-6). The declared size is also the most
+    `ZipFile.read` will ever return, so checking it first bounds the memory used."""
+    size = zf.getinfo(member).file_size
+    if size > MAX_ZIP_MEMBER_BYTES:
+        raise IOError_(f"{label or member}: the zip member is {size / 1024 ** 3:.1f} GB uncompressed, above the "
+                       f"{MAX_ZIP_MEMBER_BYTES / 1024 ** 3:.0f} GB limit - not read")
+
+
 def _read_zip_csv(path: Path, encoding: str, max_rows: Optional[int] = None) -> ReadResult:
     with zipfile.ZipFile(path) as zf:
         csv_members = [n for n in zf.namelist() if n.lower().endswith(".csv")]
@@ -321,6 +334,7 @@ def _read_zip_csv(path: Path, encoding: str, max_rows: Optional[int] = None) -> 
                 f"({csv_members}) — never guessing which one to use"
             )
         member = csv_members[0]
+        check_zip_member_size(zf, member, path.name)
         raw_bytes = zf.read(member)
     lines = _decode_lines(raw_bytes, encoding, f"{path.name}::{member}")
     if max_rows is not None:

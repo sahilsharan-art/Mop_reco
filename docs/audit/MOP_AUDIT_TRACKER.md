@@ -13,7 +13,7 @@ column meanings without approval; no secrets or internal addresses in any delive
 | 2 | Functional and financial audit (R1, R2, R3a, R3b, float, sheet A-N) | **In progress (24 Nov 2026)** | R1, Float, CMS blocks, sheet A-N and the R3a cash book re-performed independently; 3 defects found and fixed locally (section 9); R2 / R3b and boundary runs still to do |
 | 3 | Code and database audit | **Substantially complete (24 Nov 2026)** | 25 silent handlers read and classified; schema, index and constraint review done; live database integrity audit passed except D-002 noise; concurrency proved; C-002/C-004/C-005/C-007/C-008 closed; see section 10 |
 | 4 | UI/UX audit (every page, 375/768/1366/1920) | **Complete for the pages and widths (24 Nov 2026)** | seven pages and the sign-in page at four widths; five defects found and fixed locally (D-006 to D-010); see section 11 |
-| 5 | Security and performance audit | Not started | two security items already known (section 5) |
+| 5 | Security and performance audit | **Substantially complete (24 Nov 2026)** | six security defects found and fixed locally (S-1, S-3 to S-6; S-5 is P1); six infrastructure / decision items recorded (S-2, S-7 to S-12); performance measured on production; see section 12 |
 | 6 | Bug fixing (P0, P1, P2, P3) | Started | D-001..D-003 fixed locally and committed (01e1e8b); NOT yet deployed to the application server; see `MOP_DEFECT_REGISTER.md` |
 | 7 | UAT | Not started | |
 | 8 | Production readiness | Not started | the ten open risks are classified in section 6 |
@@ -130,3 +130,33 @@ Update to risk 8 in section 6: the earlier "about 12% of stores with a constant 
 **Defects found and fixed locally:** D-006 (pages re-read all CMS files and rewrote the warehouse on every view - found because the page froze the browser), D-007 (Float on the slow path), D-008 (negative closing balance shown positive), D-009 (text contrast), D-010 (touch targets). Two observations: O-5, O-6.
 
 **Not done and why.** No screen-reader or keyboard-only walkthrough (needs a person); no visual-regression snapshots; the sign-in success path was not repeated in this phase (verified when it was built, and again in the audit's earlier work). Heavy tables were checked for layout but not scrolled to the end.
+
+## 12. Phase 5 results (24 Nov 2026)
+
+**Security - what was tested and how.** Secrets: the repository and all 39 commits scanned for passwords, tokens and connection strings - none. Dependencies: `pip-audit` on the server's exact 63 installed packages. Authentication: read in full, and response time measured. Injection: every one of the 36 places that put text into raw HTML was listed and classified; the export path was tested with hostile remarks; file upload was tested with 12 hostile file names against the real storing function; zip handling was read. Network: ports and firewall on the application server were read (nothing changed).
+
+**Fixed locally (all tested, none deployed):** S-5 (P1, file name decides where the file is written - proven writing outside the folder), S-1 (username timing), S-3 (unescaped text in HTML - proven markup injection), S-4 (typed remark becomes a live Excel formula - proven), S-6 (zip size limit). 34 new tests.
+
+**Confirmed sound:** passwords are salted scrypt (2^15), compared in constant time; session tokens are 256-bit, stored only as hashes, expire after 120 idle minutes or 12 hours; a wrong username and a wrong password give the same message; nothing is shown before sign-in; the production switch `MOP_REQUIRE_POSTGRES` makes the "auth off" development switch inert; raw SQL is parameterised (C-005 disproved by a hostile-input test); zips are never extracted to disk; the ERP login is read-only in three layers.
+
+**Needs a decision or IT:** S-2 lock-out denial of service (the app has a single administrator), S-7 firewall off and plain HTTP, S-8 Pillow CVEs (blocked by Streamlit), S-9 reproducible install (lock file added), S-10 error details, S-11 repository visibility, S-12 the wide ERP login.
+
+**The application is not running on the server.** Port 8501 has nothing listening; the scheduled task `MOP-Reconciliation-App` exists but is idle. I did not start it. (Whether this was deliberate is not known.)
+
+**Performance, measured on the production database with the real run (5,584,483 bill lines, 8 months):**
+
+| | Time |
+|---|---|
+| Summary data, whole range (Apr - Nov) | 3.5 s |
+| Summary data, one month | 0.47 s |
+| Summary data, one day | 0.04 s |
+| Particulars matrix, whole range | 0.15 - 0.19 s |
+| Store cash card | 0.04 s |
+| Cash position data (load + model, 225 stores x 228 days) | about 1 s (the page then takes about 5 s to draw the very wide table in the browser) |
+| 4 people loading a month at once | 1.7 s each (0.55 s alone); roughly linear beyond two users because one process shares one interpreter |
+
+Float: 82 s on the old path, about 3.6 s warm now (D-007). Cold page loads on the development PC were 5 - 9 s for Store Task, Float and Cash position and 1.1 - 1.9 s for the rest (the browser timing overlaps neighbouring pages, so these are approximate).
+
+**Database observations for the DBA:** PostgreSQL is on near-default memory settings (`shared_buffers` 128 MB, `work_mem` 4 MB, `random_page_cost` 4) while the largest table is 3.1 GB and 52 of 100 connections are used by other applications. Tables are vacuumed and the visibility map is 100% (so index-only scans are effective). The bill-lines table grows about 0.65 million rows a month.
+
+**Not done:** no penetration test of the live server's other services (out of scope: they belong to other applications); no load test beyond 4 users; no TLS test (there is no TLS); the lock-out and session-expiry timings were verified by unit tests, not on the server.

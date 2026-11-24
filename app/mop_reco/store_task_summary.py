@@ -14,6 +14,7 @@ It reads the SAME filter the Store Task page applies (store, search, type, statu
 
 from __future__ import annotations
 
+import html
 import io
 from datetime import date
 from pathlib import Path
@@ -22,6 +23,11 @@ import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font
 from sqlalchemy import func
+
+
+def _esc(value) -> str:
+    """Text from the data goes into raw HTML tables here, so it is escaped (audit S-3)."""
+    return html.escape(str(value))
 
 from . import store_tasks as stt
 from .db import StoreTask
@@ -91,7 +97,7 @@ def html_table(frame: pd.DataFrame) -> str:
     body = []
     for rec in frame.itertuples(index=False):
         cells = "".join(f"<td>{fmt_count(rec[i]) if i % 2 == 1 else rupees(rec[i])}</td>" for i in range(1, 7))
-        body.append(f"<tr><td class='mop-sum-left'>{rec[0]}</td>{cells}</tr>")
+        body.append(f"<tr><td class='mop-sum-left'>{_esc(rec[0])}</td>{cells}</tr>")
     if len(frame):
         tot = [frame[c].sum() for c in COLUMNS[1:]]
         cells = "".join(f"<td>{fmt_count(int(v)) if i % 2 == 0 else rupees(v)}</td>" for i, v in enumerate(tot))
@@ -123,7 +129,7 @@ def html_table_one(frame: pd.DataFrame, task_type: str) -> str:
     label = dict(GROUPS)[task_type]
     head = (f"<tr><th rowspan='2' class='mop-sum-left'>Store code</th><th colspan='2'>{label}</th></tr>"
             "<tr><th>open ticket</th><th>Volume</th></tr>")
-    body = [f"<tr><td class='mop-sum-left'>{r[0]}</td><td>{fmt_count(int(r[1]))}</td><td>{rupees(r[2])}</td></tr>"
+    body = [f"<tr><td class='mop-sum-left'>{_esc(r[0])}</td><td>{fmt_count(int(r[1]))}</td><td>{rupees(r[2])}</td></tr>"
             for r in frame.itertuples(index=False)]
     if len(frame):
         body.append(f"<tr class='mop-static-total'><td class='mop-sum-left'>Total</td>"

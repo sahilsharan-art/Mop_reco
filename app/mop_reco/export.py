@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -121,6 +122,25 @@ def _stringify_ids(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+_PLAIN_NUMBER = re.compile(r"^[+-]?\d+(\.\d+)?$")
+
+
+def _neutralise_formulas(df: pd.DataFrame) -> pd.DataFrame:
+    """CSV has no cell types: Excel runs any text cell that starts with = + - or @ as a formula. Prefix such a text cell with an
+    apostrophe so it opens as text (OWASP CSV-injection guidance). Numeric columns and plain numbers written as text are left alone,
+    so a genuine negative amount is not touched (audit S-4)."""
+    out = df.copy()
+    for column in out.columns:
+        if out[column].dtype == object or str(out[column].dtype).startswith("str"):
+            def fix(v):
+                if isinstance(v, str) and v.startswith(_FORMULA_START) and not _PLAIN_NUMBER.match(v):
+                    return "'" + v
+                return v
+            out[column] = out[column].map(fix)
+    return out
+
+
 def build_export(df: pd.DataFrame, meta: ExportMeta,
                  progress=None) -> ExportResult:
     """Returns the bytes to download, the filename, and which format was used.
@@ -154,7 +174,7 @@ def build_export(df: pd.DataFrame, meta: ExportMeta,
         # in Excel as a number and is silently mangled past 15 significant
         # digits, exactly like the .xlsx case above. A quoted field opens as
         # text.
-        data.to_csv(buffer, index=False, quoting=csv.QUOTE_NONNUMERIC)
+        _neutralise_formulas(data).to_csv(buffer, index=False, quoting=csv.QUOTE_NONNUMERIC)
         tick(1.0, "CSV ready")
         payload = buffer.getvalue().encode("utf-8-sig")
         logger.info(f"export: {rows} rows -> csv ({len(payload)/1_048_576:.1f} MB)")
@@ -164,7 +184,10 @@ def build_export(df: pd.DataFrame, meta: ExportMeta,
 
     tick(0.4, "Writing Excel…")
     buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+    # A typed remark that starts with "=" must stay text, never run as a formula (audit S-4), and a URL in a remark must not become a link
+    # (also keeps Excel's 65,530-hyperlinks-per-sheet limit out of a large export).
+    with pd.ExcelWriter(buffer, engine="xlsxwriter",
+                        engine_kwargs={"options": {"strings_to_formulas": False, "strings_to_urls": False}}) as writer:
         sheet = "export"
         meta_rows = _meta_rows(data, meta)
         # Header block first, then a blank row, then the data.

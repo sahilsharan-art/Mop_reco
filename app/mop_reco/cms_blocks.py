@@ -79,6 +79,8 @@ def _read_file(path: Path) -> pd.DataFrame:
     if suffix == ".zip":
         with zipfile.ZipFile(path) as zf:
             member = next(n for n in zf.namelist() if n.lower().endswith(".csv"))
+            from .io_ import check_zip_member_size
+            check_zip_member_size(zf, member, path.name)
             raw = zf.read(member)
         df = pd.read_csv(io.BytesIO(raw), header=0, dtype=str, index_col=False,
                          usecols=[_POS[c] for c in _ORDER], encoding="utf-8")

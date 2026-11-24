@@ -226,7 +226,7 @@ def _write_status_pill(run, date_from, date_to, store=None):
     if slot is None or run is None:
         return
     label = range_label_ddmmyyyy(date_from, date_to)
-    store_words = f"{store} only" if store else "all stores"
+    store_words = html.escape(f"{store} only") if store else "all stores"
     slot.markdown(
         f"<div class='mop-pill' title='Build: code loaded {build_stamp()}'><span class='mop-pill-dot'></span>"
         f"<span class='mop-pill-live'>Live</span>"
@@ -1023,7 +1023,9 @@ def tile(container, label: str, value: str, state: str = "neutral", note: str = 
     title attribute, on top of whatever is already shown in the note line
     beneath the value.
     """
-    hover = (tooltip or note).replace('"', "&quot;")
+    # Text reaches raw HTML here, so every piece is escaped (audit S-3). No caller passes markup.
+    hover = html.escape(str(tooltip or note), quote=True)
+    label, value, note = html.escape(str(label)), html.escape(str(value)), html.escape(str(note))
     classes = ["mop-tile"]
     if feature:
         classes.append("mop-tile--feature")

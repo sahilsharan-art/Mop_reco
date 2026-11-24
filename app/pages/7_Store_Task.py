@@ -297,7 +297,7 @@ if live_stores:
                         index=live_stores.index(store) if store in live_stores else 0, key="st_send_store")
     sheet = stt.store_sheet(session, pick, today, date_from=date_from, date_to=date_to)
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
+    with pd.ExcelWriter(buf, engine="xlsxwriter", engine_kwargs={"options": {"strings_to_formulas": False, "strings_to_urls": False}}) as writer:
         sheet.to_excel(writer, index=False, sheet_name=pick[:31])
         ws, book = writer.sheets[pick[:31]], writer.book
         text = book.add_format({"num_format": "@"})
@@ -309,7 +309,7 @@ if live_stores:
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 tbuf = io.BytesIO()
-with pd.ExcelWriter(tbuf, engine="xlsxwriter") as writer:
+with pd.ExcelWriter(tbuf, engine="xlsxwriter", engine_kwargs={"options": {"strings_to_formulas": False, "strings_to_urls": False}}) as writer:
     stt.upload_template().to_excel(writer, index=False, sheet_name="store_replies")
 st.download_button("Download the reply template", tbuf.getvalue(), file_name="store_task_reply_template.xlsx",
                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="st_dl_tpl")

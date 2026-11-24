@@ -347,7 +347,7 @@ st.caption(
 
 template = ft.upload_template()
 buffer = io.BytesIO()
-with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+with pd.ExcelWriter(buffer, engine="xlsxwriter", engine_kwargs={"options": {"strings_to_formulas": False, "strings_to_urls": False}}) as writer:
     template.to_excel(writer, index=False, sheet_name="float_remarks")
 st.download_button("Download the template", buffer.getvalue(),
                    file_name="float_remark_template.xlsx",

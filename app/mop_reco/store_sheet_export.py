@@ -349,7 +349,8 @@ def build_workbook(sheet: pd.DataFrame, summary: pd.DataFrame,
     n_cols_plain = len(_columns(False))
 
     buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+    # Formulas here are written explicitly with write_formula(); a text cell from the data that starts with "=" must stay text (audit S-4).
+    with pd.ExcelWriter(buffer, engine="xlsxwriter", engine_kwargs={"options": {"strings_to_formulas": False, "strings_to_urls": False}}) as writer:
         book = writer.book
         fmt = _formats(book)
 
