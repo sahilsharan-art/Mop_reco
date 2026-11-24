@@ -1,49 +1,517 @@
-import type React from 'react';
-import {useState,useMemo} from 'react';
-import {useSuspenseQuery,useQueryClient} from '@tanstack/react-query';
-import {Search,ArrowUpDown,ChevronLeft,ChevronRight,Download,MoreHorizontal,CheckCircle2,AlertTriangle,Wallet,TrendingUp,ShieldCheck,Save,Plus,UploadCloud,Sparkles} from 'lucide-react';
-import {AreaChart,Area,XAxis,YAxis,Tooltip,ResponsiveContainer,CartesianGrid} from 'recharts';
-import {toast} from 'sonner';
-import {screenQuery,params,display,money,api,download,type TableData,type Summary,type Row,type MatrixColumn} from '../lib/api';
-import {useWorkspace} from './Workspace';
-import {Button,Modal,Pill} from './ui';
-export type ScreenKind='summary'|'tasks'|'cash'|'float'|'exceptions'|'uploads'|'masters'|'users';
-const titles:Record<ScreenKind,string>={summary:'Summary',tasks:'Store task register',cash:'Store-day cash position',float:'Float register',exceptions:'Exception register',uploads:'Upload history',masters:'Master data',users:'Users'};
-const columns:Partial<Record<ScreenKind,string[]>>={tasks:['Task id','Store','Business date','Type','Amount','Due by','Status','Store reply','HO remark'],cash:['store','date','total_sale','digital_sale','cash_sale','digital_received','digital_receivable','opening_balance','cash_deposit','cash_received','cash_receivable','cash_expense_income','closing_balance','float_amount'],float:['store','business_date','day_name','float_amount','float_threshold','days_held_high','negative_float','remark'],exceptions:['store','date','type','reference','amount','age_days','status','first_seen','last_seen'],uploads:['original_file_name','report_name','month','row_count','size_bytes','uploaded_by','uploaded_at','status'],users:['display_name','username','role','active','must_change_password','last_login_at']};
-const label=(key:string)=>key.replaceAll('_',' ').replace(/\b\w/g,x=>x.toUpperCase());
-function heatOf(v:unknown,rows:Record<string,unknown>[],key:string){if(typeof v!=='number'||!v||/days|age|id$|count/i.test(key))return undefined;const vals=rows.map(r=>r[key]).filter(x=>typeof x==='number') as number[];if(new Set(vals).size<2)return undefined;const max=Math.max(1,...rows.map(r=>typeof r[key]==='number'?Math.abs(r[key] as number):0));const pct=Math.round(Math.min(1,Math.abs(v)/max)*100);return {'--heat':`${pct}%`} as React.CSSProperties;}
-function toneFor(k:string,v:unknown){if(/negative/.test(k.toLowerCase()))return /yes|true/i.test(String(v))?'danger':'success';return tone(v);}
-function rowTone(row:Record<string,unknown>){for(const k of Object.keys(row)){if(/status|negative_float|severity/.test(k.toLowerCase())){const t=toneFor(k,row[k]);if(t!=='neutral')return t;}}return undefined;}
-function tone(v:unknown){const s=String(v).toLowerCase();return /closed|matched|stored|completed|yes/.test(s)?'success':/open|pending|review|replied/.test(s)?'warning':/failed|negative|blocked/.test(s)?'danger':'neutral';}
-
-export function Screen({kind}:{kind:ScreenKind}){const {filter,bootstrap}=useWorkspace();const qc=useQueryClient();const [page,setPage]=useState(0);const [search,setSearch]=useState('');const [status,setStatus]=useState('');const [sort,setSort]=useState('');const [master,setMaster]=useState(bootstrap.masters[0]?.key??'store');const [selected,setSelected]=useState<Row|null>(null);const [showUpload,setShowUpload]=useState(false);const [showCreate,setShowCreate]=useState(false);const [editMaster,setEditMaster]=useState(false);const extra={offset:page*50,limit:50,...(kind==='tasks'?{search,status,sort:sort||'Overdue first, oldest due'}:{}),...(kind==='exceptions'?{status,sort:sort||'Amount (high to low)'}:{})};const endpoint=kind==='masters'?`/masters/${master}`:`/${kind==='uploads'?'uploads':kind}?${params(filter,extra)}`;const {data}=useSuspenseQuery(screenQuery(endpoint));const table=data as TableData;const summary=data as Summary;
-const [localSort,setLocalSort]=useState<{key:string;desc:boolean}|null>(null);const rows=useMemo(()=>{let items=[...(table.rows??[])];if(search&&kind!=='tasks')items=items.filter(r=>Object.values(r).some(v=>String(v).toLowerCase().includes(search.toLowerCase())));if(localSort)items.sort((a,b)=>{const av=a[localSort.key],bv=b[localSort.key];const diff=typeof av==='number'&&typeof bv==='number'?av-bv:String(av??'').localeCompare(String(bv??''));return localSort.desc?-diff:diff;});return items;},[table.rows,search,localSort,kind]);const shownColumns=kind==='masters'?(table.fields??[]):columns[kind]??[];
-async function exportData(){try{await download(`/export/${kind}?${params(filter,{status,search})}`);toast.success('Export downloaded.');}catch(e){toast.error(e instanceof Error?e.message:'Export failed.');}}
-if(kind==='summary')return <SummaryView data={summary}/>;
-return <><div className="section-heading"><div><h2>{titles[kind]}</h2><p>{typeof table.total==='number'?`${table.total.toLocaleString('en-IN')} records`:kind==='masters'?`Version ${table.version??'—'}`:'Account administration'}</p></div><div className="toolbar-actions">{['tasks','cash','float','exceptions'].includes(kind)?<Button variant="secondary" onClick={exportData}><Download size={15}/>Export all filtered records</Button>:null}{kind==='uploads'?<Button onClick={()=>setShowUpload(true)}><UploadCloud size={16}/>Upload report</Button>:null}{kind==='users'?<Button onClick={()=>setShowCreate(true)}><Plus size={16}/>Add user</Button>:null}{kind==='masters'?<Button disabled={!table.in_database} onClick={()=>setEditMaster(true)}><Save size={15}/>Edit master</Button>:null}</div></div>
-{kind==='masters'&&!table.in_database?<div className="alert alert-warning">Masters are still sourced from Excel. Editing stays blocked until the existing master migration is complete.</div>:null}
-{kind==='tasks'&&table.summary?<div className="metric-strip">{['open','pending','wip','closed'].map(key=>{const value=table.summary?.[key];const tuple=Array.isArray(value)?value:[];return <div className={`metric metric-${key==='closed'?'success':'warning'}`} key={key}><span>{key==='wip'?'Under review':label(key)}</span><strong>{display(tuple[0])}</strong><small>{money(tuple[1])}</small></div>;})}</div>:null}
-<div className="table-toolbar"><div className="search-field"><Search size={16}/><input aria-label="Search records" placeholder={kind==='tasks'?'Search store, bill or reply':'Search this page'} value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}}/></div>{kind==='masters'?<select aria-label="Master selection" value={master} onChange={e=>{setMaster(e.target.value);setLocalSort(null);}}>{bootstrap.masters.map(x=><option key={x.key} value={x.key}>{x.title}</option>)}</select>:null}{kind==='tasks'||kind==='exceptions'?<><select aria-label="Status filter" value={status} onChange={e=>{setStatus(e.target.value);setPage(0);}}><option value="">All statuses</option>{(kind==='tasks'?['open','replied','under_review','closed']:['open','under_investigation','closed','auto_resolved']).map(x=><option key={x} value={x}>{label(x)}</option>)}</select><select aria-label="Sort records" value={sort} onChange={e=>{setSort(e.target.value);setPage(0);}}>{(kind==='tasks'?['Overdue first, oldest due','Largest amount']:['Amount (high to low)','Amount (low to high)','Date (oldest first)','Date (newest first)','Store']).map(x=><option key={x}>{x}</option>)}</select></>:null}<span className="toolbar-count">{rows.length} shown</span></div>
-<div className="table-scroll"><table><thead><tr>{shownColumns.map(key=><th key={key}><Button variant="icon" className="sort-head" onClick={()=>setLocalSort({key,desc:localSort?.key===key?!localSort.desc:false})}>{label(key)}<ArrowUpDown size={12}/></Button></th>)}{['tasks','float','exceptions','users'].includes(kind)?<th>Actions</th>:null}</tr></thead><tbody>{rows.map((row,i)=><tr data-tone={rowTone(row)} key={String(row['_id']??row['id']??row['exception_key']??`${row['store']}-${row['date']??row['business_date']}-${i}`)}>{shownColumns.map((key,index)=><td key={key} style={index===0?undefined:heatOf(row[key],rows,key)} className={`${index===0?'sticky-cell':''} ${typeof row[key]==='number'?`numeric heat ${(row[key] as number)<0?'heat-neg':''}`:''}`}>{/status|role|active|negative_float/.test(key.toLowerCase())?<Pill tone={toneFor(key,row[key])}>{display(row[key],key)}</Pill>:(/^(type|reason|exception_type)$/i.test(key)&&typeof row[key]==='string'?<span className="type-chip">{label(String(row[key]))}</span>:display(row[key],key))}</td>)}{['tasks','float','exceptions','users'].includes(kind)?<td><Button variant="icon" title="Open record" aria-label={`Open ${display(row['Task id']??row['store']??row['display_name']??row['reference'])}`} onClick={()=>setSelected(row)}><MoreHorizontal size={18}/></Button></td>:null}</tr>)}</tbody>{rows.length>1&&shownColumns.some(k=>typeof rows[0]?.[k]==='number'&&!/days|age|id$|threshold|count/i.test(k))?<tfoot><tr>{shownColumns.map((key,index)=>{const nums=rows.map(r=>r[key]).filter(x=>typeof x==='number') as number[];const tot=nums.reduce((a,b)=>a+b,0);return <td key={key} className={`${index===0?'sticky-cell':''} numeric ${tot<0?'heat-neg':''}`}>{index===0?`Total · ${rows.length}`:nums.length&&!/days|age|id$|threshold|count/i.test(key)?display(tot,key):''}</td>;})}{['tasks','float','exceptions','users'].includes(kind)?<td/>:null}</tr></tfoot>:null}</table>{rows.length===0?<div className="empty-state"><Search size={26}/><h3>No matching records</h3><p>Try another store, period or status.</p></div>:null}</div>
-{!['masters','users','uploads'].includes(kind)?<div className="pagination"><span>Page {page+1} · {table.total??0} records</span><Button variant="icon" aria-label="Previous page" disabled={page===0} onClick={()=>setPage(page-1)}><ChevronLeft size={17}/></Button><Button variant="icon" aria-label="Next page" disabled={(page+1)*50>=(table.total??0)} onClick={()=>setPage(page+1)}><ChevronRight size={17}/></Button></div>:null}
-{selected?<RecordModal kind={kind} row={selected} close={()=>setSelected(null)} refresh={()=>qc.invalidateQueries({queryKey:['screen']})}/>:null}{showUpload?<UploadModal close={()=>setShowUpload(false)} refresh={()=>qc.invalidateQueries({queryKey:['screen']})}/>:null}{showCreate?<CreateUser close={()=>setShowCreate(false)} refresh={()=>qc.invalidateQueries({queryKey:['screen']})}/>:null}{editMaster?<MasterModal name={master} data={table} close={()=>setEditMaster(false)} refresh={()=>qc.invalidateQueries({queryKey:['screen']})}/>:null}</>;}
-
-function SummaryView({data}:{data:Summary}){const m=data.matrix;const total=m['total_sale'] as MatrixColumn;const matched=Number(data.verdict['matched_value']??0);const exceptionsCount=Number(data.verdict['open_exceptions']??0);const rate=Number(data.verdict['digital_value']??0)>0?matched/Number(data.verdict['digital_value'])*100:0;return <><section className="executive-band"><div className="hero-intro"><div className="eyebrow">COLLECTIONS OVERVIEW</div><h2>MOP Reconciliation</h2><div className="hero-status"><ShieldCheck size={16}/>MOP Reconciliation</div></div><div className="hero-number"><span>Total sale</span><strong>{money(total?.sale)}</strong><small>Selected store and business period</small></div><div className="hero-number secondary"><span>Receivable</span><strong>{money(total?.receivable)}</strong><small>Open receivable · never written off</small></div></section><div className="metric-strip"><Metric icon={Wallet} title="Collected" value={money(total?.collected)} detail="Within selected period"/><Metric icon={CheckCircle2} title="Digital match rate" value={`${rate.toFixed(1)}%`} detail="Matched value / digital value" tone="success"/><Metric icon={AlertTriangle} title="Open exceptions" value={exceptionsCount.toLocaleString('en-IN')} detail={money(data.verdict['open_exception_value'])} tone="warning"/><Metric icon={TrendingUp} title="Digital sale" value={money(data.verdict['digital_value'])} detail="Existing reconciliation engine"/></div>
-<section className="section"><div className="section-heading"><div><h2>Particulars</h2><p>Sale, collected and receivable</p></div><Pill>₹ · Exact values</Pill></div><div className="table-scroll"><table className="matrix"><thead><tr><th>Particulars</th>{['total_sale','upi','card','total_digital','total_cash'].map(k=><th key={k}>{label(k)}</th>)}</tr></thead><tbody>{['sale','collected','receivable'].map(field=><tr key={field}><td className="sticky-cell">{label(field)}</td>{['total_sale','upi','card','total_digital','total_cash'].map(k=>{const col=m[k] as MatrixColumn;const value=col?.[field as keyof MatrixColumn];return <td className={`numeric ${field==='receivable'&&value?'attention-cell':''}`} key={k}>{money(value)}</td>;})}</tr>)}</tbody></table></div><details className="adjustments"><summary>Adjustments and data controls</summary><dl>{['gift_voucher_redeemed','credit_note_issued','credit_note_received','provisional_upi_amount','provisional_upi_bills'].map(k=><div key={k}><dt>{label(k)}</dt><dd>{display(m[k],k)}</dd></div>)}</dl>{Array.isArray(m['controls'])?m['controls'].map((v,i)=><p key={i}>{display(v)}</p>):null}</details></section>
-<DashPanels data={data} total={total}/><div className="analytics-grid"><section className="section"><div className="section-heading"><div><h2>Digital collection trajectory</h2><p>Actual sale and unmatched value by business date</p></div></div>{data.trend.length?<div className="chart"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data.trend}><CartesianGrid vertical={false} stroke="var(--border)"/><XAxis dataKey="business_date" tick={{fontSize:10,fill:'var(--muted-foreground)'}} tickLine={false} axisLine={false}/><YAxis tickFormatter={v=>`${Number(v)/100000}L`} tick={{fontSize:10,fill:'var(--muted-foreground)'}} axisLine={false} tickLine={false}/><Tooltip formatter={v=>money(Number(v))}/><Area type="monotone" dataKey="digital_value" stroke="var(--primary)" fill="var(--primary-tint)" strokeWidth={2}/><Area type="monotone" dataKey="unmatched_value" stroke="var(--warning)" fill="var(--warning-tint)" strokeWidth={2}/></AreaChart></ResponsiveContainer></div>:<div className="empty-state chart-empty"><TrendingUp size={26}/><p>No bill-level trend for this period yet.</p></div>}</section><section className="section"><div className="section-heading"><div><h2>Exception focus</h2><p>Open items by type</p></div><AlertTriangle size={17}/></div>{data.exceptions.length?data.exceptions.slice(0,6).map((row,i)=><div className="exception-line" key={i} style={{'--share':`${Math.round(Number(row['value']??0)/Math.max(1,...data.exceptions.map(r=>Number(r['value']??0)))*100)}%`} as React.CSSProperties}><span className="exception-icon"><AlertTriangle size={15}/></span><div><strong>{label(String(row['type']))}</strong><small>{String(row['count'])} records</small></div><b>{money(row['value'])}</b></div>):<div className="empty-state"><CheckCircle2 size={26}/><p>No open exceptions.</p></div>}</section></div></>;}
-function Metric({icon:Icon,title,value,detail,tone='primary'}:{icon:typeof Wallet;title:string;value:string;detail:string;tone?:string}){return <div className={`metric metric-${tone}`}><span>{title}<Icon size={16}/></span><strong>{value}</strong><small>{detail}</small></div>;}
-
-function RecordModal({kind,row,close,refresh}:{kind:ScreenKind;row:Row;close:()=>void;refresh:()=>Promise<unknown>}){const [text,setText]=useState('');const [action,setAction]=useState(kind==='users'?'unlock':'remark');const [role,setRole]=useState('user');const [busy,setBusy]=useState(false);const [history,setHistory]=useState<Row[]|null>(null);async function save(){setBusy(true);try{if(kind==='tasks')await api(`/tasks/${row['_id']}`,{method:'POST',body:JSON.stringify({action,text:action==='review'?'Under review':text})});else if(kind==='float')await api('/float/remark',{method:'POST',body:JSON.stringify({store:row['store'],business_date:row['business_date'],text})});else if(kind==='exceptions')await api('/exceptions/remark',{method:'POST',body:JSON.stringify({exception_key:row['exception_key'],text})});else if(kind==='users')await api(`/users/${row['id']}`,{method:'POST',body:JSON.stringify({action,role,password:text})});toast.success('Saved.');await refresh();close();}catch(e){toast.error(e instanceof Error?e.message:'Save failed.');}finally{setBusy(false);}}return <Modal title={kind==='users'?'Manage user':'Record detail'} onClose={close}><dl className="record-details">{Object.entries(row).filter(([k])=>!k.startsWith('_')&&k!=='exception_key').map(([k,v])=><div key={k}><dt>{label(k)}</dt><dd>{display(v,k)}</dd></div>)}</dl>{kind==='tasks'||kind==='users'?<label>Action<select value={action} onChange={e=>setAction(e.target.value)}>{(kind==='tasks'?['remark','reply','review','close']:['unlock','activate','deactivate','role','reset_password']).map(x=><option key={x} value={x}>{label(x)}</option>)}</select></label>:null}{kind==='users'&&action==='role'?<label>Role<select value={role} onChange={e=>setRole(e.target.value)}><option value="user">Operator</option><option value="admin">Administrator</option></select></label>:null}{kind!=='users'&&action!=='review'?<label>{action==='close'?'Reason for closing':'Remark / reply'}<textarea required value={text} onChange={e=>setText(e.target.value)}/></label>:kind==='users'&&action==='reset_password'?<label>Temporary password<input type="password" autoComplete="new-password" value={text} onChange={e=>setText(e.target.value)}/></label>:null}{kind==='tasks'?<Button variant="secondary" onClick={async()=>{try{setHistory(await api<Row[]>(`/tasks/${row['_id']}/history`));}catch(e){toast.error(String(e));}}}>View history</Button>:null}{history?<div className="history">{history.map((h,i)=><p key={i}>{Object.values(h).map(v=>display(v)).join(' · ')}</p>)}</div>:null}<div className="modal-footer"><Button variant="secondary" onClick={close}>Cancel</Button><Button variant={action==='close'||action==='deactivate'?'danger':'primary'} busy={busy} disabled={kind!=='users'&&action!=='review'&&!text.trim()||kind==='users'&&action==='reset_password'&&!text} onClick={save}>{action==='close'?'Confirm close':action==='deactivate'?'Confirm deactivate':'Save'}</Button></div></Modal>;}
-function MasterModal({name,data,close,refresh}:{name:string;data:TableData;close:()=>void;refresh:()=>Promise<unknown>}){const [rows,setRows]=useState(data.rows.map(r=>({...r})));const [note,setNote]=useState('');const [busy,setBusy]=useState(false);async function save(){setBusy(true);try{await api(`/masters/${name}`,{method:'POST',body:JSON.stringify({rows,note,expected_version:data.version??null})});toast.success('Master saved with audit history.');await refresh();close();}catch(e){toast.error(e instanceof Error?e.message:'Save failed.');}finally{setBusy(false);}}return <Modal title="Edit master" onClose={close}><div className="table-scroll"><table><thead><tr>{data.fields?.map(k=><th key={k}>{label(k)}</th>)}</tr></thead><tbody>{rows.map((row,i)=><tr key={i}>{data.fields?.map(k=><td key={k}><input aria-label={`${label(k)} row ${i+1}`} value={String(row[k]??'')} onChange={e=>setRows(rows.map((r,index)=>index===i?{...r,[k]:e.target.value}:r))}/></td>)}</tr>)}</tbody></table></div><Button variant="secondary" onClick={()=>setRows([...rows,Object.fromEntries((data.fields??[]).map(k=>[k,'']))])}><Plus size={15}/>Add row</Button><label>Reason for change<textarea value={note} onChange={e=>setNote(e.target.value)} required/></label><div className="modal-footer"><Button variant="secondary" onClick={close}>Cancel</Button><Button busy={busy} disabled={!note.trim()} onClick={save}>Confirm and save version</Button></div></Modal>;}
-function CreateUser({close,refresh}:{close:()=>void;refresh:()=>Promise<unknown>}){const [form,setForm]=useState({username:'',display_name:'',password:'',role:'user'});const [busy,setBusy]=useState(false);async function save(){setBusy(true);try{await api('/users',{method:'POST',body:JSON.stringify(form)});toast.success('User created; password change required at first sign-in.');await refresh();close();}catch(e){toast.error(e instanceof Error?e.message:'Creation failed.');}finally{setBusy(false);}}return <Modal title="Add user" onClose={close}><form onSubmit={e=>{e.preventDefault();void save();}}>{['username','display_name','password'].map(k=><label key={k}>{label(k)}<input type={k==='password'?'password':'text'} autoComplete={k==='password'?'new-password':'off'} required value={form[k as keyof typeof form]} onChange={e=>setForm({...form,[k]:e.target.value})}/></label>)}<label>Role<select value={form.role} onChange={e=>setForm({...form,role:e.target.value})}><option value="user">Operator</option><option value="admin">Administrator</option></select></label><div className="modal-footer"><Button variant="secondary" type="button" onClick={close}>Cancel</Button><Button type="submit" busy={busy}>Create user</Button></div></form></Modal>;}
-function UploadModal({close,refresh}:{close:()=>void;refresh:()=>Promise<unknown>}){const {bootstrap}=useWorkspace();const [key,setKey]=useState(bootstrap.sources[0]?.key??'');const [month,setMonth]=useState('');const [file,setFile]=useState<File|null>(null);const [preview,setPreview]=useState<Row|null>(null);const [busy,setBusy]=useState(false);const spec=bootstrap.sources.find(s=>s.key===key);async function submit(confirm=false){if(!file)return;setBusy(true);try{const body=new FormData();body.set('file',file);body.set('source_key',key);body.set('month',month);body.set('confirm',String(confirm));const result=await api<Row>('/uploads',{method:'POST',body});setPreview(result);if(result['stored']){toast.success(`Stored ${String(result['filename'])}`);await refresh();close();}}catch(e){toast.error(e instanceof Error?e.message:'Upload failed.');setPreview(null);}finally{setBusy(false);}}return <Modal title="Upload report" onClose={close}><label>Report type<select value={key} onChange={e=>{setKey(e.target.value);setPreview(null);setFile(null);}}>{bootstrap.sources.map(s=><option key={s.key} value={s.key}>{s.title}</option>)}</select></label>{spec?.month_specific?<label>Report month<input type="month" value={month} onChange={e=>{setMonth(e.target.value);setPreview(null);}}/></label>:null}<label className="upload-drop"><UploadCloud size={30}/><span>{file?.name??'Choose a report file'}</span><input aria-label="Report file" type="file" accept={spec?.extensions.join(',')} onChange={e=>{setFile(e.target.files?.[0]??null);setPreview(null);}}/></label>{spec?.note?<p className="muted">{spec.note}</p>:null}{preview?<div className={`alert alert-${preview['ok']?'success':'danger'}`}><strong>{preview['ok']?'Validation passed':'Validation failed'}</strong><p>{display(preview['row_count'])} rows · {display(preview['date_range'])}</p>{Array.isArray(preview['errors'])?preview['errors'].map((e,i)=><p key={i}>{String(e)}</p>):null}{Array.isArray(preview['warnings'])?preview['warnings'].map((e,i)=><p key={i}>{String(e)}</p>):null}</div>:null}<div className="modal-footer"><Button variant="secondary" onClick={close}>Cancel</Button><Button variant="secondary" busy={busy} disabled={!file||Boolean(spec?.month_specific&&!month)} onClick={()=>submit(false)}>Validate report</Button><Button busy={busy} disabled={!preview?.['ok']} onClick={()=>submit(true)}>Confirm upload</Button></div></Modal>;}
-
-function DashPanels({data,total}:{data:Summary;total:MatrixColumn|undefined}){const m=data.matrix;const r=data.risk??{};const sale=Number(total?.sale??0),col=Number(total?.collected??0),rec=Number(total?.receivable??0);const coll=sale?Math.min(100,col/sale*100):0;
-const mix=[['UPI','upi','mix-a'],['Card','card','mix-b'],['Cash','total_cash','mix-c']].map(([l,k,c])=>({l,c,v:Number((m[k] as MatrixColumn)?.sale??0)}));const mixT=mix.reduce((a,b)=>a+b.v,0)||1;
-const risk=[{l:'Not received',d:'Bill exists, money missing',n:r['not_received_count'],v:Number(r['not_received_value']??0),t:'danger'},{l:'Received, not billed',d:'Money arrived without a bill',n:r['received_not_billed_count'],v:Number(r['received_not_billed_value']??0),t:'warning'},{l:'Other exceptions',d:'Duplicates, store mapping, files',n:r['other_count'],v:Number(r['other_value']??0),t:'neutral'}];const riskT=risk.reduce((a,b)=>a+Math.abs(b.v),0)||1;
-const top=data.exceptions[0];const insight=`${coll.toFixed(1)}% of sale is collected; ${money(rec)} still receivable.${top?` Largest exception bucket: ${label(String(top['type']))} at ${money(top['value'])}.`:''}`;
-return <><div className="insight-ribbon"><Sparkles size={16}/><b>AI Briefing</b><span>{insight}</span></div><div className="dash-grid">
-<section className="dash-card"><div className="section-heading"><div><h2>Collection health</h2><p>Collected vs total sale</p></div></div><div className="ring-wrap"><div className="ring" style={{'--pct':`${coll}%`} as React.CSSProperties}><strong>{coll.toFixed(1)}%</strong><small>collected</small></div><dl className="ring-legend"><div><dt>Sale</dt><dd>{money(sale)}</dd></div><div><dt>Collected</dt><dd className="ok">{money(col)}</dd></div><div><dt>Receivable</dt><dd className="bad">{money(rec)}</dd></div></dl></div></section>
-<section className="dash-card"><div className="section-heading"><div><h2>Risk distribution</h2><p>Opposite risks kept separate</p></div></div><div className="risk-bar">{risk.map(x=><span key={x.l} className={`rb-${x.t}`} style={{width:`${Math.abs(x.v)/riskT*100}%`}}/>)}</div>{risk.map(x=><div key={x.l} className={`risk-row rr-${x.t}`}><div><strong>{x.l}</strong><small>{x.d}</small></div><span className="pill">{String(x.n??0)}</span><b>{money(x.v)}</b></div>)}</section>
-<section className="dash-card"><div className="section-heading"><div><h2>Payment mix</h2><p>Share of sale by mode</p></div></div><div className="mix-bar">{mix.map(x=><span key={x.l} className={x.c} style={{width:`${x.v/mixT*100}%`}}/>)}</div>{mix.map(x=><div key={x.l} className="mix-row"><i className={x.c}/><span>{x.l}</span><em>{(x.v/mixT*100).toFixed(1)}%</em><b>{money(x.v)}</b></div>)}</section>
-</div></>;}
+import type React from "react";
+import { useState, useMemo } from "react";
+import { useSuspenseQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Search,
+  ArrowUpDown,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  MoreHorizontal,
+  ArrowDown,
+  ArrowUp,
+  CheckCircle2,
+  AlertTriangle,
+  Wallet,
+  TrendingUp,
+  ShieldCheck,
+  Save,
+  Plus,
+  UploadCloud,
+  Sparkles,
+} from "lucide-react";
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+} from "recharts";
+import { toast } from "sonner";
+import {
+  screenQuery,
+  params,
+  display,
+  money,
+  api,
+  download,
+  type TableData,
+  type Summary,
+  type Row,
+  type MatrixColumn,
+} from "../lib/api";
+import { useWorkspace } from "./Workspace";
+import { Button, Modal, Pill } from "./ui";
+import {
+  titles,
+  columns,
+  label,
+  heatOf,
+  toneFor,
+  rowTone,
+  type ScreenKind,
+} from "./table-utils";
+export type { ScreenKind } from "./table-utils";
+import { ReviewAction } from "./ReviewAction";
+import { BulkUpload } from "./screens/BulkUpload";
+import { SummaryView } from "./screens/SummaryView";
+import { RecordModal } from "./screens/RecordModal";
+import { MasterModal } from "./screens/MasterModal";
+import { CreateUser } from "./screens/CreateUser";
+import { UploadModal } from "./screens/UploadModal";
+export function Screen({ kind }: { kind: ScreenKind }) {
+  const { filter, bootstrap } = useWorkspace();
+  const qc = useQueryClient();
+  const [page, setPage] = useState(0);
+  const [search, setSearch] = useState("");
+  const [status, setStatus] = useState("");
+  const [sort, setSort] = useState("");
+  const [master, setMaster] = useState(bootstrap.masters[0]?.key ?? "store");
+  const [selected, setSelected] = useState<Row | null>(null);
+  const [showUpload, setShowUpload] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [editMaster, setEditMaster] = useState(false);
+  const extra = {
+    offset: page * 50,
+    limit: 50,
+    ...(kind === "tasks"
+      ? { search, status, sort: sort || "Overdue first, oldest due" }
+      : {}),
+    ...(kind === "exceptions"
+      ? { status, sort: sort || "Amount (high to low)" }
+      : {}),
+  };
+  const endpoint =
+    kind === "masters"
+      ? `/masters/${master}`
+      : `/${kind === "uploads" ? "uploads" : kind}?${params(filter, extra)}`;
+  const { data } = useSuspenseQuery(screenQuery(endpoint));
+  const table = data as TableData;
+  const summary = data as Summary;
+  const [withdraw, setWithdraw] = useState<Row | null>(null);
+  const [bulkReplies, setBulkReplies] = useState(false);
+  const [localSort, setLocalSort] = useState<{
+    key: string;
+    desc: boolean;
+  } | null>(null);
+  const rows = useMemo(() => {
+    let items = [...(table.rows ?? [])];
+    if (search && kind !== "tasks")
+      items = items.filter((r) =>
+        Object.values(r).some((v) =>
+          String(v).toLowerCase().includes(search.toLowerCase()),
+        ),
+      );
+    if (localSort)
+      items.sort((a, b) => {
+        const av = a[localSort.key],
+          bv = b[localSort.key];
+        const diff =
+          typeof av === "number" && typeof bv === "number"
+            ? av - bv
+            : String(av ?? "").localeCompare(String(bv ?? ""));
+        return localSort.desc ? -diff : diff;
+      });
+    return items;
+  }, [table.rows, search, localSort, kind]);
+  const shownColumns =
+    kind === "masters" ? (table.fields ?? []) : (columns[kind] ?? []);
+  async function exportData() {
+    try {
+      await download(`/export/${kind}?${params(filter, { status, search })}`);
+      toast.success("Export downloaded.");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Export failed.");
+    }
+  }
+  if (kind === "summary") return <SummaryView data={summary} />;
+  return (
+    <>
+      <div className="section-heading">
+        <div>
+          <h2>{titles[kind]}</h2>
+          <p>
+            {typeof table.total === "number"
+              ? `${table.total.toLocaleString("en-IN")} records`
+              : kind === "masters"
+                ? `Version ${table.version ?? "—"}`
+                : "Account administration"}
+          </p>
+        </div>
+        <div className="toolbar-actions">
+          {["tasks", "cash", "float", "exceptions"].includes(kind) ? (
+            <Button variant="secondary" onClick={exportData}>
+              <Download size={15} />
+              Export all filtered records
+            </Button>
+          ) : null}
+          {kind === "tasks" ? (
+            <Button variant="secondary" onClick={() => setBulkReplies(true)}>
+              <UploadCloud size={15} />
+              Upload store replies
+            </Button>
+          ) : null}
+          {kind === "cash" ? (
+            <Button
+              variant="secondary"
+              onClick={() =>
+                download(`/store-sheet/export?${params(filter)}`).catch((e) =>
+                  toast.error(String(e)),
+                )
+              }
+            >
+              <Download size={15} />
+              Audited store workbook
+            </Button>
+          ) : null}
+          {kind === "uploads" ? (
+            <Button onClick={() => setShowUpload(true)}>
+              <UploadCloud size={16} />
+              Upload report
+            </Button>
+          ) : null}
+          {kind === "users" ? (
+            <Button onClick={() => setShowCreate(true)}>
+              <Plus size={16} />
+              Add user
+            </Button>
+          ) : null}
+          {kind === "masters" ? (
+            <Button
+              disabled={!table.in_database}
+              onClick={() => setEditMaster(true)}
+            >
+              <Save size={15} />
+              Edit master
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      {kind === "masters" && !table.in_database ? (
+        <div className="alert alert-warning">
+          Masters are still sourced from Excel. Editing stays blocked until the
+          existing master migration is complete.
+        </div>
+      ) : null}
+      {kind === "tasks" && table.summary ? (
+        <div className="metric-strip">
+          {["open", "pending", "wip", "closed"].map((key) => {
+            const value = table.summary?.[key];
+            const tuple = Array.isArray(value) ? value : [];
+            return (
+              <div
+                className={`metric metric-${key === "closed" ? "success" : "warning"}`}
+                key={key}
+              >
+                <span>{key === "wip" ? "Under review" : label(key)}</span>
+                <strong>{display(tuple[0])}</strong>
+                <small>{money(tuple[1])}</small>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      <div className="table-toolbar">
+        <div className="search-field">
+          <Search size={16} />
+          <input
+            aria-label="Search records"
+            placeholder={
+              kind === "tasks"
+                ? "Search store, bill or reply"
+                : "Search this page"
+            }
+            value={search}
+            onChange={(e) => {
+              setSearch(e.target.value);
+              setPage(0);
+            }}
+          />
+        </div>
+        {kind === "masters" ? (
+          <select
+            aria-label="Master selection"
+            value={master}
+            onChange={(e) => {
+              setMaster(e.target.value);
+              setLocalSort(null);
+            }}
+          >
+            {bootstrap.masters.map((x) => (
+              <option key={x.key} value={x.key}>
+                {x.title}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        {kind === "tasks" || kind === "exceptions" ? (
+          <>
+            <select
+              aria-label="Status filter"
+              value={status}
+              onChange={(e) => {
+                setStatus(e.target.value);
+                setPage(0);
+              }}
+            >
+              <option value="">All statuses</option>
+              {(kind === "tasks"
+                ? ["open", "replied", "under_review", "closed"]
+                : ["open", "under_investigation", "closed", "auto_resolved"]
+              ).map((x) => (
+                <option key={x} value={x}>
+                  {label(x)}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Sort records"
+              value={sort}
+              onChange={(e) => {
+                setSort(e.target.value);
+                setPage(0);
+              }}
+            >
+              {(kind === "tasks"
+                ? ["Overdue first, oldest due", "Largest amount"]
+                : [
+                    "Amount (high to low)",
+                    "Amount (low to high)",
+                    "Date (oldest first)",
+                    "Date (newest first)",
+                    "Store",
+                  ]
+              ).map((x) => (
+                <option key={x}>{x}</option>
+              ))}
+            </select>
+          </>
+        ) : null}
+        <span className="toolbar-count">{rows.length} shown</span>
+      </div>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              {shownColumns.map((key) => (
+                <th
+                  key={key}
+                  aria-sort={
+                    localSort?.key === key
+                      ? localSort.desc
+                        ? "descending"
+                        : "ascending"
+                      : "none"
+                  }
+                >
+                  <Button
+                    variant="icon"
+                    className="sort-head"
+                    onClick={() =>
+                      setLocalSort({
+                        key,
+                        desc: localSort?.key === key ? !localSort.desc : false,
+                      })
+                    }
+                  >
+                    {label(key)}
+                    {localSort?.key === key ? (
+                      localSort.desc ? (
+                        <ArrowDown size={13} />
+                      ) : (
+                        <ArrowUp size={13} />
+                      )
+                    ) : (
+                      <ArrowUpDown size={13} />
+                    )}
+                  </Button>
+                </th>
+              ))}
+              {["tasks", "float", "exceptions", "users", "uploads"].includes(
+                kind,
+              ) ? (
+                <th>Actions</th>
+              ) : null}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr
+                data-tone={rowTone(row)}
+                key={String(
+                  row["_id"] ??
+                    row["id"] ??
+                    row["exception_key"] ??
+                    `${row["store"]}-${row["date"] ?? row["business_date"]}-${i}`,
+                )}
+              >
+                {shownColumns.map((key, index) => (
+                  <td
+                    key={key}
+                    style={
+                      index === 0 ? undefined : heatOf(row[key], rows, key)
+                    }
+                    className={`${index === 0 ? "sticky-cell" : ""} ${typeof row[key] === "number" ? `numeric heat ${(row[key] as number) < 0 ? "heat-neg" : ""}` : ""}`}
+                  >
+                    {/status|role|active|negative_float/.test(
+                      key.toLowerCase(),
+                    ) ? (
+                      <Pill tone={toneFor(key, row[key])}>
+                        {display(row[key], key)}
+                      </Pill>
+                    ) : /^(type|reason|exception_type)$/i.test(key) &&
+                      typeof row[key] === "string" ? (
+                      <span className="type-chip">
+                        {label(String(row[key]))}
+                      </span>
+                    ) : (
+                      display(row[key], key)
+                    )}
+                  </td>
+                ))}
+                {["tasks", "float", "exceptions", "users", "uploads"].includes(
+                  kind,
+                ) ? (
+                  <td>
+                    <Button
+                      variant="icon"
+                      title={
+                        kind === "uploads"
+                          ? "Withdraw and archive upload"
+                          : "Open record"
+                      }
+                      disabled={
+                        kind === "uploads" && row["status"] === "deleted"
+                      }
+                      aria-label={`${kind === "uploads" ? "Withdraw upload" : "Open"} ${display(row["Task id"] ?? row["store"] ?? row["display_name"] ?? row["reference"])}`}
+                      onClick={() =>
+                        kind === "uploads" ? setWithdraw(row) : setSelected(row)
+                      }
+                    >
+                      <MoreHorizontal size={18} />
+                    </Button>
+                  </td>
+                ) : null}
+              </tr>
+            ))}
+          </tbody>
+          {rows.length > 1 &&
+          shownColumns.some(
+            (k) =>
+              typeof rows[0]?.[k] === "number" &&
+              !/days|age|id$|threshold|count/i.test(k),
+          ) ? (
+            <tfoot>
+              <tr>
+                {shownColumns.map((key, index) => {
+                  const nums = rows
+                    .map((r) => r[key])
+                    .filter((x) => typeof x === "number") as number[];
+                  const tot = nums.reduce((a, b) => a + b, 0);
+                  return (
+                    <td
+                      key={key}
+                      className={`${index === 0 ? "sticky-cell" : ""} numeric ${tot < 0 ? "heat-neg" : ""}`}
+                    >
+                      {index === 0
+                        ? `Total · ${rows.length}`
+                        : nums.length &&
+                            !/days|age|id$|threshold|count/i.test(key)
+                          ? display(tot, key)
+                          : ""}
+                    </td>
+                  );
+                })}
+                {["tasks", "float", "exceptions", "users", "uploads"].includes(
+                  kind,
+                ) ? (
+                  <td />
+                ) : null}
+              </tr>
+            </tfoot>
+          ) : null}
+        </table>
+        {rows.length === 0 ? (
+          <div className="empty-state">
+            <Search size={26} />
+            <h3>No matching records</h3>
+            <p>Try another store, period or status.</p>
+          </div>
+        ) : null}
+      </div>
+      {!["masters", "users", "uploads"].includes(kind) ? (
+        <div className="pagination">
+          <span>
+            Page {page + 1} · {table.total ?? 0} records
+          </span>
+          <Button
+            variant="icon"
+            aria-label="Previous page"
+            disabled={page === 0}
+            onClick={() => setPage(page - 1)}
+          >
+            <ChevronLeft size={17} />
+          </Button>
+          <Button
+            variant="icon"
+            aria-label="Next page"
+            disabled={(page + 1) * 50 >= (table.total ?? 0)}
+            onClick={() => setPage(page + 1)}
+          >
+            <ChevronRight size={17} />
+          </Button>
+        </div>
+      ) : null}
+      {withdraw ? (
+        <ReviewAction
+          title="Withdraw upload"
+          path={`/uploads/${withdraw["id"]}/withdraw`}
+          details={{
+            ...withdraw,
+            effect:
+              "Archive the original file; preserve upload history. Refused while a run is active.",
+          }}
+          close={() => setWithdraw(null)}
+          done={() => qc.invalidateQueries()}
+        />
+      ) : null}
+      {bulkReplies ? (
+        <BulkUpload
+          kind="replies"
+          close={() => setBulkReplies(false)}
+          done={() => qc.invalidateQueries()}
+        />
+      ) : null}
+      {selected ? (
+        <RecordModal
+          kind={kind}
+          row={selected}
+          close={() => setSelected(null)}
+          refresh={() => qc.invalidateQueries({ queryKey: ["screen"] })}
+        />
+      ) : null}
+      {showUpload ? (
+        <UploadModal
+          close={() => setShowUpload(false)}
+          refresh={() => qc.invalidateQueries({ queryKey: ["screen"] })}
+        />
+      ) : null}
+      {showCreate ? (
+        <CreateUser
+          close={() => setShowCreate(false)}
+          refresh={() => qc.invalidateQueries({ queryKey: ["screen"] })}
+        />
+      ) : null}
+      {editMaster ? (
+        <MasterModal
+          name={master}
+          data={table}
+          close={() => setEditMaster(false)}
+          refresh={() => qc.invalidateQueries({ queryKey: ["screen"] })}
+        />
+      ) : null}
+    </>
+  );
+}

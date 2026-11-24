@@ -237,7 +237,9 @@ def create_app(session_factory=None, config=None, origin=None):
         return clean({'matrix': source.mop_particulars_matrix(s, run.id, lo, hi, st),
                       'verdict': q.verdict(s, run.id, lo, hi, st), 'risk': q.risk_split(s, lo, hi, st),
                       'trend': q.daily_trend(s, run.id, lo, hi, st), 'exceptions': q.exceptions_by_type(s, lo, hi, st),
-                      'cash': source.store_cash_summary(s, run.id, lo, hi, st)})
+                      'cash': source.store_cash_summary(s, run.id, lo, hi, st),
+                      'stores': __import__('mop_reco.store_sheet',fromlist=['summarise_by_store']).summarise_by_store(sheet(s,p)),
+                      'tasks': tasks.tiles(s,date.today(),date_from=lo,date_to=hi,store=st)})
 
     def sheet(s, p):
         require_aggregates(s, p)
@@ -411,6 +413,8 @@ def create_app(session_factory=None, config=None, origin=None):
         mime = 'text/csv' if result.fmt == 'csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         return Response(result.data, media_type=mime, headers={'Content-Disposition': f'attachment; filename="{result.filename}"'})
 
+    from api_v2_workflows import register
+    register(app, db=db, signed_in=signed_in, cfg=cfg, factory=factory, clean=clean, prefix=PREFIX, period=period, sheet=sheet)
     return app
 
 app = create_app()

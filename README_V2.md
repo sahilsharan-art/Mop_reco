@@ -2,15 +2,13 @@
 
 ## Important status
 
-This is a separate source-code delivery for `sahilsharan-art/Mop_reco`, based on main commit `037525d0a3808594e121d0fadfe727e5014e1014`. **It has not been committed to GitHub or deployed.** The GitHub write tool rejected capability provisioning. The existing Festival/Board Planning Lovable app is unchanged.
+V2.3 extends the separate `sahilsharan-art/Mop_reco` React frontend with twelve workflow screens, using the existing Python reconciliation engines. The Festival/Board Planning Lovable application is unchanged. No production history or account data was accessed.
 
-All eight top-level screens are React/TanStack Start, not Streamlit. The midnight-to-teal executive band, light canvas, semantic metrics, indigo controls, full-width tables, mobile navigation and dialogs share one theme.
-
-**Do not retire the old Streamlit app yet:** this V2 provides connected core workflows, not every nested workflow from the legacy app. The full cutover requires the remaining functionality and production-data acceptance checks listed below. No real database or raw source history was accessed.
+Keep Streamlit available as a rollback until production acceptance is complete. Synthetic verification is not a financial or deployment sign-off.
 
 ## Apply this overlay in Mop_reco
 
-Copy `frontend/`, `app/api_v2.py`, `tests/test_api_v2.py`, `requirements-v2.txt` and `deploy/nginx.conf` into the same paths in Mop_reco. Do not replace `app/mop_reco`, existing config, database, data folders or original launchers. Incorporate the short architecture rules from this delivery's `AGENTS.md` into the target repository's guidance.
+Copy `frontend/`, `app/api_v2.py`, `app/api_v2_workflows.py`, `tests/test_api_v2.py`, `tests/test_api_v2_workflows.py`, `requirements-v2.txt` and `deploy/nginx.conf` into the same paths in Mop_reco. Do not replace `app/mop_reco`, existing config, database, data folders or original launchers. Incorporate the short architecture rules from this delivery's `AGENTS_V2.md` into the target repository's guidance.
 
 ### Development
 
@@ -56,29 +54,33 @@ Identity for all writes comes from the verified server-side session, never an op
 
 Cash/float/summary selections without precomputed store-day rows return a visible coverage error, rather than triggering legacy raw-file reads. Decimal/NaN/date serialization is normalized. Exports use the existing builder (identifier handling, formula neutralization and metadata). Search labelled "this page" and header sorting apply to visible page records; server task search/status and exception status use backend filters.
 
-## Remaining before a full Streamlit removal
+## V2.3 connected additions
 
-- Manual/bulk matching, reversal, customer refunds, parking, CMS overrides and related drill-downs are not ported in this delivery.
-- Bulk reply/remark spreadsheet flows, full master import/restore/source switching, upload deletion and reconciliation-run launch/progress need their V2 controls.
-- The original exact store-sheet Excel formulas and all nested audit/control views require acceptance checks; current V2 cash export is the existing generic builder, not the specialized full store-sheet export.
-- Master history is returned but not yet a full restore UI. General voluntary password change is not yet in the account menu (forced password change works).
-- Cash/float currently return a paginated slice after loading filtered aggregate frames. Production-sized performance and export memory need verification.
-- Verify the origin/proxy/TLS configuration, actual PostgreSQL concurrency, permissions and complete financial reconciliation against a COPY of production data.
+- Matching: paginated bill search, single/split/shared validation, explicit discrepancy explanations, unverified assertions, audit history, individual and batch reversal, globally assigned exact/split candidates, spreadsheet preview/apply.
+- Refunds: validated full refund or bill-overpayment split, pending/released register, reversals/history, ordinary and Customer Refund workbook uploads.
+- CMS: effective deposit chain, controls, computed-versus-overridden values, batch validation, atomic override saves, revert, period remarks/history.
+- Masters: history, stale-safe restore, complete six-master snapshot preview/import, original dates/fingerprints, database-only snapshot export after migration.
+- Runs: source coverage, Axis parking note, master preflight, written stored-master fallback authorizations, explicit start, progress/failure history, guarded stalled-run recovery.
+- Store Task bulk replies, parked Axis register, archived upload withdrawal, voluntary password change, and five-tab specialized store-sheet workbook with original formulas.
+- Compact readable tables, semantic exception highlights, sortable headers, numeric heatmaps, horizontal scrolling, executive briefing, collection health/risk/payment summaries and store exposure.
 
-These limits are why the package is **V2 core replacement**, not a claim of production-parity sign-off. No pretend success buttons or hardcoded live figures are included.
+## Acceptance limits
+
+- Production PostgreSQL behavior, actual source files, large-population performance and hosted deployment remain unverified. Validate with a safe production copy before retiring Streamlit.
+- Run execution uses one in-process worker plus the original engine's database running-run check. Deploy one API worker; multi-process/multi-host locking has not been validated. Stalled recovery requires confirming that the worker is really dead.
+- Master snapshot imports preserve the original engine's progressive commits, not an all-or-nothing import. Failures may leave historical versions saved; inspect and revalidate before retrying.
+- Matching spreadsheets preserve partial-success semantics; ordinary refund and CMS override batches use their original atomic behavior. Customer Refund folder uploads apply only eligible rows.
+- The specialized workbook is an explicit raw-source audit/export operation. Ordinary dashboard/cash/float reads continue to refuse uncovered aggregate selections. Selected-store exports label whole-run controls; formulas remain authored by the original export engine.
+- Some older legacy nested drilldowns are not separately recreated. This update covers the requested missing workflows, not a claim that every legacy display has identical parity.
 
 ## Verification completed
 
-- Vite production compilation and TypeScript checks passed.
-- Built Bun production server returned HTTP 200 for the sign-in page.
-- 15 adapter tests passed using a temporary, entirely synthetic SQLite database: auth, origin/CSRF, admin boundary, forced password change, audited task write/readback, required close reason, exact cash values, no raw fallback, logout revocation, last-admin safeguard, store filtering, validate/confirm upload with original-file bytes preserved, and stale master version refusal.
-- Playwright signed in through the adapter, rendered all eight screens, saved a task note and read it back through the UI, downloaded an export, signed out, and checked 1440px/390px layouts without page errors or document overflow.
-- Production data and hosted deployment were not available and are not verified.
-
-Run tests from Mop_reco root:
+- Frontend TypeScript and Vite production compilation passed.
+- 193 synthetic/core tests passed; one existing production-database-only test was deliberately excluded because its real data is unavailable. Two upstream deprecation warnings remain.
+- Connected signed-in browser checks rendered all twelve screens at desktop, 390px phone and 890px tablet widths with no document overflow or page errors.
+- UI readback verified task notes, matching/reversal, whole-population bulk matching, CMS override/revert and remarks, refund/reversal, master edit/restore and snapshot download, and a stubbed synthetic run/history.
+- Tests exercise the real adapters against synthetic SQLite. Browser run execution uses a stub, not actual extraction. Actual reconciliation execution and hosted auth/deployment require environment acceptance.
 
 ```sh
-python -m pytest tests/test_api_v2.py -q
+python -m pytest tests/test_api_v2.py tests/test_api_v2_workflows.py -q
 ```
-
-Test fixtures never target your existing database. Keep original tests and run relevant reconciliation tests before accepting a live cutover.
