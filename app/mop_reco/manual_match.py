@@ -226,7 +226,8 @@ def targeted_pool(transaction_ref: str, warehouse=None) -> pd.DataFrame:
                 continue
             try:
                 raw = pd.read_parquet(path, filters=[(ref_col, "==", ref)])
-            except Exception:  # noqa: BLE001 - a file without the column cannot hold the id
+            except Exception as exc:  # noqa: BLE001 - a file without the column cannot hold the id; anything else is logged, not hidden
+                logger.warning("targeted pool: skipped %s (%s: %s)", path, type(exc).__name__, exc)
                 continue
             if raw.empty:
                 continue
@@ -263,7 +264,8 @@ def targeted_pool_many(transaction_refs, warehouse=None) -> pd.DataFrame:
                 continue
             try:
                 raw = pd.read_parquet(path, filters=[(ref_col, "in", refs)])
-            except Exception:  # noqa: BLE001 - a file without the column cannot hold the ids
+            except Exception as exc:  # noqa: BLE001 - a file without the column cannot hold the ids; anything else is logged, not hidden
+                logger.warning("targeted pool: skipped %s (%s: %s)", path, type(exc).__name__, exc)
                 continue
             if raw.empty:
                 continue

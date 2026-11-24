@@ -140,8 +140,15 @@ def _preview_upload(session, frame: pd.DataFrame, warehouse=None, folder_mode: b
     try:
         _, store_rows = masters.get_rows_asof(session, "store", datetime.now())
         known_stores = {_clean(r.get("store")).upper() for r in store_rows}
-    except Exception:
+    except masters.MasterLoadError as exc:
+        # No version of the store master has ever been loaded: truthfully, no store is known. Said in the log, not hidden.
+        logger.warning("refund validation: %s - no store is known", exc)
         known_stores = set()
+    except Exception as exc:
+        # Any other failure must not become an empty master: every refund would be rejected as "store not in master" (misleading), and
+        # in folder mode a refund could be recorded under the file's store instead of the transaction's (audit C-002).
+        logger.exception("refund validation: the store master could not be read")
+        raise RuntimeError(f"The store master could not be read ({type(exc).__name__}: {exc}); no refund was checked or recorded.") from exc
 
     already_refunded = {
         (str(r.gateway).lower(), str(r.transaction_ref).strip())

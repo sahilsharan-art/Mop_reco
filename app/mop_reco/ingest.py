@@ -417,7 +417,7 @@ def _write_parquet_single_file_cache(df: pd.DataFrame, source: str, file_path: P
     import hashlib
     out_dir = WAREHOUSE_ROOT / source / "_by_file"
     out_dir.mkdir(parents=True, exist_ok=True)
-    slug = hashlib.sha1(str(file_path).encode("utf-8")).hexdigest()[:16]
+    slug = hashlib.sha1(str(file_path).encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
     out_path = out_dir / f"{slug}.parquet"
     df.to_parquet(out_path, index=False)
     return {"single": str(out_path)}

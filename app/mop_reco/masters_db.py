@@ -94,7 +94,9 @@ def in_database(session) -> bool:
         return False
     try:
         return get_setting(session, SETTING_MASTERS_SOURCE) == SOURCE_DATABASE
-    except Exception:  # noqa: BLE001 - a database without the table yet is, by definition, not switched over
+    except Exception as exc:  # noqa: BLE001 - a database without the table yet is, by definition, not switched over
+        logger.warning("masters_db.in_database: could not read the masters_source setting (%s: %s); treating the masters as not in the database",
+                       type(exc).__name__, exc)
         session.rollback()
         return False
 
@@ -154,7 +156,8 @@ def _canon(store: str) -> str:
     try:
         from .masters import canonical_store
         return canonical_store(store) or store
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("store alias lookup failed for %r (%s: %s); the code is used as given", store, type(exc).__name__, exc)
         return store
 
 

@@ -985,7 +985,7 @@ def _test_schema_engine(url: str, key: str):
     unchanged test suite runs against PostgreSQL with the same isolation a temporary SQLite file gave it."""
     import hashlib
     from sqlalchemy import text as _t
-    schema = "t_" + hashlib.sha1(key.encode()).hexdigest()[:16]
+    schema = "t_" + hashlib.sha1(key.encode(), usedforsecurity=False).hexdigest()[:16]
     admin = create_engine(url, poolclass=NullPool, isolation_level="AUTOCOMMIT")
     with admin.connect() as c:
         c.execute(_t(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))

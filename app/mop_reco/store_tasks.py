@@ -23,6 +23,7 @@ parameter so the tests - and rule 8 - never depend on the wall clock.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -234,7 +235,9 @@ def cms_absent_dates(last: date) -> set:
         from . import run_coverage as rc
         from .config import load_config
         have = rc.source_dates(load_config(), "axis_cms")
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("mop_reco").warning("cms_absent_dates: the CMS source could not be read (%s: %s); no day is treated as missing input",
+                                              type(exc).__name__, exc)
         return set()
     if not have:
         return set()

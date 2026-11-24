@@ -11,7 +11,7 @@ column meanings without approval; no secrets or internal addresses in any delive
 |---|---|---|---|
 | 1 | Discovery: inventory, architecture, baseline | **Complete (24 Nov 2026)** | inventory, static analysis, test discovery, risk classification, first candidate findings |
 | 2 | Functional and financial audit (R1, R2, R3a, R3b, float, sheet A-N) | **In progress (24 Nov 2026)** | R1, Float, CMS blocks, sheet A-N and the R3a cash book re-performed independently; 3 defects found and fixed locally (section 9); R2 / R3b and boundary runs still to do |
-| 3 | Code and database audit | Started (static scan only) | the 25 silent handlers are to be read; schema/index/transaction review not started |
+| 3 | Code and database audit | **Substantially complete (24 Nov 2026)** | 25 silent handlers read and classified; schema, index and constraint review done; live database integrity audit passed except D-002 noise; concurrency proved; C-002/C-004/C-005/C-007/C-008 closed; see section 10 |
 | 4 | UI/UX audit (every page, 375/768/1366/1920) | Not started | |
 | 5 | Security and performance audit | Not started | two security items already known (section 5) |
 | 6 | Bug fixing (P0, P1, P2, P3) | Started | D-001..D-003 fixed locally and committed (01e1e8b); NOT yet deployed to the application server; see `MOP_DEFECT_REGISTER.md` |
@@ -106,3 +106,17 @@ Everything below was run on the development PC against synthetic data, except th
 3. **Five single-day differences in April-October, net -Rs 209:** JGB 04/04 -300, SKP 02/05 +100, MCR 14/07 +50, MDB 11/07 -34, MBR 19/04 -25. Unexplained. Petty-cash vouchers are identical (150,947), so the difference is elsewhere in that day's movement. Open item OB-2, below materiality but not dismissed.
 
 Update to risk 8 in section 6: the earlier "about 12% of stores with a constant offset" is superseded - the constant opening difference is 21 stores and Rs 40,460.75 gross; the larger gap in the earlier reading was November.
+
+## 10. Phase 3 results (24 Nov 2026)
+
+**Silent handlers (C-001): all 25 read.** 6 needed a change (logged or now failing loudly: refunds 143, manual_match 229 and 266, masters_db 97 and 157, store_tasks 237 - register D-004 and D-005). 19 are acceptable: they report the error to the operator (uploads x5, the Upload page, masters.py 279, masters_db 397, run_coverage 110), fail closed (auth_gate x2 return "not signed in"), or are documented fallbacks (selfcheck x2, masters.py 603, r1_chunked memory default, run_coverage 93 and 361, runs 558 fresh-session record of a failure, ingest 2173 whose `None` raises a named IngestError).
+
+**Candidates closed:** C-002 confirmed and fixed (D-004). C-004 marked `usedforsecurity=False` (digest unchanged, tested). **C-005 proved a false positive** by a hostile-input test (`tests/test_audit_security_sql.py`): the placeholders can only be `:name` tokens and every value is bound. C-007: the ISO dates in code are template examples and docstrings, except control (g) in the sheet (observation O-1, needs a decision). C-008 logged. C-003 (float money) stands until the Decimal divergence measurement in Phase 2 closes: every independent recomputation so far used whole paise and matched exactly, and the live check found only the D-002 noise (largest 1e-10).
+
+**Schema and constraints reviewed.** Exact `NUMERIC` money on PostgreSQL, ISO text dates everywhere, unique `exception_key`, partial unique indexes enforcing one transaction per active manual match, one active match per bill, one refund per transaction, per-run uniqueness of every aggregate table. Gaps recorded as observations O-2 (no unique key on bill lines), O-3 (redundant indexes), O-4 (table growth).
+
+**Live database integrity (read-only, production database, run #2, `scripts/audit_db_integrity.py`):** keys unique, no orphan references (exceptions, remarks, manual-match events, task events, bill lines), all dates ISO, all statuses in their domains, closed exceptions carry a reason or closer, matched lines name a transaction and unmatched ones do not, C=D+E, K=I-J, M=H+E-I+L, N=H-I on all 45,580 store-days, sheet digital sale = sum of bill-line amounts, carry-forward unbroken, no stuck run, no duplicate indexes, every documented index present. **One finding: D-002 confirmed on live data (86 rows, error 1e-10).**
+
+**Concurrency:** two operators validating the same transaction for two bills and recording at the same moment: exactly one wins, the other is refused, no half-written row is left (6 repeats stable); the database refuses a second active match even with every check bypassed (`tests/test_audit_concurrency.py`).
+
+**Still to do in Phase 3:** transaction-boundary review of the bulk-apply and run persistence paths under a forced mid-way failure; reading `lifecycle.sync_closures`, `store_tasks` and `table_upload` line by line. Not started: these are the largest unread money-adjacent modules.

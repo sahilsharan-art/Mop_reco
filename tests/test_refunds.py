@@ -362,3 +362,18 @@ def test_manual_match_bill_report_empty_selection(session):
         "transaction_id", "txn_date", "lag", "matched_by", "matched_at",
         "reason", "status",
     ]
+
+
+def test_preview_upload_stops_with_the_real_reason_when_the_store_master_cannot_be_read(session, monkeypatch):
+    """Audit C-002: a failed master read used to become an empty set, so every refund was rejected as 'store not in master'
+    (misleading) and, in folder mode, a refund could be recorded under the file's store. It must fail loudly instead."""
+    monkeypatch.setattr(rf, "targeted_pool_many", lambda *a, **kw: CLEAN_POOL)
+
+    def boom(*a, **kw):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(rf.masters, "get_rows_asof", boom)
+    with pytest.raises(RuntimeError, match="store master could not be read"):
+        rf.preview_upload(session, upload_row())
+    with pytest.raises(RuntimeError, match="no refund was checked or recorded"):
+        rf.preview_upload(session, upload_row(), folder_mode=True)
