@@ -245,3 +245,8 @@ auth:
   lockout_minutes: 15
   idle_minutes: 120
   absolute_hours: 12
+
+# The ERP as a source (see config.yaml): POS days inside this window are re-read from the ERP on every run.
+erp:
+  reread_days: 65
+

@@ -1,0 +1,90 @@
+app\dashboard_common.py:12:1: 'io' imported but unused
+app\dashboard_common.py:28:1: 'mop_reco.db.Exception_' imported but unused
+app\dashboard_common.py:31:1: 'mop_reco.formatting.money_short' imported but unused
+app\match_strip.py:19:1: 'mop_reco.formatting.money_short' imported but unused
+app\run_panel.py:259:9: local variable 'stages' is assigned to but never used
+app\Summary.py:34:1: 'dashboard_common.export_all_button' imported but unused
+app\Summary.py:34:1: 'dashboard_common.require_operator' imported but unused
+app\Summary.py:34:1: 'dashboard_common.status_styler' imported but unused
+app\Summary.py:34:1: 'dashboard_common.tile' imported but unused
+app\Summary.py:34:1: 'dashboard_common.top_nav' imported but unused
+app\Summary.py:50:1: 'mop_reco.exception_remarks as er' imported but unused
+app\Summary.py:51:1: 'mop_reco.exceptions as exc_mod' imported but unused
+app\Summary.py:57:1: 'mop_reco.formatting.blank' imported but unused
+app\Summary.py:57:1: 'mop_reco.formatting.money_short' imported but unused
+app\mop_reco\cms_reco.py:29:1: 'dataclasses.dataclass' imported but unused
+app\mop_reco\cms_reco.py:29:1: 'dataclasses.field' imported but unused
+app\mop_reco\cms_reco.py:30:1: 'datetime.date' imported but unused
+app\mop_reco\erp_ingest.py:33:1: '.ingest.FileRead' imported but unused
+app\mop_reco\erp_ingest.py:33:1: '.ingest.LoadReport' imported but unused
+app\mop_reco\exception_pairing.py:19:1: 'datetime.datetime' imported but unused
+app\mop_reco\float_tracker.py:37:1: 'datetime.timedelta' imported but unused
+app\mop_reco\ingest.py:1978:5: local variable 'mtime' is assigned to but never used
+app\mop_reco\masters.py:1047:5: '.ingest.read_warehouse' imported but unused
+app\mop_reco\queries.py:10:1: 'dataclasses.field' imported but unused
+app\mop_reco\queries.py:596:5: redefinition of unused 'field' from line 10
+app\mop_reco\queries.py:1169:14: redefinition of unused 'field' from line 10
+app\mop_reco\queries.py:1912:35: redefinition of unused 'field' from line 10
+app\mop_reco\queries.py:1921:41: redefinition of unused 'field' from line 10
+app\mop_reco\refunds.py:28:1: '.manual_match.gateway_pool_for_date' imported but unused
+app\mop_reco\refunds.py:129:5: '.gateway_txns as gt' imported but unused
+app\mop_reco\refunds.py:130:5: '.db.ManualMatch' imported but unused
+app\mop_reco\refunds.py:130:5: '.db.R1BillLine' imported but unused
+app\mop_reco\runs.py:319:13: local variable 'txn_agg_rows' is assigned to but never used
+app\mop_reco\store_sheet.py:320:9: `nonlocal grid` is unused: name is never assigned in scope
+app\mop_reco\store_sheet_export.py:338:5: '.store_sheet.other_type_summary as _other_type_summary' imported but unused
+app\mop_reco\upload_prefetch.py:64:5: '.manual_match.bill_key_of' imported but unused
+app\pages\2_Cash_position.py:14:1: 'datetime.datetime' imported but unused
+app\pages\5_Masters.py:22:1: 'mop_reco.masters.get_rows_asof' imported but unused
+app\pages\6_Upload.py:38:1: 'mop_reco.formatting.display_date' imported but unused
+app\pages\8_Exceptions.py:13:1: 'io' imported but unused
+app\pages\8_Exceptions.py:15:1: 'datetime.date' imported but unused
+app\pages\8_Exceptions.py:25:1: 'dashboard_common.tile' imported but unused
+app\pages\8_Exceptions.py:43:1: 'mop_reco.gateway_txns as gt' imported but unused
+app\pages\8_Exceptions.py:49:1: 'mop_reco.exceptions.bill_exception_key' imported but unused
+app\pages\8_Exceptions.py:49:1: 'mop_reco.exceptions.txn_exception_key' imported but unused
+app\pages\8_Exceptions.py:51:1: 'mop_reco.formatting.blank' imported but unused
+scripts\diagnose_paytm_unmatched.py:13:1: 'json' imported but unused
+scripts\diagnose_paytm_unmatched.py:15:1: 'collections.Counter' imported but unused
+scripts\inspect_period.py:14:1: 'os' imported but unused
+scripts\perf_ingest.py:75:9: local variable 'before' is assigned to but never used
+scripts\perf_summary_sheet.py:41:1: 'mop_reco.db.DateTotalAgg' imported but unused
+scripts\perf_summary_sheet.py:207:9: f-string is missing placeholders
+scripts\perf_summary_sheet.py:208:9: f-string is missing placeholders
+scripts\round_trip_refusals.py:12:1: 'openpyxl' imported but unused
+scripts\round_trip_refusals.py:29:1: 'mop_reco.db.Exception_' imported but unused
+scripts\round_trip_refusals.py:29:1: 'mop_reco.db.RefundEvent' imported but unused
+scripts\round_trip_refusals.py:29:1: 'mop_reco.db.Run' imported but unused
+scripts\round_trip_refusals.py:29:1: 'mop_reco.db.TransactionRefund' imported but unused
+scripts\round_trip_refusals.py:31:1: 'mop_reco.export.ExportMeta' imported but unused
+scripts\round_trip_refusals.py:31:1: 'mop_reco.export.build_export' imported but unused
+scripts\run_r3a.py:24:1: 'mop_reco.formatting.money_short' imported but unused
+scripts\run_r3a.py:167:11: f-string is missing placeholders
+tests\test_all_sources_overlap.py:7:1: 'datetime.datetime' imported but unused
+tests\test_all_sources_overlap.py:55:5: local variable 'by_id' is assigned to but never used
+tests\test_auth.py:17:1: 'mop_reco.db.AppUser' imported but unused
+tests\test_cms_blocks.py:62:5: local variable 'engine' is assigned to but never used
+tests\test_data_quality_rows.py:13:1: 'pytest' imported but unused
+tests\test_erp_ingest.py:7:1: 'datetime.time' imported but unused
+tests\test_exception_tables.py:14:1: 'pandas as pd' imported but unused
+tests\test_export.py:11:1: 'pytest' imported but unused
+tests\test_float_tracker.py:18:1: 'datetime.datetime' imported but unused
+tests\test_ingest.py:13:1: 'datetime.date' imported but unused
+tests\test_lifecycle.py:198:5: 'io' imported but unused
+tests\test_masters_preflight.py:22:1: 'mop_reco.db.MasterRow' imported but unused
+tests\test_pos_ingest_calamine.py:11:1: 'math' imported but unused
+tests\test_pos_ingest_calamine.py:132:5: 'fastexcel' imported but unused
+tests\test_queries.py:16:1: 'mop_reco.db.ReconciliationResult' imported but unused
+tests\test_r1_chunked.py:17:1: 'numpy as np' imported but unused
+tests\test_refund_folder.py:17:1: 'test_refunds.session' imported but unused
+tests\test_refund_folder.py:41:77: redefinition of unused 'session' from line 17
+tests\test_refund_folder.py:63:73: redefinition of unused 'session' from line 17
+tests\test_refund_folder.py:76:68: redefinition of unused 'session' from line 17
+tests\test_refund_folder.py:99:22: redefinition of unused 'session' from line 17
+tests\test_refund_folder.py:116:76: redefinition of unused 'session' from line 17
+tests\test_refund_folder.py:129:86: redefinition of unused 'session' from line 17
+tests\test_refund_folder.py:143:64: redefinition of unused 'session' from line 17
+tests\test_refund_folder.py:156:63: redefinition of unused 'session' from line 17
+tests\test_risk_split.py:7:1: 'datetime.date' imported but unused
+tests\test_runs_lock.py:153:5: 'mop_reco.db.ManualMatch' imported but unused
+tests\test_runs_lock.py:153:5: 'mop_reco.db.R1BillLine' imported but unused

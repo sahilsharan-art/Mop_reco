@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,20 @@ from .masters import (
 logger = logging.getLogger("mop_reco")
 
 WAREHOUSE_ROOT = Path(__file__).resolve().parents[2] / "warehouse"
+
+
+# Where a source's rows come from. 'file' (the default) reads the Excel / CSV files in the numbered folders; 'erp' reads the ERP's
+# gold_mop view through the read-only connection (mop_reco/erp_ingest.py). A SETTING per environment - MOP_SOURCE_POS / MOP_SOURCE_PTC,
+# set from SOURCE_POS / SOURCE_PTC in deploy\production.env - so switching a source to the ERP, or back, never needs a code change.
+SOURCE_MODE_ENV = {"pos_bill_wise": "MOP_SOURCE_POS", "ptc": "MOP_SOURCE_PTC"}
+
+
+def source_mode(source: str) -> str:
+    var = SOURCE_MODE_ENV[source]
+    value = (os.environ.get(var) or "file").strip().lower()
+    if value not in ("file", "erp"):
+        raise IngestError(f"{var}={value!r} is not valid: it must be 'file' or 'erp'.")
+    return value
 
 
 class IngestError(ValueError):
@@ -1454,7 +1469,7 @@ def _ingest_pos_bill_wise_one_file(config: Config, file_path: Path, mtime,
 
 
 def ingest_pos_bill_wise(config: Config, session, file_path: Path = None,
-                         use_warehouse: bool = True, on_progress=None) -> tuple:
+                         use_warehouse: bool = True, on_progress=None, date_from=None, date_to=None) -> tuple:
     """`file_path` targets one specific dump; omit it to read every file
     discovered for the source (CLAUDE.md section 4) — a folder can hold one
     file per month (April, May, June, July, August) as well as competing
@@ -1470,6 +1485,11 @@ def ingest_pos_bill_wise(config: Config, session, file_path: Path = None,
     from Parquet instead of re-opening the raw workbook — per file, so a
     fresh month's file is read raw while an unchanged month's file is not
     re-opened. Pass False to force a raw re-read of every file."""
+    if file_path is None and source_mode("pos_bill_wise") == "erp":
+        # The ERP is this environment's POS source (an explicit file_path still means "read that file").
+        from .erp_ingest import ingest_pos_from_erp
+        return ingest_pos_from_erp(config, session, date_from, date_to, on_progress=on_progress)
+
     files = _discover_files_for_source(config, "pos_bill_wise", file_path)
 
     per_file_meta = {}
@@ -1931,6 +1951,10 @@ def ingest_ptc(config: Config, session, file_path: Path = None) -> tuple:
     (July is in three) resolves to the most recently modified file, on the natural key
     store + voucher number; the superseded rows are reported, never silent.
     """
+    if file_path is None and source_mode("ptc") == "erp":
+        from .erp_ingest import ingest_ptc_from_erp
+        return ingest_ptc_from_erp(config, session)
+
     encoding = config.encoding_for("ptc") or "cp1252"
     layout = {}
 
@@ -1944,7 +1968,12 @@ def ingest_ptc(config: Config, session, file_path: Path = None) -> tuple:
 
     df, files, supersede_report = read_source_files(config, "ptc", file_path, _read, "_ptc_key",
                                                     key_label="voucher_key", make_key=_key)
-    cols = layout
+    return _finish_ptc(df, files, encoding, layout, supersede_report)
+
+
+def _finish_ptc(df: pd.DataFrame, files: list, encoding: str, cols: dict, supersede_report=None) -> tuple:
+    """Everything after the vouchers are read and normalised, shared by the file reader and the ERP reader: the deposit flags (head OR
+    ledger), the per-date warehouse partitions and the load report. `files` is [(path, mtime)]."""
     df = df.reset_index(drop=True)
     mtime = max(mt for _, mt in files)
 

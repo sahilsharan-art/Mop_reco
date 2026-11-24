@@ -75,6 +75,10 @@ function Set-AppEnvironment($s) {
     $env:MOP_REQUIRE_POSTGRES = '1'                              # never fall back to a local SQLite file
     # The ERP database (read-only, a login shared with other applications). Only when ERP_DB_HOST is set; the password is
     # the machine-encrypted secrets\erp.sec if it has been stored. The app itself forces every ERP session read-only.
+    # Where each source comes from: 'file' (default) or 'erp'. SOURCE_POS / SOURCE_PTC in production.env -> MOP_SOURCE_POS / MOP_SOURCE_PTC.
+    foreach ($pair in @(@('SOURCE_POS', 'MOP_SOURCE_POS'), @('SOURCE_PTC', 'MOP_SOURCE_PTC'))) {
+        if ($s[$pair[0]]) { Set-Item -Path ('Env:' + $pair[1]) -Value $s[$pair[0]] }
+    }
     if ($s['ERP_DB_HOST']) {
         $env:MOP_ERP_HOST = $s['ERP_DB_HOST']
         $env:MOP_ERP_PORT = $(if ($s['ERP_DB_PORT']) { $s['ERP_DB_PORT'] } else { '5432' })

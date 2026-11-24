@@ -257,3 +257,10 @@ auth:
   lockout_minutes: 15         # how long it stays locked (an administrator can unlock it at once)
   idle_minutes: 120           # signed out after this long without use
   absolute_hours: 12          # signed out after this long in all, however busy
+
+# The ERP as a source (2026-11-24). A source is switched per environment with MOP_SOURCE_POS / MOP_SOURCE_PTC = erp (SOURCE_POS / SOURCE_PTC in
+# deploy\production.env); the default is the files. The platform re-reads the last 60 days from Oracle every day (bills IT deletes later disappear),
+# so POS days inside this window are pulled from the ERP on every run; older days come from the warehouse cache of earlier ERP pulls.
+erp:
+  reread_days: 65
+

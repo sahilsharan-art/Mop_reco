@@ -202,7 +202,7 @@ def run_reconciliation(config: Config, session, date_from=None, date_to=None,
         with _stage(session, run, timings, "ingest_pos_bill_wise"):
             bills, bills_report = ingest_mod.ingest_pos_bill_wise(
                 config, session, file_path=source_file_paths.get("pos_bill_wise"),
-                on_progress=_progress)
+                on_progress=_progress, date_from=date_from, date_to=date_to)
             load_reports["pos_bill_wise"] = bills_report
             _record_files(session, run.id, bills_report)
 
