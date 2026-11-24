@@ -440,7 +440,10 @@ def stmt_table(title, period, rows_html, result_label, result_value,
                result_bad=False, result_warn=False, use_cr: bool = False) -> str:
     warn_cls = " mop-stmt-cell--warn" if result_warn else ""
     bad_cls = " mop-stmt-figure--bad" if result_bad else ""
-    result_figure = money_cr(abs(result_value)) if use_cr else money_table(abs(result_value))
+    # The operation rows carry their sign in their "Add:/Less:" label, so their figures stay positive. The RESULT is a total, not an
+    # operation: a negative one (a closing cash balance below zero is an impossible book) keeps its minus sign, because red alone
+    # must never be the only signal (CLAUDE.md 8.1; audit D-007).
+    result_figure = money_cr(result_value) if use_cr else money_table(result_value)
     total_row = (
         f"<tr class='mop-stmt-row mop-stmt-total{warn_cls}'>"
         f"<td class='mop-stmt-rowlabel'>{result_label}</td>"

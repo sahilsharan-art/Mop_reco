@@ -47,6 +47,14 @@ page("Float", "Float is the opening cash balance less the cash deposited "
              "Threshold Rs 10,000 per store unless overridden.")
 
 session = db_session()
+
+
+@st.cache_data(show_spinner="Reading the CMS files...")
+def _cms_cached(fingerprint):
+    """The CMS rows, re-read only when a CMS file changes (audit D-006: an expander body runs on every page view)."""
+    return src.cms_frame(session)
+
+
 run = latest_run(session)
 if run is None:
     no_run_yet()
@@ -62,12 +70,15 @@ def _load_config_raw() -> dict:
 
 @st.cache_data(ttl=600, show_spinner="Building the float grid…")
 def _load_grid(run_id, lo, hi):
-    bundle = src.build(session, run_id, lo, hi)
+    # The precomputed store-day aggregates (the same rows Summary reads), not the slow `build()` path: `build()` re-read the raw PTC and
+    # CMS files and rewrote warehouse partitions on a page view (audit D-006). Checked identical on every column of the full
+    # April-November run (45,580 store-days) apart from the D-001 cash-received correction, which a re-run brings in.
+    sheet, _by_date = src.load_fast(session, run_id, lo, hi)
     # The raw store-day sheet is returned alongside the float grid — the
     # Data quality section below (credit exceeds deposit, merged in from
     # Summary 2026-09-20) needs `cash_receivable`, which `build_float_grid`
     # does not carry over into its own narrower column set.
-    return ft.build_float_grid(bundle.sheet, _load_config_raw()), bundle.sheet
+    return ft.build_float_grid(sheet, _load_config_raw()), sheet
 
 
 grid_all, raw_sheet = _load_grid(run.id, date_from, date_to)
@@ -188,28 +199,33 @@ if dq_count:
             "a shared pickup code, not money owed to the agency. Open item: "
             "Defect B (CMS date attribution)."
         )
-        cms_for_dq = src.cms_frame(session)
-        sheet_for_dq = raw_sheet if not store else raw_sheet[raw_sheet["store"] == store]
-        dq_shown = src.data_quality_rows(sheet_for_dq, cms_for_dq)
-        dq_table = dq_shown.rename(columns={
-            "store": "Store", "business_date": "Date", "I": "I (deposit)",
-            "J": "J (credit)", "J_minus_I": "J - I",
-            "pickup_code": "Pickup code", "slip_no": "Slip no",
-        }).copy()
-        dq_table["Date"] = dq_table["Date"].map(display_date)
-        for column in ("I (deposit)", "J (credit)", "J - I"):
-            dq_table[column] = dq_table[column].map(money_table)
-        st.dataframe(dq_table, hide_index=True, width="stretch")
-        st.caption(f"Total: {fmt_count(len(dq_shown))} store-day(s), "
-                  f"{money_short(dq_total)}.")
-        frame_export_button(
-            dq_shown,
-            ExportMeta(run_id=run.id, run_timestamp=run.started_at,
-                      date_from=date_from, date_to=date_to,
-                      filters={"store": store}, value_column="J_minus_I",
-                      title="Data quality"),
-            key="dl_data_quality", noun="data quality rows",
-        )
+        if not st.session_state.get("fl_dq_open"):
+            # The table needs the real CMS files; reading them on every page view (an expander body always runs) is what this avoids.
+            st.button("Show the store-days (reads the CMS files)", key="fl_dq_btn",
+                      on_click=lambda: st.session_state.update({"fl_dq_open": True}))
+        else:
+            cms_for_dq = _cms_cached(src.cms_source_fingerprint())
+            sheet_for_dq = raw_sheet if not store else raw_sheet[raw_sheet["store"] == store]
+            dq_shown = src.data_quality_rows(sheet_for_dq, cms_for_dq)
+            dq_table = dq_shown.rename(columns={
+                "store": "Store", "business_date": "Date", "I": "I (deposit)",
+                "J": "J (credit)", "J_minus_I": "J - I",
+                "pickup_code": "Pickup code", "slip_no": "Slip no",
+            }).copy()
+            dq_table["Date"] = dq_table["Date"].map(display_date)
+            for column in ("I (deposit)", "J (credit)", "J - I"):
+                dq_table[column] = dq_table[column].map(money_table)
+            st.dataframe(dq_table, hide_index=True, width="stretch")
+            st.caption(f"Total: {fmt_count(len(dq_shown))} store-day(s), "
+                      f"{money_short(dq_total)}.")
+            frame_export_button(
+                dq_shown,
+                ExportMeta(run_id=run.id, run_timestamp=run.started_at,
+                          date_from=date_from, date_to=date_to,
+                          filters={"store": store}, value_column="J_minus_I",
+                          title="Data quality"),
+                key="dl_data_quality", noun="data quality rows",
+            )
 
 if negative_rows.empty and not dq_count:
     st.caption("No data-quality issues in this range.")

@@ -120,6 +120,25 @@ def ptc_frame(session=None):
         return _read("ptc")
 
 
+def cms_source_fingerprint() -> tuple:
+    """(path, modified time, size) of every CMS source file, sorted. A page that has to call `cms_frame()` caches the answer on
+    this, so the CMS files are re-read only when one of them has changed - never on every page view (audit D-006)."""
+    try:
+        from .config import load_config
+        files = load_config().source_status("axis_cms").files
+    except Exception as exc:  # noqa: BLE001 - say why; an unreadable source simply never matches a cached answer
+        logger.warning("cms_source_fingerprint: could not list the CMS source files (%s: %s)", type(exc).__name__, exc)
+        return ("unreadable", repr(exc))
+    out = []
+    for f in files:
+        try:
+            st = Path(f).stat()
+            out.append((str(f), st.st_mtime_ns, st.st_size))
+        except OSError as exc:
+            out.append((str(f), "missing", repr(exc)))
+    return tuple(sorted(out))
+
+
 def cms_frame(session=None, with_notes: bool = False):
     """Every CMS row, INCLUDING the ones with no deposit date.
 

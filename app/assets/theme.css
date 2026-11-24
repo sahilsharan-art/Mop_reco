@@ -44,6 +44,10 @@
   --good-tint:     #E8F5EE;
   --warn-tint:     #FBF3E1;
   --bad-tint:      #FBEAEA;
+  /* Text colours for use ON a tint or white (WCAG AA 4.5:1). The plain --good/--warn/--bad stay for bars, borders and icons, where 3:1 is enough (audit D-008). */
+  --good-ink:      #17724A;
+  --warn-ink:      #8A5C0C;
+  --bad-ink:       #B52E2E;
 
   /* ---- CK Desk design language (2026-11-21): shadows, gradients, header ------------------------------------ */
   --shadow-soft:   0 1px 2px rgba(23, 32, 43, .04), 0 2px 8px rgba(23, 32, 43, .04);
@@ -209,9 +213,9 @@ small, .stCaption {
 /* State words still carry colour, but always alongside their own text
    (never colour alone) — used for the sub-line under a tile in warn/bad
    state. */
-.mop-tile-sub--warn { color: var(--warn); }
-.mop-tile-sub--bad  { color: var(--bad); }
-.mop-tile-sub--good { color: var(--good); }
+.mop-tile-sub--warn { color: var(--warn-ink); }
+.mop-tile-sub--bad  { color: var(--bad-ink); }
+.mop-tile-sub--good { color: var(--good-ink); }
 
 /* Ribbons — the tinted panel several pages wrap a row of tiles in
    (Summary's tile-ribbon, Manual matches' bills/transactions strip, Float's
@@ -241,9 +245,9 @@ small, .stCaption {
   padding: 2px 10px;
   border-radius: 999px;
 }
-.mop-status--good { background: var(--good-tint); color: var(--good); }
-.mop-status--warn { background: var(--warn-tint); color: var(--warn); }
-.mop-status--bad  { background: var(--bad-tint);  color: var(--bad); }
+.mop-status--good { background: var(--good-tint); color: var(--good-ink); }
+.mop-status--warn { background: var(--warn-tint); color: var(--warn-ink); }
+.mop-status--bad  { background: var(--bad-tint);  color: var(--bad-ink); }
 .mop-status--accent { background: var(--accent-tint); color: var(--accent); }
 
 /* ============================================================================
@@ -264,6 +268,9 @@ div[data-testid="stDataFrame"] {
 
 .stButton button, .stDownloadButton button,
 div[data-testid="stFormSubmitButton"] button {
+  /* The +/- section toggles were 24x22px; WCAG 2.2 asks for at least 24x24 (audit D-009). Ordinary buttons are larger already. */
+  min-height: 28px;
+  min-width: 28px;
   border-radius: 10px;
   font-weight: 600;
   font-family: var(--font-body);
@@ -741,7 +748,7 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
 .mop-matrix-pct { font-size: 11px; color: var(--ink-soft); margin-top: 2px; }
 /* The only tint anywhere in the matrix: a non-zero Receivable. */
 .mop-matrix .mop-matrix-cell--warn { background: var(--warn-tint); }
-.mop-matrix-cell--warn .mop-matrix-figure { color: var(--warn); font-weight: 600; }
+.mop-matrix-cell--warn .mop-matrix-figure { color: var(--warn-ink); font-weight: 600; }
 /* Reserved for a future per-cell MISMATCH state — nothing in this table
    sets `mop-matrix-cell--bad` today (every current control failure here
    is a page-level red banner above the matrix, never a per-cell tint),
@@ -944,7 +951,7 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-topnav) {
 .mop-matrix-row--adjustment .mop-matrix-rowlabel { font-weight: 500; }
 /* the small +/- that shows or hides the voucher / credit-note lines */
 .st-key-matrix-adj { margin-top: 6px; }
-.st-key-matrix-adj button { min-height: 22px !important; height: 22px; width: 24px; min-width: 24px; padding: 0 !important;
+.st-key-matrix-adj button { min-height: 28px !important; height: 28px; width: 28px; min-width: 28px; padding: 0 !important;
   font-size: 14px; line-height: 1; border-radius: 6px; }
 .mop-matrix-adjlabel { font-size: 11.5px; color: var(--ink-soft); }
 
@@ -975,7 +982,7 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-topnav) {
 .ts-cell { font-size: 14px; color: var(--ink); padding: 8px 4px; font-variant-numeric: tabular-nums; }
 .ts-num { text-align: right; }
 [class*="st-key-tsr_"] { border-bottom: 1px solid var(--border); }
-[class*="st-key-tsr_"] button { min-height: 22px !important; height: 22px; width: 24px; min-width: 24px; padding: 0 !important;
+[class*="st-key-tsr_"] button { min-height: 28px !important; height: 28px; width: 28px; min-width: 28px; padding: 0 !important;
   font-size: 14px; line-height: 1; border-radius: 6px; }
 
 

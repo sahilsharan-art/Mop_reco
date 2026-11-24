@@ -12,7 +12,7 @@ column meanings without approval; no secrets or internal addresses in any delive
 | 1 | Discovery: inventory, architecture, baseline | **Complete (24 Nov 2026)** | inventory, static analysis, test discovery, risk classification, first candidate findings |
 | 2 | Functional and financial audit (R1, R2, R3a, R3b, float, sheet A-N) | **In progress (24 Nov 2026)** | R1, Float, CMS blocks, sheet A-N and the R3a cash book re-performed independently; 3 defects found and fixed locally (section 9); R2 / R3b and boundary runs still to do |
 | 3 | Code and database audit | **Substantially complete (24 Nov 2026)** | 25 silent handlers read and classified; schema, index and constraint review done; live database integrity audit passed except D-002 noise; concurrency proved; C-002/C-004/C-005/C-007/C-008 closed; see section 10 |
-| 4 | UI/UX audit (every page, 375/768/1366/1920) | Not started | |
+| 4 | UI/UX audit (every page, 375/768/1366/1920) | **Complete for the pages and widths (24 Nov 2026)** | seven pages and the sign-in page at four widths; five defects found and fixed locally (D-006 to D-010); see section 11 |
 | 5 | Security and performance audit | Not started | two security items already known (section 5) |
 | 6 | Bug fixing (P0, P1, P2, P3) | Started | D-001..D-003 fixed locally and committed (01e1e8b); NOT yet deployed to the application server; see `MOP_DEFECT_REGISTER.md` |
 | 7 | UAT | Not started | |
@@ -120,3 +120,13 @@ Update to risk 8 in section 6: the earlier "about 12% of stores with a constant 
 **Concurrency:** two operators validating the same transaction for two bills and recording at the same moment: exactly one wins, the other is refused, no half-written row is left (6 repeats stable); the database refuses a second active match even with every check bypassed (`tests/test_audit_concurrency.py`).
 
 **Still to do in Phase 3:** transaction-boundary review of the bulk-apply and run persistence paths under a forced mid-way failure; reading `lifecycle.sync_closures`, `store_tasks` and `table_upload` line by line. Not started: these are the largest unread money-adjacent modules.
+
+## 11. Phase 4 results (24 Nov 2026)
+
+**Method.** The app was run on the development PC against the local throw-away PostgreSQL copy of the full April-November run (never against production), at 375, 768, 1366 and 1920 px. An in-page probe checked every page for: horizontal overflow, elements outside the viewport, error panels and tracebacks, stray "nan / None / NaT" text, unlabelled inputs, touch-target size, and hidden raw ligature text. Contrast was computed from the theme tokens. The sign-in page was checked on a phone width, including that nothing is visible before sign-in and a wrong password gives the one generic message.
+
+**Results.** Summary, Store Task, Cash position, Float, Exceptions, Upload and Masters: **no horizontal overflow, no error panel, no traceback, no "nan" text at any of the four widths** (Summary at 768 was reached by direct load and is covered by the 1366 and 375 runs). The phone sidebar opens as an overlay with readable labels and disabled months dimmed. The sign-in page is clean on a phone; Enter submits; the password field is marked `current-password`.
+
+**Defects found and fixed locally:** D-006 (pages re-read all CMS files and rewrote the warehouse on every view - found because the page froze the browser), D-007 (Float on the slow path), D-008 (negative closing balance shown positive), D-009 (text contrast), D-010 (touch targets). Two observations: O-5, O-6.
+
+**Not done and why.** No screen-reader or keyboard-only walkthrough (needs a person); no visual-regression snapshots; the sign-in success path was not repeated in this phase (verified when it was built, and again in the audit's earlier work). Heavy tables were checked for layout but not scrolled to the end.

@@ -165,6 +165,14 @@ def _cms_breakdown():
         "unresolved_pickups": unresolved,
     }
 
+
+@st.cache_data(show_spinner="Reading the CMS files...")
+def _cms_breakdown_cached(fingerprint):
+    """`_cms_breakdown()` memoised on the CMS files' own (path, mtime, size): the files are re-read only when one has changed.
+    Streamlit runs the body of an `st.expander` on EVERY page load, open or closed, so an uncached call here re-ingested every CMS
+    month and rewrote the warehouse partitions on each view (audit D-006)."""
+    return _cms_breakdown()
+
 # --- the controls — reported, never shouted (revised 2026-09-30) ----------
 #
 # Both the top-of-page red banner AND the per-control bullet list used to
@@ -583,7 +591,13 @@ def _control_value(rows: pd.DataFrame):
 
 
 with st.expander(_notes_label):
-    _cms = _cms_breakdown()
+    # The CMS part reads the real CMS files, so it is loaded only when asked for (and then cached on the files' fingerprint).
+    if not st.session_state.get("sm_cms_notes"):
+        st.button("Check the CMS source files (re-reads them)", key="sm_cms_notes_btn",
+                  on_click=lambda: st.session_state.update({"sm_cms_notes": True}))
+        _cms = {"notes": [], "unresolved_pickups": None}
+    else:
+        _cms = _cms_breakdown_cached(src.cms_source_fingerprint())
     unresolved = _cms["unresolved_pickups"]
     st.markdown(f"**The {len(controls)} controls in full**")
     st.dataframe(pd.DataFrame([
