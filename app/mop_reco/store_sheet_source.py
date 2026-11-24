@@ -421,6 +421,29 @@ AGG_COLUMNS = ("total_sale", "digital_sale", "cash_sale", "opening_balance",
               "cash_expense_income", "closing_balance", "float_amount")
 
 
+_SHEET_MONEY = ("total_sale", "digital_sale", "cash_sale", "opening_balance", "cash_deposit", "cash_received", "cash_receivable",
+                "cash_expense_income", "closing_balance", "float_amount")
+
+
+def money2(value) -> float:
+    """A rupee amount rounded to the whole paisa for STORAGE (audit defect D-002, 2026-11-24). pandas sums floats, so a total that is
+    exactly 74,018.00 can arrive as 74017.9999999999 and, written as it is, sits in the database as that. Every source amount is an exact
+    number of paise (checked: none is not), so rounding to 2 decimals loses nothing and keeps the stored values exact."""
+    return float(round(float(value), 2))
+
+
+def store_day_record(run_id: int, row, defect_b: bool) -> dict:
+    rec = {"run_id": run_id, "business_date": row.date, "store": row.store, "defect_b": bool(defect_b)}
+    rec.update({c: money2(getattr(row, c)) for c in _SHEET_MONEY})
+    return rec
+
+
+def date_total_record(run_id: int, row) -> dict:
+    rec = {"run_id": run_id, "business_date": row.date}
+    rec.update({c: money2(getattr(row, c)) for c in _SHEET_MONEY})
+    return rec
+
+
 def persist_aggregates(session, run_id: int, date_from: date, date_to: date,
                        cms: pd.DataFrame = None) -> dict:
     """Run `build()` once, for the run's own full range, and write its
@@ -456,17 +479,7 @@ def persist_aggregates(session, run_id: int, date_from: date, date_to: date,
 
     records = []
     for row in sheet.itertuples(index=False):
-        records.append({
-            "run_id": run_id, "business_date": row.date, "store": row.store,
-            "total_sale": float(row.total_sale), "digital_sale": float(row.digital_sale),
-            "cash_sale": float(row.cash_sale), "opening_balance": float(row.opening_balance),
-            "cash_deposit": float(row.cash_deposit), "cash_received": float(row.cash_received),
-            "cash_receivable": float(row.cash_receivable),
-            "cash_expense_income": float(row.cash_expense_income),
-            "closing_balance": float(row.closing_balance),
-            "float_amount": float(row.float_amount),
-            "defect_b": (row.date, row.store) in defect_dates_stores,
-        })
+        records.append(store_day_record(run_id, row, (row.date, row.store) in defect_dates_stores))
         if len(records) >= 5000:
             session.bulk_insert_mappings(StoreDayAgg, records)
             records = []
@@ -474,16 +487,7 @@ def persist_aggregates(session, run_id: int, date_from: date, date_to: date,
         session.bulk_insert_mappings(StoreDayAgg, records)
 
     by_date = bundle.summary[bundle.summary["date"] != "TOTAL"]
-    dt_records = [{
-        "run_id": run_id, "business_date": row.date,
-        "total_sale": float(row.total_sale), "digital_sale": float(row.digital_sale),
-        "cash_sale": float(row.cash_sale), "opening_balance": float(row.opening_balance),
-        "cash_deposit": float(row.cash_deposit), "cash_received": float(row.cash_received),
-        "cash_receivable": float(row.cash_receivable),
-        "cash_expense_income": float(row.cash_expense_income),
-        "closing_balance": float(row.closing_balance),
-        "float_amount": float(row.float_amount),
-    } for row in by_date.itertuples(index=False)]
+    dt_records = [date_total_record(run_id, row) for row in by_date.itertuples(index=False)]
     if dt_records:
         session.bulk_insert_mappings(DateTotalAgg, dt_records)
 

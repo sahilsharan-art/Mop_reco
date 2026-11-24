@@ -169,6 +169,13 @@ def link_non_acquiring(paytm_df: pd.DataFrame):
     if odd.empty:
         return pd.DataFrame(columns=empty_cols), pd.DataFrame(columns=empty_cols)
 
+    if paytm_df["transaction_id"].duplicated().any():
+        # The loader dedupes on transaction_id (CLAUDE.md 5), so this cannot happen from ingest; say so plainly rather than
+        # failing with a pandas reindexing error if a caller ever hands over an un-deduped frame (audit D-003).
+        raise ValueError(
+            f"paytm frame has {int(paytm_df['transaction_id'].duplicated().sum())} duplicated transaction_id value(s) - "
+            "the frame must be deduplicated on transaction_id before non-ACQUIRING rows are linked (CLAUDE.md 5)"
+        )
     originals = paytm_df.set_index("transaction_id")
     ref = odd["reference_transaction_id"].astype("string").str.strip()
 

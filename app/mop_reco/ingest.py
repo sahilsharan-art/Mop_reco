@@ -883,26 +883,32 @@ def _read_axis_cms_file(config: Config, file_path: Path, mtime) -> pd.DataFrame:
     return df
 
 
+def _cms_overlap_key(c: pd.DataFrame) -> None:
+    """The natural key that decides whether two CMS rows from different files are the SAME row re-exported: pickup code, deposit date,
+    slip number AND the row TYPE (audit defect D-001, 2026-11-24). Without TYPE, a slip's original collection (COL) in one monthly
+    file and the adjustment debit (ADJ.DB.) or credit (ADJ.CR.) that reverses or corrects it in a later file looked like one row
+    re-exported: only the newer file's row survived and the other was dropped as "superseded", so cash received (column J) lost
+    the collection or the reversal - Rs 7.2 lakh net across five store-days between April and mid-November 2026. Rows of different
+    TYPE are different records by definition. A row missing any component (a ZPO row has no DEPDATE) gets no key and is always kept."""
+    has_all_parts = (c["PICKUPPOINTCODE"].notna() & c["DEPDATE"].notna() & c["SLIPNO"].notna())
+    c["_cms_key"] = None
+    row_type = c["TYPE"].astype(str).str.strip().str.upper() if "TYPE" in c.columns else ""
+    c.loc[has_all_parts, "_cms_key"] = (
+        c.loc[has_all_parts, "PICKUPPOINTCODE"].astype(str).str.strip() + "|"
+        + c.loc[has_all_parts, "DEPDATE"].astype(str) + "|"
+        + c.loc[has_all_parts, "SLIPNO"].astype(str).str.strip() + "|"
+        + (row_type[has_all_parts] if hasattr(row_type, "loc") else ""))
+
+
 def ingest_axis_cms(config: Config, session, file_path: Path = None) -> tuple:
     load_master(config, session, "pickup_code")
     load_master(config, session, "pickup_location")
 
     # Every discovered file is read (2026-09-24) — see the comment above
     # _discover_files_for_source. CMS now arrives as one file per month.
-    # The natural key for a CMS pickup is (pickup_code, deposit_date, slip_no) - CLAUDE.md 6.9's own exception
-    # key for this source - never the deposit date alone. A row missing any component (a ZPO row with no
-    # DEPDATE) gets a blank composite key and is always kept, never compared.
-    def _key(c):
-        has_all_parts = (c["PICKUPPOINTCODE"].notna() & c["DEPDATE"].notna() & c["SLIPNO"].notna())
-        c["_cms_key"] = None
-        c.loc[has_all_parts, "_cms_key"] = (
-            c.loc[has_all_parts, "PICKUPPOINTCODE"].astype(str).str.strip() + "|"
-            + c.loc[has_all_parts, "DEPDATE"].astype(str) + "|"
-            + c.loc[has_all_parts, "SLIPNO"].astype(str).str.strip())
-
     df, files, supersede_report = read_source_files(
         config, "axis_cms", file_path, lambda fp, mt: _read_axis_cms_file(config, fp, mt), "_cms_key",
-        key_label="pickup_key", make_key=_key)
+        key_label="pickup_key", make_key=_cms_overlap_key)
 
     # CLAUDE.md section 6.7 TYPE handling.
     def _credit_amount(row):
