@@ -210,6 +210,43 @@ def test_a_day_with_no_rows_gives_an_empty_frame_with_the_right_columns():
     assert len(raws) == 1 and raws[0].empty and "BILLNO" in raws[0].columns
 
 
+# --- one line per bill x reference-less MOP (the Excel export's shape; 2026-11-25) ----------------------------------
+
+def _split_conn(extra=()):
+    rows = [("SB39/001712/0426", "S1", "PHB", "EDC OTHER", 99.0, None, "T1", time(10, 0, 0)),
+            ("SB39/001712/0426", "S1", "PHB", "EDC OTHER", 527.0, None, "T1", time(10, 0, 5)),
+            ("SB39/001712/0426", "S1", "PHB", "Cash", 100.0, None, "T1", time(10, 0, 9))] + list(extra)
+    return FakeErp(POS_FULL, [_pos_row(r, POS_FULL) for r in rows])
+
+
+def test_reference_less_lines_of_one_bill_and_mop_become_one_line_with_the_exact_total():
+    df = erp_source.read_pos(CONFIG, _split_conn(), date(2026, 7, 20), date(2026, 7, 20))
+    other = df[df.mop == "EDC OTHER"]
+    assert len(other) == 1 and other["amount"].iloc[0] == 626.0                       # 99 + 527, to the paisa
+    assert other["bill_time"].iloc[0] == "10:00:00"                                   # the first line keeps its own time
+    assert round(float(df["amount"].sum()), 2) == 726.0                               # no money added or lost
+    assert sorted(df[df.bill_no == "SB39/001712/0426"]["line_seq"]) == [1, 2]         # renumbered, no gap
+
+
+def test_a_line_that_carries_a_reference_is_never_merged():
+    paytm1 = json.dumps({"head": {}, "body": {"acquirementId": "A1"}})
+    paytm2 = json.dumps({"head": {}, "body": {"acquirementId": "A2"}})
+    conn = FakeErp(POS_FULL, [_pos_row(("SB1/1/0726", "S", "PHB", "PAYTM EDC", 100.0, paytm1, "T", time(9, 0, 0)), POS_FULL),
+                              _pos_row(("SB1/1/0726", "S", "PHB", "PAYTM EDC", 200.0, paytm2, "T", time(9, 0, 1)), POS_FULL),
+                              _pos_row(("SB1/1/0726", "S", "PHB", "EDC OTHER AXIS", 50.0, AXIS, "T", time(9, 0, 2)), POS_FULL),
+                              _pos_row(("SB1/1/0726", "S", "PHB", "EDC OTHER AXIS", 70.0, None, "T", time(9, 0, 3)), POS_FULL)])
+    df = erp_source.read_pos(CONFIG, conn, date(2026, 7, 20), date(2026, 7, 20))
+    assert len(df) == 4                                                              # two payments with their own references; a mixed group is left alone
+
+
+def test_the_merge_can_be_switched_off_in_config(monkeypatch):
+    class Cfg:
+        raw = {"erp": {"merge_reference_less_lines": False}}
+        mop_classification = CONFIG.mop_classification
+    df = erp_source.read_pos(Cfg(), _split_conn(), date(2026, 7, 20), date(2026, 7, 20))
+    assert len(df[df.mop == "EDC OTHER"]) == 2
+
+
 # --- petty-cash vouchers ------------------------------------------------------------------------------------------
 
 def _ptc_row(store, d, no, mode, head, ledger, amount):

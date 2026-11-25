@@ -4536,6 +4536,12 @@ as_probe.json`).
   `ingest_pos_from_erp` (needs the run's date range; one day per query; the platform re-reads 60 days from Oracle daily, so POS days inside `erp.reread_days` (config, 65) are pulled on EVERY run and older pulled days come from the warehouse cache, tracked in `warehouse/pos_bill_wise/_erp_manifest.json`; a day the ERP no longer
   holds loses its stale partition; the file-derived partitions are copied once to `warehouse/_file_baseline/` first) and `ingest_ptc_from_erp` (the whole view, range from the view). Both return what the file readers return, through the SAME normalisers (`_normalise_pos_frame`, `_normalise_ptc_frame`, `_finish_ptc`), so R1 and every page are unchanged.
   `scripts/compare_two_runs.py --a 2 --b 3 --from .. --to ..` proves one run reproduces another table by table. 68 ERP tests (erp 34, erp_source 12, erp_shadow 10, erp_ingest 12).
+* **The ERP keeps one row per tender; the file kept one line per bill x reference-less MOP (found 2026-11-25 comparing run #4 with run #2).** On every April-October date (5,081,313 bill x MOP groups)
+  the two sources agree on every group except **68 `EDC OTHER` groups** (73 extra lines) that the ERP splits into 2-4 lines (e.g. 99 + 527 where the file holds 626); the summed amount is identical in all 68, no other MOP differs, none carries a
+  reference. Tier 2 matches ONE line to ONE transaction by exact amount (6.3), so the split changed ~125 matches. `erp_source.merge_reference_less_lines` (called by `normalise_pos`, config `erp.merge_reference_less_lines`, default true)
+  merges same-bill, same-MOP, `digital_noref` lines when NONE carries a Paytm/Axis/Bajaj reference (amount = exact sum, first line keeps time/operator, `line_seq` renumbered); a line with a reference is never merged. Proved by applying it to the
+  stored ERP partitions of all 214 dates: 73 lines removed, 0 differences from the file baseline in lines or amount per bill x MOP (credit-note split lines excepted, 6.41). Open point for Finance: the ERP's split is arguably the more truthful
+  record (two swipes), and switching the flag to false lets each match its own transaction - the file's merge was an artefact of the export. The server still needs the new package, a re-normalise of the ERP partitions and a re-run.
 
 ### 6.43 The V2 screens (React) - merged and prepared for deployment (2026-11-25)
 

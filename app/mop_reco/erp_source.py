@@ -20,12 +20,15 @@ is parsed into references by the shared normaliser and DROPPED; it is never logg
 
 from __future__ import annotations
 
+import logging
 from datetime import date, datetime, time, timedelta
 from typing import Iterator
 
 import pandas as pd
 
 from . import erp
+
+logger = logging.getLogger(__name__)
 
 POS_VIEW = "gold_mop.pos_bill_lines"
 PTC_VIEW = "gold_mop.ptc_vouchers"
@@ -137,6 +140,44 @@ def iter_ptc_raw(conn, d_from: date, d_to: date, chunk_days: int = 31, view: str
         yield df.rename(columns=PTC_COLUMNS)
 
 
+def merge_reference_less_lines(df: pd.DataFrame) -> tuple:
+    """One line per bill x reference-less digital MOP, as the Excel export always carried it. Returns (frame, lines_removed).
+
+    The ERP keeps one row per TENDER, the Excel export one row per bill x MOP for a method that has no terminal reference. Measured
+    2026-11-25 on every April-October date (5.08M bill x MOP groups): the two sources agree on every group except 68 `EDC OTHER` groups
+    that the ERP splits into 2-4 lines (e.g. 99 + 527) where the file holds one (626); the summed amount is identical in every one, no
+    other MOP differs, and no merged line carries a reference. R1's Tier 2 matches one line to one transaction by exact amount, so a
+    split line changes the match (CLAUDE.md 6.3) - merging restores the audited file result.
+
+    Only lines of the same bill and MOP are merged, only when NONE of them carries a Paytm / Axis / Bajaj reference (a line with a
+    reference is a payment of its own and is never merged), and only for the `digital_noref` class. The amount is the exact sum; the first
+    line keeps its time, operator and site reference; `line_seq` is renumbered."""
+    if df.empty or "mop_class" not in df.columns:
+        return df, 0
+    keys = ["bill_no", "mop"]
+    cand = (df["mop_class"] == "digital_noref") & df["in_sale_universe"] & df["paytm_ref"].isna() & df["axis_ref"].isna() & df["bajaj_ref"].isna()
+    sub = df.loc[cand]
+    if sub.empty:
+        return df, 0
+    multi = sub[sub.groupby(keys)["amount"].transform("size") > 1]
+    if multi.empty:
+        return df, 0
+    by_group = multi.groupby(keys)
+    first = by_group.head(1).index
+    df = df.copy()
+    df.loc[first, "amount"] = by_group["amount"].transform("sum").loc[first].round(2)
+    if "tpedc_parse_failed" in df.columns:
+        df.loc[first, "tpedc_parse_failed"] = by_group["tpedc_parse_failed"].transform("max").loc[first]
+    drop = multi.index.difference(first)
+    df = df.drop(index=drop).reset_index(drop=True)
+    df["line_seq"] = df.groupby("bill_no").cumcount() + 1
+    return df, int(len(drop))
+
+
+def merge_enabled(config) -> bool:
+    return bool((((getattr(config, "raw", None) or {}).get("erp") or {}).get("merge_reference_less_lines", True)))
+
+
 def normalise_pos(config, raw: pd.DataFrame, label: str = "ERP gold_mop.pos_bill_lines") -> pd.DataFrame:
     """A raw ERP chunk -> the normalised POS frame, through the SAME function the Excel reader uses."""
     from . import ingest
@@ -144,6 +185,10 @@ def normalise_pos(config, raw: pd.DataFrame, label: str = "ERP gold_mop.pos_bill
     df, _rows_without_date = ingest._normalise_pos_frame(config, raw, label)
     if store_aliases():                                    # config store_code_aliases (the Excel path applies it after the read)
         df["store"] = df["store"].replace(store_aliases())
+    if merge_enabled(config):
+        df, removed = merge_reference_less_lines(df)
+        if removed:
+            logger.info("%s: merged %d reference-less same-MOP line(s) into their bill's single line (as the Excel export carries them)", label, removed)
     return df
 
 

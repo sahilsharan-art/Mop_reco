@@ -263,4 +263,7 @@ auth:
 # so POS days inside this window are pulled from the ERP on every run; older days come from the warehouse cache of earlier ERP pulls.
 erp:
   reread_days: 65
+  # The ERP holds one row per tender; the Excel export held ONE line per bill x reference-less digital MOP (EDC OTHER). 68 bills on April-October
+  # differ, same total amount. true = merge them so R1 reproduces the audited file result; false = keep each tender as its own line.
+  merge_reference_less_lines: true
 
