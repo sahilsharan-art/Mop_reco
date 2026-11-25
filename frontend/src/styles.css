@@ -1761,3 +1761,11 @@ td.heat-neg {
     min-height: 38px;
   }
 }
+
+/* Warnings that must never be missed: a cut-off POS file, parked Axis, an unreconciled period, a failed control, a MISMATCH (CLAUDE.md 6.24 / 6.28 / 6.37) */
+.notices { display: grid; gap: 8px; margin: 0 0 14px; }
+.notice { display: grid; gap: 2px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border); border-left-width: 4px; font-size: 13px; line-height: 1.45; background: var(--card); color: var(--foreground, inherit); }
+.notice strong { font-weight: 700; }
+.notice-error { background: var(--danger-tint); border-color: var(--danger); }
+.notice-warning { background: var(--warning-tint); border-color: var(--warning); }
+.notice-info { background: var(--muted); border-color: var(--muted-foreground); }

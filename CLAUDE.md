@@ -4550,3 +4550,10 @@ as_probe.json`).
 * **Verified locally 2026-11-25** (throw-away copy of run #2, real Caddyfile, built front end): sign-in, Summary figures equal the audited run #2 (Total sale Rs 9,99,73,77,035.90; digital sale Rs 5,21,90,60,086.49),
   and the Summary, Cash, Float, Tasks, Exceptions, Masters, Uploads and Users API calls all answer 200. Measured on the full 01/04-14/11 range: Summary 13.4 s, Cash 4.5 s, Float 5.2 s (the dashboard answers
   its Summary in under 2 s) - a performance gap to be reviewed. 46 V2 tests pass.
+* **Audit and changes, 2026-11-25** (`docs/V2_AUDIT_2026-11-25.md`): two independent reviews (API, screens) against the Streamlit baseline. FIXED: loud notices on every screen (`GET /notices`: cut-off POS file, parked Axis,
+  unreconciled period, failed controls, bills/transactions MISMATCH), a split payment that does not add up can no longer be saved with an override, authenticate-before-anything, writes pinned to the latest completed
+  run, work-queue defaults (exceptions open + under investigation, live tasks), the two risks never blended, remarks on exception rows, non-blocking upload routes, targeted transaction lookup for bulk matching,
+  refund-folder upload, CMS store filter, error handling, no 60-second polling, DD/MM/YYYY, no negative cash receivable on screen, flow-only footers, system / manual / asserted kept apart.
+  SPEED (full run): Summary 13.4 s -> 4.6 s, Cash page 4.5 s -> 0.35 s, Float page 5.2 s -> 1.3 s; the engine changes behind it (`queries.verdict` and `daily_trend` from the saved per-store-day R1 results,
+  `store_sheet_source._live_digital_received_fast` = digital_sale - unmatched + manual-only, `load_fast` as float tuples) are proved identical to the originals to the paisa (`scripts/audit_fastpath_equivalence.py`).
+  The originals remain as the reference. OPEN items (Float parity, Summary tables, Exceptions pairing, CMS override sign-off, logo, roles) are listed in that document.

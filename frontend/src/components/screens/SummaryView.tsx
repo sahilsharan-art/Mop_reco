@@ -48,12 +48,14 @@ import { label, type ScreenKind } from "../table-utils";
 export function SummaryView({ data }: { data: Summary }) {
   const m = data.matrix;
   const total = m["total_sale"] as MatrixColumn;
-  const matched = Number(data.verdict["matched_value"] ?? 0);
-  const exceptionsCount = Number(data.verdict["open_exceptions"] ?? 0);
-  const rate =
-    Number(data.verdict["digital_value"] ?? 0) > 0
-      ? (matched / Number(data.verdict["digital_value"])) * 100
-      : 0;
+  // CLAUDE.md 6.9b: matched by the SYSTEM, matched by a PERSON and asserted-but-unverified are three different figures, never one blended rate.
+  const bills = data.bills;
+  const systemValue = Number(bills?.auto.value ?? 0);
+  const systemRate =
+    Number(bills?.total.value ?? 0) > 0 ? (systemValue / Number(bills?.total.value)) * 100 : 0;
+  // CLAUDE.md 6.9a: only money NOT received is exposure; money received-but-not-billed is a different, opposite situation
+  const notReceivedN = Number(data.risk["not_received_count"] ?? 0);
+  const notReceivedV = Number(data.risk["not_received_value"] ?? 0);
   return (
     <>
       <section className="executive-band">
@@ -85,16 +87,16 @@ export function SummaryView({ data }: { data: Summary }) {
         />
         <Metric
           icon={CheckCircle2}
-          title="Digital match rate"
-          value={`${rate.toFixed(1)}%`}
-          detail="Matched value / digital value"
+          title="Matched by system"
+          value={money(systemValue)}
+          detail={`${systemRate.toFixed(2)}% of digital value · by a person: ${Number(bills?.manual.count ?? 0).toLocaleString("en-IN")} lines · asserted, unverified: ${Number(data.asserted ?? 0).toLocaleString("en-IN")}`}
           tone="success"
         />
         <Metric
           icon={AlertTriangle}
-          title="Open exceptions"
-          value={exceptionsCount.toLocaleString("en-IN")}
-          detail={money(data.verdict["open_exception_value"])}
+          title="Amount not received"
+          value={money(notReceivedV)}
+          detail={`${notReceivedN.toLocaleString("en-IN")} bills raised, no payment found`}
           tone="warning"
         />
         <Metric

@@ -81,18 +81,44 @@ class Verdict:
         return self.unmatched == 0 and self.open_exceptions == 0
 
 
+def _r1_result_rows(session, run_id, date_from=None, date_to=None, store=None):
+    """The run's persisted per-(date, store) R1 results as a filtered query, or None when the run has none (an older run, a test) so the
+    caller falls back to counting bill lines. The payload of each row carries that store-day's lines, matched count and values - a few
+    thousand small rows instead of 3.7M-5.6M bill lines (verdict 4.6 s -> ms, daily trend 4.0 s -> ms on Apr-Nov; the same figures,
+    proved to the paisa by tests/test_r1_results_fast_path.py and on the full run)."""
+    base = session.query(ReconciliationResult).filter(
+        ReconciliationResult.run_id == run_id, ReconciliationResult.reconciliation == "R1")
+    if date_from is not None:
+        base = base.filter(ReconciliationResult.business_date >= str(date_from))
+    if date_to is not None:
+        base = base.filter(ReconciliationResult.business_date <= str(date_to))
+    if store:
+        base = base.filter(ReconciliationResult.store == store)
+    if session.query(ReconciliationResult.id).filter(
+            ReconciliationResult.run_id == run_id, ReconciliationResult.reconciliation == "R1").first() is None:
+        return None
+    return base
+
+
 def verdict(session, run_id, date_from=None, date_to=None, store=None) -> Verdict:
     """The five headline figures, and the numbers behind the verdict line."""
-    row = _apply_bill_filters(
-        session.query(
-            func.count(R1BillLine.id),
-            func.sum(case((R1BillLine.matched.is_(True), 1), else_=0)),
-            func.sum(R1BillLine.amount),
-            func.sum(case((R1BillLine.matched.is_(True), R1BillLine.amount), else_=0)),
-            func.sum(case((R1BillLine.matched.is_(False), R1BillLine.amount), else_=0)),
-        ),
-        run_id, date_from, date_to, store,
-    ).one()
+    results = _r1_result_rows(session, run_id, date_from, date_to, store)
+    if results is not None:
+        def jsum(field):
+            return func.sum(_json_number(session, ReconciliationResult.payload, field))
+        row = results.with_entities(jsum("digital_bill_lines"), jsum("matched"), jsum("digital_value"),
+                                    jsum("matched_value"), jsum("unmatched_value")).one()
+    else:
+        row = _apply_bill_filters(
+            session.query(
+                func.count(R1BillLine.id),
+                func.sum(case((R1BillLine.matched.is_(True), 1), else_=0)),
+                func.sum(R1BillLine.amount),
+                func.sum(case((R1BillLine.matched.is_(True), R1BillLine.amount), else_=0)),
+                func.sum(case((R1BillLine.matched.is_(False), R1BillLine.amount), else_=0)),
+            ),
+            run_id, date_from, date_to, store,
+        ).one()
 
     lines, matched, value, matched_value, unmatched_value = row
     v = Verdict(
@@ -652,16 +678,24 @@ def top_stores_by_exception_value(session, date_from=None, date_to=None,
 def daily_trend(session, run_id, date_from=None, date_to=None, store=None) -> pd.DataFrame:
     """Match rate and unmatched value per business date, so one bad day in a
     month is visible at a glance."""
-    rows = _apply_bill_filters(
-        session.query(
-            R1BillLine.business_date,
-            func.count(R1BillLine.id),
-            func.sum(case((R1BillLine.matched.is_(True), 1), else_=0)),
-            func.sum(case((R1BillLine.matched.is_(False), R1BillLine.amount), else_=0)),
-            func.sum(R1BillLine.amount),
-        ),
-        run_id, date_from, date_to, store,
-    ).group_by(R1BillLine.business_date).all()
+    results = _r1_result_rows(session, run_id, date_from, date_to, store)
+    if results is not None:
+        def jsum(field):
+            return func.sum(_json_number(session, ReconciliationResult.payload, field))
+        rows = results.with_entities(
+            ReconciliationResult.business_date, jsum("digital_bill_lines"), jsum("matched"),
+            jsum("unmatched_value"), jsum("digital_value")).group_by(ReconciliationResult.business_date).all()
+    else:
+        rows = _apply_bill_filters(
+            session.query(
+                R1BillLine.business_date,
+                func.count(R1BillLine.id),
+                func.sum(case((R1BillLine.matched.is_(True), 1), else_=0)),
+                func.sum(case((R1BillLine.matched.is_(False), R1BillLine.amount), else_=0)),
+                func.sum(R1BillLine.amount),
+            ),
+            run_id, date_from, date_to, store,
+        ).group_by(R1BillLine.business_date).all()
 
     records = []
     for business_date, lines, matched, unmatched_value, value in rows:

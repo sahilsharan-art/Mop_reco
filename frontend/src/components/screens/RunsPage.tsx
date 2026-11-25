@@ -10,7 +10,7 @@ import { DataTable } from "../DataTable";
 export function RunsPage() {
   const { filter } = useWorkspace();
   const qc = useQueryClient();
-  const { data } = useSuspenseQuery(screenQuery("/runs"));
+  const { data } = useSuspenseQuery(screenQuery("/runs", 10000));
   const table = data as TableData & { starting: boolean };
   const [lo, setLo] = useState(filter.date_from);
   const [hi, setHi] = useState(filter.date_to);

@@ -1,6 +1,7 @@
 """Authenticated V2 workflow adapters. All financial decisions stay in mop_reco."""
 from datetime import date, datetime
 from io import BytesIO
+from pathlib import Path
 import hashlib
 import json
 import logging
@@ -83,6 +84,12 @@ def register(app, *, db, signed_in, cfg, factory, clean, prefix, period, sheet):
         run=s.get(Run,run_id)
         if not run or run.status!='completed':raise HTTPException(409,'Choose a completed run.')
         return run
+    def writable(s,run_id):
+        """A write is only ever made against the latest completed run (the Streamlit pages pinned writes the same way); reading an older run is allowed."""
+        run=complete(s,run_id)
+        latest=s.query(Run.id).filter(Run.status=='completed').order_by(Run.id.desc()).first()
+        if latest and latest[0]!=run.id:raise HTTPException(409,f'Run #{latest[0]} is the latest completed run. Choose it before saving changes.')
+        return run
     def pool():
         # Only explicit workflow requests load normalized transaction data, never dashboard reads.
         return mm.gateway_pool_for_date()
@@ -93,7 +100,7 @@ def register(app, *, db, signed_in, cfg, factory, clean, prefix, period, sheet):
         if p[3] and 'store' in frame:frame=frame[frame['store']==p[3]]
         return frame
     def match_validation(s,data):
-        complete(s,data.run_id)
+        writable(s,data.run_id)
         def open_bill(number):
             found,is_open,why=mm.find_bill_for_match(s,data.run_id,number)
             if not found or not is_open:raise HTTPException(422,why or 'Bill is not open.')
@@ -108,6 +115,8 @@ def register(app, *, db, signed_in, cfg, factory, clean, prefix, period, sheet):
             if any(not h.found or h.problem for h in hits):raise HTTPException(422,'Both split transactions must be found unambiguously.')
             legs=[(h.gateway,ref) for h,ref in zip(hits,[data.transaction_ref,data.second_transaction_ref])]
             result=mm.validate_split(s,bill,legs,loaded)
+            if not result.ok or result.case!=mm.CASE_CLEAN:
+                raise HTTPException(422,'A split payment must add up to the bill exactly and both transactions must be clean: '+'; '.join(result.problems or ['validation failed'])+'. It cannot be saved with an override.')
         elif data.shared_bill_nos:
             if data.bill_no in data.shared_bill_nos or len(set(data.shared_bill_nos))!=len(data.shared_bill_nos):raise HTTPException(422,'Shared bills must be distinct.')
             bills += [open_bill(b) for b in data.shared_bill_nos]
@@ -154,7 +163,7 @@ def register(app, *, db, signed_in, cfg, factory, clean, prefix, period, sheet):
             entries=mm.record_shared(s,bills,result.gateway,data.transaction_ref,data.reason_code,u.display_name,result,source=data.reason)
             return {'ok':True,'ids':[x.id for x in entries]}
         second={'gateway':result.gateway2,'txn_ref':data.second_transaction_ref,'amount':result.txn2['amount']} if data.second_transaction_ref and result.txn2 else None
-        entry=mm.record(s,bills[0],result.gateway,data.transaction_ref,data.reason_code,u.display_name,result,note=data.reason,override_reason=data.override_reason or None,second=second)
+        entry=mm.record(s,bills[0],result.gateway,data.transaction_ref,data.reason_code,u.display_name,result,note=data.reason,override_reason=None if data.second_transaction_ref else (data.override_reason or None),second=second)
         return {'ok':True,'id':entry.id,'status':entry.status}
     @app.get(prefix+'/matching/{match_id}/history')
     def match_history(match_id:int,u=Depends(signed_in),s=Depends(db)):
@@ -194,7 +203,7 @@ def register(app, *, db, signed_in, cfg, factory, clean, prefix, period, sheet):
         return {'ok':True}
     def acceptance(s,data):
         from mop_reco import exception_pairing as pairing,bulk_accept
-        complete(s,data.run_id)
+        writable(s,data.run_id)
         loaded=pairing.unmapped_pool(s);bills=pairing.open_population(s,data.run_id)
         minutes,days=pairing.window_settings(cfg().raw)
         assignment=pairing.assign(bills,loaded,minutes,days,pairing.mop_family(cfg().raw))
@@ -227,15 +236,26 @@ def register(app, *, db, signed_in, cfg, factory, clean, prefix, period, sheet):
         # Templates contain column names only, not legacy sample people or identifiers.
         return Response(workbook(frame.iloc[0:0]),media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{kind}-template.xlsx"'})
     @app.post(prefix+'/bulk/{kind}')
-    async def bulk(kind:Literal['matching','refunds','replies','refund_folder'],file:UploadFile=File(...),run_id:int=Form(...),confirm:bool=Form(False),include_warnings:bool=Form(False),override_reason:str=Form(''),u=Depends(signed_in),s=Depends(db)):
+    def bulk(kind:Literal['matching','refunds','replies','refund_folder'],file:UploadFile=File(...),run_id:int=Form(...),confirm:bool=Form(False),include_warnings:bool=Form(False),override_reason:str=Form(''),u=Depends(signed_in),s=Depends(db)):
         from mop_reco import store_tasks
-        complete(s,run_id)
-        content=await file.read(20*1024*1024+1);await file.close()
+        writable(s,run_id)
+        content=file.file.read(20*1024*1024+1);file.file.close()
         if len(content)>20*1024*1024:raise HTTPException(413,'Spreadsheet exceeds 20 MB.')
-        if str(file.filename).lower().endswith('.csv'):frame=pd.read_csv(BytesIO(content),dtype=str,keep_default_na=False)
+        if kind=='refund_folder':
+            if not str(file.filename).lower().endswith('.xlsx'):raise HTTPException(422,'The Customer Refund workbook must be an XLSX file.')
+            import tempfile
+            with tempfile.TemporaryDirectory() as folder:
+                (Path(folder)/'refunds.xlsx').write_bytes(content)
+                try:frame,_files=refunds.read_refund_folder(folder)
+                except Exception as exc:raise HTTPException(422,'The workbook could not be read: '+str(exc)[:200])
+            if frame is None or len(frame)==0:raise HTTPException(422,'No refund lines found. Check that the header row has Transaction No, Zoho ID, Name, Store Code, Tran Date, Process Date and Amt.')
+        elif str(file.filename).lower().endswith('.csv'):frame=pd.read_csv(BytesIO(content),dtype=str,keep_default_na=False)
         elif str(file.filename).lower().endswith('.xlsx'):frame=pd.read_excel(BytesIO(content),dtype=str,keep_default_na=False)
         else:raise HTTPException(422,'Choose an XLSX or CSV file.')
-        if kind=='matching':preview=mm.preview_upload(s,frame,pool(),run_id);shown=preview.as_frame();good=len(preview.accepted);bad=len(preview.rejected);warn=len(preview.warned)
+        if kind=='matching':
+            refs=[mm._clean_ref(x) for x in (frame['transaction_id'] if 'transaction_id' in frame else []) if str(x).strip()]
+            preview=mm.preview_upload(s,frame,mm.targeted_pool_many(refs),run_id)
+            shown=preview.as_frame();good=len(preview.accepted);bad=len(preview.rejected);warn=len(preview.warned)
         elif kind=='refunds':preview=refunds.preview_upload(s,frame);shown=preview.as_frame();good=len(preview.accepted);bad=len(preview.rejected);warn=0
         elif kind=='refund_folder':preview=refunds.preview_folder(s,frame);shown=preview;good=int((preview['verdict']=='apply').sum());bad=len(preview)-good;warn=0
         else:preview=store_tasks.preview_replies(s,frame);shown=preview.as_frame();good=len(preview.accepted);bad=len(preview.rejected);warn=0
@@ -257,8 +277,8 @@ def register(app, *, db, signed_in, cfg, factory, clean, prefix, period, sheet):
         blocks=cms.blocks_frame(effective,str(p[1]),str(p[2]));history=cms.all_overrides(s)
         history.insert(0,'id',[r.id for r in s.query(CmsOverride).order_by(CmsOverride.id).all()])
         if p[3]:
-            for frame in [blocks,history]:
-                if not frame.empty and 'store' in frame:frame.drop(frame[frame['store']!=p[3]].index,inplace=True)
+            for frame,column in [(blocks,'STORE NAME'),(history,'store')]:
+                if not frame.empty and column in frame:frame.drop(frame[frame[column]!=p[3]].index,inplace=True)
         return clean({'rows':blocks,'overrides':history,'controls':cms.block_controls(effective,str(p[1]),str(p[2]))})
     @app.get(prefix+'/cms/remarks')
     def cms_remarks(p=Depends(period),u=Depends(signed_in),s=Depends(db)):

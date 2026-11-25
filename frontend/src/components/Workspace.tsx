@@ -5,7 +5,7 @@ import {
   useRouterState,
   useNavigate,
 } from "@tanstack/react-router";
-import { useSuspenseQuery, useQueryClient } from "@tanstack/react-query";
+import { useSuspenseQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   LayoutDashboard,
   ListChecks,
@@ -26,7 +26,7 @@ import {
   Play,
   KeyRound,
 } from "lucide-react";
-import { bootstrapQuery, api, type Filter, type Bootstrap } from "../lib/api";
+import { bootstrapQuery, noticesQuery, api, type Filter, type Bootstrap, type Notice } from "../lib/api";
 import { PasswordDialog } from "./screens/PasswordDialog";
 import { Button, Pill } from "./ui";
 import { toast } from "sonner";
@@ -51,6 +51,37 @@ export function useWorkspace() {
   const x = useContext(Context);
   if (!x) throw new Error("Workspace context unavailable");
   return x;
+}
+/** The warnings the old dashboard showed on every page: a cut-off POS file, parked Axis, a period the run does not cover, a failed control,
+ * a bills / transactions MISMATCH. Loud when something is wrong; nothing at all when everything holds. Loaded beside the screen, never blocking it. */
+function Notices({ filter, latestRun }: { filter: Filter; latestRun: number | null }) {
+  const { data, isError } = useQuery(noticesQuery(filter));
+  const items: Notice[] = [...(data?.notices ?? [])];
+  if (latestRun && filter.run_id && Number(filter.run_id) !== latestRun)
+    items.unshift({
+      key: "not_latest_run",
+      level: "warning",
+      title: `Run #${filter.run_id} is not the latest completed run`,
+      text: `The latest completed run is #${latestRun}. These figures are as of the older run, and changes cannot be saved against it.`,
+    });
+  if (isError)
+    items.push({
+      key: "notices_failed",
+      level: "info",
+      title: "Warnings could not be loaded",
+      text: "Do not assume the data is complete. Refresh the page; if this stays, tell your administrator.",
+    });
+  if (!items.length) return null;
+  return (
+    <div className="notices">
+      {items.map((n) => (
+        <div key={n.key} className={`notice notice-${n.level}`} role={n.level === "error" ? "alert" : "status"}>
+          <strong>{n.title}</strong>
+          <span>{n.text}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 export function Workspace() {
   const { data: bootstrap } = useSuspenseQuery(bootstrapQuery);
@@ -196,7 +227,10 @@ export function Workspace() {
               <select
                 aria-label="Reconciliation run"
                 value={draft.run_id}
-                onChange={(e) => setDraft({ ...draft, run_id: e.target.value })}
+                onChange={(e) =>
+                  // another run covers other dates: empty dates mean that run's own whole range, never the previous run's dates
+                  setDraft({ ...draft, run_id: e.target.value, date_from: "", date_to: "" })
+                }
               >
                 {bootstrap.runs
                   .filter((r) => r["status"] === "completed")
@@ -220,6 +254,7 @@ export function Workspace() {
               <RefreshCw size={16} />
             </Button>
           </form>
+          <Notices filter={filter} latestRun={bootstrap.run_id} />
           <Outlet />
           {password ? (
             <PasswordDialog close={() => setPassword(false)} />

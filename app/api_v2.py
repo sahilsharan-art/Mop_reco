@@ -19,10 +19,16 @@ from fastapi import FastAPI, Depends, HTTPException, Request, Response, UploadFi
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import defer
+import threading
+import time
 
 from mop_reco import auth, queries as q, exceptions, store_tasks as tasks, masters_db as masters, uploads
-from mop_reco import store_sheet_source as source, float_tracker as floats
-from mop_reco.db import get_session, Run, StoreDayAgg, AppUser, StoreTask, Exception_, UploadedFile
+from mop_reco import store_sheet_source as source, float_tracker as floats, run_coverage as rc, manual_match as mm
+import api_v2_notices as notices
+from mop_reco import store_sheet as store_sheet_mod
+from mop_reco.db import get_session, Run, StoreDayAgg, AppUser, StoreTask, Exception_, UploadedFile, ManualMatch
 from mop_reco.config import load_config
 from mop_reco.export import build_export, ExportMeta
 
@@ -132,14 +138,27 @@ def create_app(session_factory=None, config=None, origin=None):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         return response
 
+    def safe_json(detail, status_code):
+        return JSONResponse({'detail': detail}, status_code=status_code,
+                            headers={'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
+
     @app.exception_handler(ValueError)
     async def validation_error(request, exc):
-        return JSONResponse({'detail': str(exc)}, status_code=422)
+        return safe_json(str(exc), 422)
+
+    @app.exception_handler(LookupError)
+    async def not_found_error(request, exc):
+        return safe_json('That record was not found. Refresh the page and try again.', 404)
+
+    @app.exception_handler(IntegrityError)
+    async def conflict_error(request, exc):
+        LOG.warning('MOP V2 conflicting write: %s', request.url.path, exc_info=True)
+        return safe_json('Someone else changed this at the same moment. Refresh the page and check before trying again.', 409)
 
     @app.exception_handler(Exception)
     async def unexpected_error(request, exc):
         LOG.exception('MOP V2 request failed: %s', request.url.path)
-        return JSONResponse({'detail': 'The operation failed. No success has been recorded; contact your administrator.'}, status_code=500)
+        return safe_json('The operation failed. No success has been recorded; contact your administrator.', 500)
 
     def identity(request: Request, s=Depends(db)):
         u = auth.resolve_session(s, request.cookies.get(SESSION_COOKIE, ''), auth_cfg())
@@ -157,9 +176,10 @@ def create_app(session_factory=None, config=None, origin=None):
             raise HTTPException(403, 'Administrator access required.')
         return u
 
-    def period(date_from: date | None = None, date_to: date | None = None, store: str | None = None,
-               run_id: int | None = None, s=Depends(db)):
-        run = s.get(Run, run_id) if run_id else s.query(Run).filter(Run.status == 'completed').order_by(Run.id.desc()).first()
+    def resolve_period(s, date_from, date_to, store, run_id):
+        # Run.notes is about 1.4 MB per run: it is deferred here and only read by the notices that need it
+        light = s.query(Run).options(defer(Run.notes))
+        run = light.filter(Run.id == run_id).first() if run_id else light.filter(Run.status == 'completed').order_by(Run.id.desc()).first()
         if run is None or run.status != 'completed':
             raise HTTPException(409, 'No completed reconciliation run is available.')
         dates = sorted(json.loads(run.business_dates or '[]'))
@@ -169,7 +189,20 @@ def create_app(session_factory=None, config=None, origin=None):
         hi = date_to or date.fromisoformat(dates[-1])
         if lo > hi:
             raise HTTPException(422, 'Start date must be on or before end date.')
-        return run, lo, hi, store or None
+        return run, lo, hi, store or None, (date.fromisoformat(dates[0]), date.fromisoformat(dates[-1]))
+
+    def period_any(u=Depends(signed_in), date_from: date | None = None, date_to: date | None = None, store: str | None = None,
+                   run_id: int | None = None, s=Depends(db)):
+        """The period exactly as asked, even when it lies outside the run (the notices endpoint says so instead of failing)."""
+        return resolve_period(s, date_from, date_to, store, run_id)[:4]
+
+    def period(u=Depends(signed_in), date_from: date | None = None, date_to: date | None = None, store: str | None = None,
+               run_id: int | None = None, s=Depends(db)):
+        run, lo, hi, st, (first, last) = resolve_period(s, date_from, date_to, store, run_id)
+        if rc.entirely_outside(first, last, lo, hi):
+            # CLAUDE.md 6.24: 'not reconciled' is said, never shown as an empty grid or a row of zeros
+            raise HTTPException(409, f'Run #{run.id} covers {first:%d/%m/%Y} to {last:%d/%m/%Y}. The period you chose is not reconciled; run it from Upload first.')
+        return run, lo, hi, st
 
     def require_aggregates(s, p):
         run, lo, hi, st = p
@@ -180,6 +213,16 @@ def create_app(session_factory=None, config=None, origin=None):
         if query.first() is None:
             # Never invoke load_fast's slow fallback, which can read raw files on page load.
             raise HTTPException(409, 'No precomputed store-day data for this selection. Choose a covered period or run the existing reconciliation pipeline.')
+
+    sheet_cache = {}
+    sheet_lock = threading.Lock()
+
+    def match_state(s):
+        # a new match raises the highest id; a reversal changes the active count - either changes the key, so the cache can never serve a stale F
+        active, newest = s.query(func.count(ManualMatch.id), func.max(ManualMatch.id)).filter(ManualMatch.lifecycle == 'active').one()
+        return int(active or 0), int(newest or 0), int(s.query(func.max(ManualMatch.id)).scalar() or 0)
+
+    notice_cache = {}
 
     @app.get(PREFIX + '/health')
     def health():
@@ -218,7 +261,7 @@ def create_app(session_factory=None, config=None, origin=None):
 
     @app.get(PREFIX + '/bootstrap')
     def bootstrap(u=Depends(signed_in), s=Depends(db)):
-        runs = s.query(Run).order_by(Run.id.desc()).limit(50).all()
+        runs = s.query(Run).options(defer(Run.notes)).order_by(Run.id.desc()).limit(50).all()
         completed = next((r for r in runs if r.status == 'completed'), None)
         dates = sorted(json.loads(completed.business_dates or '[]')) if completed else []
         stores = s.query(StoreDayAgg.store).filter(StoreDayAgg.run_id == completed.id).distinct().order_by(StoreDayAgg.store).all() if completed else []
@@ -238,13 +281,47 @@ def create_app(session_factory=None, config=None, origin=None):
                       'verdict': q.verdict(s, run.id, lo, hi, st), 'risk': q.risk_split(s, lo, hi, st),
                       'trend': q.daily_trend(s, run.id, lo, hi, st), 'exceptions': q.exceptions_by_type(s, lo, hi, st),
                       'cash': source.store_cash_summary(s, run.id, lo, hi, st),
-                      'stores': __import__('mop_reco.store_sheet',fromlist=['summarise_by_store']).summarise_by_store(sheet(s,p)),
-                      'tasks': tasks.tiles(s,date.today(),date_from=lo,date_to=hi,store=st)})
+                      'stores': store_sheet_mod.summarise_by_store(sheet(s, p)),
+                      'tasks': tasks.tiles(s, date.today(), date_from=lo, date_to=hi, store=st),
+                      # CLAUDE.md 6.9b: matched by the SYSTEM, matched by a PERSON and asserted-but-unverified are never blended into one rate
+                      'bills': q.bill_split(s, run.id, lo, hi, st),
+                      'asserted': int(s.query(func.count(ManualMatch.id)).filter(ManualMatch.status == mm.STATUS_ASSERTED, ManualMatch.lifecycle == 'active').scalar() or 0)})
+
+    @app.get(PREFIX + '/notices')
+    def notices_for(p=Depends(period_any), u=Depends(signed_in), s=Depends(db)):
+        """The warnings the Streamlit dashboard showed on every page: cut-off POS file, parked Axis, unreconciled months, failed controls, MISMATCH."""
+        run, lo, hi, st = p
+        # one minute per (run, period, store, manual-match state): the MISMATCH controls cost about 2 s to compute and every screen asks
+        key = (run.id, lo, hi, st, match_state(s))
+        now = time.monotonic()
+        with sheet_lock:
+            hit = notice_cache.get(key)
+            if hit and now - hit[0] < 60:
+                return hit[1]
+        result = {'run_id': run.id, 'notices': notices.build(s, s.get(Run, run.id), lo, hi, st, cfg())}
+        with sheet_lock:
+            while len(notice_cache) >= 12:
+                notice_cache.pop(min(notice_cache, key=lambda k: notice_cache[k][0]))
+            notice_cache[key] = (now, result)
+        return result
 
     def sheet(s, p):
+        """The store-day sheet. Cash and Float page through it and Summary groups it: it is built once per (run, period, store, manual-match state)
+        and kept two minutes, so a page of 50 rows no longer rebuilds the whole run."""
         require_aggregates(s, p)
         run, lo, hi, st = p
-        return source.load_fast(s, run.id, lo, hi, st)[0]
+        key = (run.id, lo, hi, st, match_state(s))
+        now = time.monotonic()
+        with sheet_lock:
+            hit = sheet_cache.get(key)
+            if hit and now - hit[0] < 120:
+                return hit[1].copy()
+        frame = source.load_fast(s, run.id, lo, hi, st)[0]
+        with sheet_lock:
+            while len(sheet_cache) >= 6:
+                sheet_cache.pop(min(sheet_cache, key=lambda k: sheet_cache[k][0]))
+            sheet_cache[key] = (now, frame)
+        return frame.copy()
 
     @app.get(PREFIX + '/cash')
     def cash(p=Depends(period), u=Depends(signed_in), s=Depends(db), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200)):
@@ -270,7 +347,9 @@ def create_app(session_factory=None, config=None, origin=None):
     @app.get(PREFIX + '/tasks')
     def task_rows(p=Depends(period), u=Depends(signed_in), s=Depends(db), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
                   search: str = '', status: str = '', sort: str = 'Overdue first, oldest due'):
-        filters = {'date_from': p[1], 'date_to': p[2], 'store': p[3], 'search': search or None, 'statuses': [status] if status else None}
+        # default = the live tasks (open, replied, under review); 'all' shows closed ones too, as the Streamlit page did
+        wanted = None if status == 'all' else ([status] if status else [tasks.OPEN, tasks.REPLIED, tasks.UNDER_REVIEW])
+        filters = {'date_from': p[1], 'date_to': p[2], 'store': p[3], 'search': search or None, 'statuses': wanted}
         frame = tasks.tasks_page(s, date.today(), sort, limit, offset, **filters)
         total = tasks._filtered(s, **filters).count()
         return {'rows': clean(frame), 'total': total, 'summary': clean(tasks.tiles(s, date.today(), **filters))}
@@ -284,6 +363,8 @@ def create_app(session_factory=None, config=None, origin=None):
         row = s.get(StoreTask, task_id)
         if row is None:
             raise HTTPException(404, 'Task not found.')
+        if row.status == tasks.CLOSED and data.action != 'close':
+            raise HTTPException(409, 'This task is closed. Closed tasks are history; nothing can be added to them.')
         if data.action == 'remark':
             tasks.add_remark(s, task_id, data.text, u.display_name)
         elif data.action == 'review':
@@ -304,9 +385,19 @@ def create_app(session_factory=None, config=None, origin=None):
     @app.get(PREFIX + '/exceptions')
     def exception_rows(p=Depends(period), u=Depends(signed_in), s=Depends(db), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
                        status: str = '', sort: str = q.DEFAULT_EXCEPTION_SORT):
+        # default = the work queue (open + under investigation); 'all' also lists closed and auto-resolved (the audit record)
+        statuses = ('open', 'under_investigation', 'closed', 'auto_resolved') if status == 'all' else ((status,) if status else ('open', 'under_investigation'))
         frame, total, value = q.exception_page(s, p[1], p[2], p[3], exception_types(s),
-                    statuses=(status,) if status else None, limit=limit, offset=offset, sort=sort)
-        return {'rows': clean(frame.drop(columns=['detail'], errors='ignore')), 'total': total, 'value': value}
+                    statuses=statuses, limit=limit, offset=offset, sort=sort)
+        if not frame.empty and 'exception_key' in frame:
+            remarks = q.latest_remarks_full(s, list(frame['exception_key']))
+            frame['remark'] = [remarks.get(k, ('', '', None))[0] for k in frame['exception_key']]
+            frame['remark_by'] = [remarks.get(k, ('', '', None))[1] for k in frame['exception_key']]
+            frame['remark_at'] = [remarks.get(k, ('', '', None))[2] for k in frame['exception_key']]
+        # CLAUDE.md 6.9a: money NOT received and money received-but-not-billed are opposite situations and are never added together
+        bn, bv, tn, tv = q.exception_counts(s, p[1], p[2], p[3], q.NOT_RECEIVED_TYPES, q.RECEIVED_NOT_BILLED_TYPES, statuses=statuses)
+        groups = {'not_received': {'count': bn, 'value': bv}, 'received_not_billed': {'count': tn, 'value': tv}}
+        return {'rows': clean(frame.drop(columns=['detail'], errors='ignore')), 'total': total, 'groups': clean(groups)}
 
     @app.post(PREFIX + '/exceptions/remark')
     def exception_remark(data: ExceptionAction, u=Depends(signed_in), s=Depends(db)):
@@ -408,8 +499,12 @@ def create_app(session_factory=None, config=None, origin=None):
         elif kind == 'float': frame = float_frame(s, p)
         elif kind == 'tasks': frame = tasks.tasks_all(s, date.today(), date_from=lo, date_to=hi, store=st, search=search or None, statuses=[status] if status else None)
         else: frame = q.exception_export(s, lo, hi, st, exception_types(s), statuses=(status,) if status else None).drop(columns=['detail', 'exception_key'], errors='ignore')
+        filters = {'store': st or 'All stores', 'status': status or 'Default'}
+        if kind == 'tasks':
+            filters['search'] = search       # only tasks are filtered by search on the server; the other grids are searched on screen only
+        value_column = {'exceptions': 'amount'}.get(kind)
         result = build_export(frame, ExportMeta(run_id=run.id, run_timestamp=run.started_at, date_from=lo, date_to=hi,
-                              filters={'store': st or 'All stores', 'status': status or 'All', 'search': search}, title=kind))
+                              filters=filters, value_column=value_column, title=kind))
         mime = 'text/csv' if result.fmt == 'csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         return Response(result.data, media_type=mime, headers={'Content-Disposition': f'attachment; filename="{result.filename}"'})
 

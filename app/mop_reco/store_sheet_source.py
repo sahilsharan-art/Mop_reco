@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import func
+from sqlalchemy import Float, cast, func
 
 from . import mop_matrix as mm
 from . import store_sheet as ss
@@ -1281,6 +1281,46 @@ def _live_digital_received(session, run_id: int, date_from: date, date_to: date,
     } for business_date, store_code in keys])
 
 
+def _live_digital_received_fast(session, run_id: int, date_from: date, date_to: date,
+                                sheet: pd.DataFrame, store: str = None) -> pd.DataFrame:
+    """The same figure as `_live_digital_received` (columns date, store, digital_received), without summing every matched bill line.
+
+    Every digital line is matched or not, so  matched = digital_sale - unmatched.  The sheet already carries digital_sale per store-day
+    (the run's own aggregate of `r1_bill_lines`), and the engine-UNMATCHED lines are a few thousand rows (a seek on `ix_r1_matched_date`),
+    so F is  digital_sale - unmatched + manual-only  instead of a SUM over 3.7M-5.6M matched rows (4 s -> about 0.1 s on Apr-Nov). Rounded to
+    paise, which is what the stored aggregate already is. Proved equal to `_live_digital_received` on every store-day of the full run
+    (tests/test_live_f_fast_path.py and the audit script); the original stays as the reference."""
+    def _grouped_sum(query):
+        query = (query.filter(
+            R1BillLine.run_id == run_id,
+            R1BillLine.business_date >= date_from.isoformat(),
+            R1BillLine.business_date <= date_to.isoformat())
+            .group_by(R1BillLine.business_date, R1BillLine.store))
+        if store:
+            query = query.filter(R1BillLine.store == store)
+        return {(r.business_date, r.store): float(r.total or 0.0) for r in query.all()}
+
+    unmatched = _grouped_sum(session.query(
+        R1BillLine.business_date, R1BillLine.store, func.sum(R1BillLine.amount).label("total"),
+    ).filter(R1BillLine.matched == False))  # noqa: E712
+
+    manual_bill_nos = {b for (b,) in session.query(ManualMatch.bill_no)
+                       .filter(ManualMatch.lifecycle == "active").all() if b}
+    manual_only = {}
+    if manual_bill_nos:
+        manual_only = _grouped_sum(session.query(
+            R1BillLine.business_date, R1BillLine.store, func.sum(R1BillLine.amount).label("total"),
+        ).filter(R1BillLine.matched == False,  # noqa: E712
+                 R1BillLine.bill_no.in_(manual_bill_nos)))
+
+    out = sheet[["date", "store", "digital_sale"]].copy()
+    keys = list(zip(out["date"], out["store"]))
+    out["digital_received"] = [
+        round(ds - unmatched.get(k, 0.0) + manual_only.get(k, 0.0), 2)
+        for ds, k in zip(out["digital_sale"].astype(float), keys)]
+    return out[["date", "store", "digital_received"]]
+
+
 def defect_b_summary(session, run_id: int, date_from: date, date_to: date,
                      store: str = None) -> tuple:
     """(count, total J-minus-I value) of Defect B store-days — a plain
@@ -1340,7 +1380,11 @@ def load_fast(session, run_id: int, date_from: date, date_to: date,
     carries, minus everything only the lazy sections (Data quality,
     Excluded types, Data notes, the Excel export) need.
     """
-    query = session.query(StoreDayAgg).filter(
+    # Plain column tuples with the money columns cast to float IN SQL: loading 45,580 store-days as ORM objects with Decimal values then
+    # rebuilding them as dicts took 1.5 s; this takes 0.4 s and gives the same doubles (the stored aggregate is already rounded to paise).
+    columns = [StoreDayAgg.business_date.label("date"), StoreDayAgg.store] + [
+        cast(getattr(StoreDayAgg, c), Float).label(c) for c in AGG_COLUMNS]
+    query = session.query(*columns).filter(
         StoreDayAgg.run_id == run_id,
         StoreDayAgg.business_date >= date_from.isoformat(),
         StoreDayAgg.business_date <= date_to.isoformat(),
@@ -1355,12 +1399,9 @@ def load_fast(session, run_id: int, date_from: date, date_to: date,
         bundle = build(session, run_id, date_from, date_to)
         return bundle.sheet, bundle.summary
 
-    sheet = pd.DataFrame([{
-        "date": r.business_date, "store": r.store,
-        **{c: float(getattr(r, c)) for c in AGG_COLUMNS},
-    } for r in rows])
+    sheet = pd.DataFrame(rows, columns=["date", "store", *AGG_COLUMNS])
 
-    live_f = _live_digital_received(session, run_id, date_from, date_to, store)
+    live_f = _live_digital_received_fast(session, run_id, date_from, date_to, sheet, store)
     if live_f.empty:
         sheet["digital_received"] = 0.0
     else:

@@ -1,5 +1,5 @@
 import type React from "react";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useDeferredValue } from "react";
 import { useSuspenseQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Search,
@@ -54,6 +54,12 @@ import {
   type ScreenKind,
 } from "./table-utils";
 export type { ScreenKind } from "./table-utils";
+// CLAUDE.md 6.9d: no cash receivable is ever shown negative on screen (a credit above its deposit is a data-quality item, listed elsewhere)
+const shown = (key: string, v: unknown) =>
+  key === "cash_receivable" && typeof v === "number" ? Math.max(0, v) : v;
+// only flows add up; balances, thresholds and anything mixing exception types must never be summed down a page (CLAUDE.md 6.9a)
+const ADDITIVE =
+  /^(total_sale|digital_sale|cash_sale|digital_received|digital_receivable|cash_deposit|cash_received|cash_expense_income)$/;
 import { ReviewAction } from "./ReviewAction";
 import { BulkUpload } from "./screens/BulkUpload";
 import { SummaryView } from "./screens/SummaryView";
@@ -66,6 +72,7 @@ export function Screen({ kind }: { kind: ScreenKind }) {
   const qc = useQueryClient();
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [status, setStatus] = useState("");
   const [sort, setSort] = useState("");
   const [master, setMaster] = useState(bootstrap.masters[0]?.key ?? "store");
@@ -73,6 +80,15 @@ export function Screen({ kind }: { kind: ScreenKind }) {
   const [showUpload, setShowUpload] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [editMaster, setEditMaster] = useState(false);
+  // typing must not fire one request per keystroke; a new period/run/store must not leave the user on page 7 of 2
+  useEffect(() => {
+    const t = setTimeout(() => setSearch(searchInput), 350);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+  const filterKey = JSON.stringify(filter);
+  useEffect(() => {
+    setPage(0);
+  }, [filterKey]);
   const extra = {
     offset: page * 50,
     limit: 50,
@@ -87,7 +103,10 @@ export function Screen({ kind }: { kind: ScreenKind }) {
     kind === "masters"
       ? `/masters/${master}`
       : `/${kind === "uploads" ? "uploads" : kind}?${params(filter, extra)}`;
-  const { data } = useSuspenseQuery(screenQuery(endpoint));
+  // the previous result stays on screen while the next one loads (no blank page, no spinner flash on every filter change)
+  const deferredEndpoint = useDeferredValue(endpoint);
+  const updating = deferredEndpoint !== endpoint;
+  const { data } = useSuspenseQuery(screenQuery(deferredEndpoint));
   const table = data as TableData;
   const summary = data as Summary;
   const [withdraw, setWithdraw] = useState<Row | null>(null);
@@ -128,13 +147,17 @@ export function Screen({ kind }: { kind: ScreenKind }) {
   }
   if (kind === "summary") return <SummaryView data={summary} />;
   return (
-    <>
+    <div aria-busy={updating} style={updating ? { opacity: 0.6, transition: "opacity .15s" } : undefined}>
       <div className="section-heading">
         <div>
           <h2>{titles[kind]}</h2>
           <p>
             {typeof table.total === "number"
-              ? `${table.total.toLocaleString("en-IN")} records`
+              ? `${table.total.toLocaleString("en-IN")} records${
+                  table.groups
+                    ? ` · not received ${money(table.groups.not_received.value)} (${table.groups.not_received.count.toLocaleString("en-IN")}) · received, not billed ${money(table.groups.received_not_billed.value)} (${table.groups.received_not_billed.count.toLocaleString("en-IN")})`
+                    : ""
+                }`
               : kind === "masters"
                 ? `Version ${table.version ?? "—"}`
                 : "Account administration"}
@@ -223,9 +246,9 @@ export function Screen({ kind }: { kind: ScreenKind }) {
                 ? "Search store, bill or reply"
                 : "Search this page"
             }
-            value={search}
+            value={searchInput}
             onChange={(e) => {
-              setSearch(e.target.value);
+              setSearchInput(e.target.value);
               setPage(0);
             }}
           />
@@ -256,7 +279,8 @@ export function Screen({ kind }: { kind: ScreenKind }) {
                 setPage(0);
               }}
             >
-              <option value="">All statuses</option>
+              <option value="">{kind === "tasks" ? "Live tasks" : "Open and under investigation"}</option>
+              <option value="all">{kind === "tasks" ? "All, including closed" : "All, including closed"}</option>
               {(kind === "tasks"
                 ? ["open", "replied", "under_review", "closed"]
                 : ["open", "under_investigation", "closed", "auto_resolved"]
@@ -351,9 +375,11 @@ export function Screen({ kind }: { kind: ScreenKind }) {
                   <td
                     key={key}
                     style={
-                      index === 0 ? undefined : heatOf(row[key], rows, key)
+                      index === 0
+                        ? undefined
+                        : heatOf(shown(key, row[key]), rows, key)
                     }
-                    className={`${index === 0 ? "sticky-cell" : ""} ${typeof row[key] === "number" ? `numeric heat ${(row[key] as number) < 0 ? "heat-neg" : ""}` : ""}`}
+                    className={`${index === 0 ? "sticky-cell" : ""} ${typeof row[key] === "number" ? `numeric heat ${(shown(key, row[key]) as number) < 0 ? "heat-neg" : ""}` : ""}`}
                   >
                     {/status|role|active|negative_float/.test(
                       key.toLowerCase(),
@@ -367,7 +393,7 @@ export function Screen({ kind }: { kind: ScreenKind }) {
                         {label(String(row[key]))}
                       </span>
                     ) : (
-                      display(row[key], key)
+                      display(shown(key, row[key]), key)
                     )}
                   </td>
                 ))}
@@ -398,11 +424,8 @@ export function Screen({ kind }: { kind: ScreenKind }) {
             ))}
           </tbody>
           {rows.length > 1 &&
-          shownColumns.some(
-            (k) =>
-              typeof rows[0]?.[k] === "number" &&
-              !/days|age|id$|threshold|count/i.test(k),
-          ) ? (
+          kind !== "exceptions" &&
+          shownColumns.some((k) => ADDITIVE.test(k)) ? (
             <tfoot>
               <tr>
                 {shownColumns.map((key, index) => {
@@ -416,9 +439,8 @@ export function Screen({ kind }: { kind: ScreenKind }) {
                       className={`${index === 0 ? "sticky-cell" : ""} numeric ${tot < 0 ? "heat-neg" : ""}`}
                     >
                       {index === 0
-                        ? `Total · ${rows.length}`
-                        : nums.length &&
-                            !/days|age|id$|threshold|count/i.test(key)
+                        ? `Page total · ${rows.length}`
+                        : nums.length && ADDITIVE.test(key)
                           ? display(tot, key)
                           : ""}
                     </td>
@@ -512,6 +534,6 @@ export function Screen({ kind }: { kind: ScreenKind }) {
           refresh={() => qc.invalidateQueries({ queryKey: ["screen"] })}
         />
       ) : null}
-    </>
+    </div>
   );
 }
