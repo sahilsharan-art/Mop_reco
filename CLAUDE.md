@@ -4537,3 +4537,16 @@ as_probe.json`).
   holds loses its stale partition; the file-derived partitions are copied once to `warehouse/_file_baseline/` first) and `ingest_ptc_from_erp` (the whole view, range from the view). Both return what the file readers return, through the SAME normalisers (`_normalise_pos_frame`, `_normalise_ptc_frame`, `_finish_ptc`), so R1 and every page are unchanged.
   `scripts/compare_two_runs.py --a 2 --b 3 --from .. --to ..` proves one run reproduces another table by table. 68 ERP tests (erp 34, erp_source 12, erp_shadow 10, erp_ingest 12).
 
+### 6.43 The V2 screens (React) - merged and prepared for deployment (2026-11-25)
+
+* **What it is.** A separate React front end (`frontend/`, TanStack Start, built and served with Bun) and a FastAPI adapter (`app/api_v2.py`, `app/api_v2_workflows.py`) written by another developer (branches
+  `v2-react-frontend` / `v2-complete-workflows`, merged into `main` as `6f26120`). Twelve screens: Summary, Store Task, Cash Position, Float, Exceptions, Upload, Masters, Matching, Refunds, CMS Review, Runs, Users.
+  It reuses the engines in `app/mop_reco` unchanged and the same users, sessions and audit trail (HttpOnly session cookie + CSRF + an exact-Origin check). It is NOT a replacement until a finance user accepts it:
+  the Streamlit dashboard stays as the rollback, and some older drill-downs are not recreated. It does not show the supplied CityKart MOP Reco logo (a "CK" mark only) - open item.
+* **Deployment shape** (`deploy/README_DEPLOY.md`, last section): API on 127.0.0.1:8092 (one worker), React host on 127.0.0.1:8093, and MOP's OWN Caddy instance (`deploy/Caddyfile.mop_v2`, a copy of the program in
+  `tools\caddy`, admin API off, no auto-HTTPS) on `V2_PORT` (8091). The other applications' Caddy instances on the server are neither used nor changed. `deploy/install_v2.ps1` installs Bun 1.4.4 (SHA-256 pinned)
+  and builds from `frontend/bun.lock`; `start_v2.ps1` / `stop_v2.ps1` run it; `start_app.ps1` starts it with the dashboard when `production.env` has `V2_ENABLE=1`. `build_package.py` now carries `frontend/` source and
+  `requirements-v2.txt` (never `node_modules` or the build output).
+* **Verified locally 2026-11-25** (throw-away copy of run #2, real Caddyfile, built front end): sign-in, Summary figures equal the audited run #2 (Total sale Rs 9,99,73,77,035.90; digital sale Rs 5,21,90,60,086.49),
+  and the Summary, Cash, Float, Tasks, Exceptions, Masters, Uploads and Users API calls all answer 200. Measured on the full 01/04-14/11 range: Summary 13.4 s, Cash 4.5 s, Float 5.2 s (the dashboard answers
+  its Summary in under 2 s) - a performance gap to be reviewed. 46 V2 tests pass.

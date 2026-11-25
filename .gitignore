@@ -70,3 +70,5 @@ secrets/
 
 # the secrets SETUP script holds no secret (it prompts for them) - it must be versioned
 !deploy/set_secrets.ps1
+
+node_modules/

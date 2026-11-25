@@ -41,6 +41,19 @@ if ($me -match [regex]::Escape($runAs)) {
     Report 'NAS' ([bool]$n.ok) ("as the app account at its last start ({0}, {1}): {2}" -f $n.account, $n.checked_at, $n.message)
 } else { Report 'NAS' $false "no NAS probe recorded yet - start the app (it probes at start) or run this check as $runAs" }
 
+# 4b. the V2 screens, when enabled: the proxy answers, the API behind it answers, and the React host serves the sign-in page
+if ($s['V2_ENABLE'] -eq '1') {
+    $v2port = if ($s['V2_PORT']) { $s['V2_PORT'] } else { '8091' }
+    try {
+        $r = Invoke-WebRequest -UseBasicParsing -Uri ("http://localhost:{0}/api/mop/health" -f $v2port) -TimeoutSec 15
+        Report 'v2 api' ($r.StatusCode -eq 200) ("through the proxy on port {0}: {1}" -f $v2port, ($r.Content.Trim() -replace '\s+', ' '))
+    } catch { Report 'v2 api' $false "not answering through port ${v2port}: $($_.Exception.Message)" }
+    try {
+        $r = Invoke-WebRequest -UseBasicParsing -Uri ("http://localhost:{0}/login" -f $v2port) -TimeoutSec 20
+        Report 'v2 screens' ($r.StatusCode -eq 200 -and $r.Content.Length -gt 500) ("sign-in page served ({0} bytes)" -f $r.Content.Length)
+    } catch { Report 'v2 screens' $false "sign-in page not served on port ${v2port}: $($_.Exception.Message)" }
+}
+
 # 5. free disk on the application drive
 $drive = Get-PSDrive -Name ($script:Root.Substring(0, 1))
 $freeGb = [math]::Round($drive.Free / 1GB, 1)

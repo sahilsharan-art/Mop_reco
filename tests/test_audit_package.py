@@ -41,3 +41,22 @@ def test_application_code_and_the_one_template_do_travel():
 def test_the_installer_prefers_the_lock_file():
     text = (ROOT / "deploy" / "install.ps1").read_text(encoding="utf-8")
     assert "requirements.lock.txt" in text and text.index("requirements.lock.txt") < text.index("requirements.txt'")
+
+
+def test_the_v2_screens_travel_as_source_and_are_built_on_the_server():
+    """frontend/ source and its lock file go in the package; node_modules and the build output never do (install_v2.ps1 builds them from bun.lock)."""
+    assert "frontend" in bp.INCLUDE_DIRS and "requirements-v2.txt" in bp.INCLUDE_FILES and (ROOT / "requirements-v2.txt").is_file()
+    for rel in ["frontend/package.json", "frontend/bun.lock", "frontend/serve.ts", "frontend/src/styles.css", "app/api_v2.py", "deploy/start_v2.ps1",
+                "deploy/stop_v2.ps1", "deploy/install_v2.ps1", "deploy/Caddyfile.mop_v2"]:
+        assert bp.wanted(ROOT / rel), rel
+    for rel in ["frontend/node_modules/react/index.js", "frontend/dist/server/server.js", "frontend/dist/client/assets/a.js"]:
+        assert not bp.wanted(ROOT / rel), rel
+
+
+def test_the_v2_start_script_only_runs_when_enabled_and_checks_the_origin():
+    text = (ROOT / "deploy" / "start_v2.ps1").read_text(encoding="utf-8")
+    assert "V2_ENABLE" in text and "V2_ORIGIN" in text and "stop_v2.ps1" in text
+    assert "--workers', '1'" in text            # one API worker: runs started from the screens use one in-process worker
+    assert "127.0.0.1" in text and "0.0.0.0" not in text   # the API and the React host are private; only the proxy is the public port
+    caddy = (ROOT / "deploy" / "Caddyfile.mop_v2").read_text(encoding="utf-8")
+    assert "admin off" in caddy and "auto_https off" in caddy   # MOP's proxy never touches the other applications' proxies

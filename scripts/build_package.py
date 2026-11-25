@@ -14,9 +14,10 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-INCLUDE_DIRS = ["app", "scripts", "deploy"]
-INCLUDE_FILES = ["requirements.txt", "requirements.lock.txt", ".streamlit/config.toml", "CLAUDE.md", "README.md"]
-EXCLUDE_PARTS = {"__pycache__", ".pytest_cache", ".git"}
+INCLUDE_DIRS = ["app", "scripts", "deploy", "frontend"]
+INCLUDE_FILES = ["requirements.txt", "requirements.lock.txt", "requirements-v2.txt", ".streamlit/config.toml", "CLAUDE.md", "README.md"]
+# node_modules and dist are built ON the server from frontend/bun.lock (deploy\install_v2.ps1), never shipped
+EXCLUDE_PARTS = {"__pycache__", ".pytest_cache", ".git", "node_modules", "dist"}
 EXCLUDE_NAMES = {"production.env", "reco.sqlite"}
 EXCLUDE_SUFFIX = {".pyc", ".sqlite", ".sqlite-wal", ".sqlite-shm", ".parquet", ".sec"}
 # the one workbook the application itself needs (the Store Task summary template) - not business data

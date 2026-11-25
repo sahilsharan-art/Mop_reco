@@ -22,6 +22,11 @@ $argList = @('-m', 'streamlit', 'run', 'app\Summary.py', '--server.port', $s['AP
 $p = Start-Process -FilePath $script:Python -ArgumentList $argList -WorkingDirectory $script:Root -NoNewWindow -PassThru `
         -RedirectStandardOutput ($log + '.out') -RedirectStandardError ($log + '.err')
 $p.Id | Set-Content $script:PidFile
+# the V2 screens (API, React host, proxy) start beside the dashboard when production.env says V2_ENABLE=1; a failure there is logged and never stops the dashboard
+if ($s['V2_ENABLE'] -eq '1') {
+    try { & "$PSScriptRoot\start_v2.ps1" | ForEach-Object { ("{0:s} {1}" -f (Get-Date), $_) | Add-Content $log } }
+    catch { ("{0:s} V2 FAILED to start: {1}" -f (Get-Date), $_.Exception.Message) | Add-Content $log }
+}
 $p.WaitForExit()                                            # keeps the task "running" while the app runs
 "{0:s} app exited with code {1}" -f (Get-Date), $p.ExitCode | Add-Content $log
 exit $p.ExitCode

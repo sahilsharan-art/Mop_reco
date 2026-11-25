@@ -72,3 +72,26 @@ The database lives on 10.0.0.205: either its administrator backs it up on their 
 - **NAS evidence archive for uploaded files** (write-once copy + checksum + "withdrawn" flag). NAS access is built and probed at every start;
   uploads are still kept in the application's own folders for now.
 - **Data-lake daily refresh.** Files are supplied by folder or the Upload page until the lake details are known.
+
+## The V2 screens (React) - installed beside the dashboard (24-25 Nov 2026)
+Built by another developer (`frontend/`, `app/api_v2.py`, `app/api_v2_workflows.py`); they call the unchanged engines in `app\mop_reco`. The dashboard on
+APP_PORT stays running and is the rollback. Three private pieces, one public port:
+
+| Piece | Where | Started by |
+|---|---|---|
+| Python API (`uvicorn api_v2:app`, ONE worker) | 127.0.0.1:8092 | `start_v2.ps1` |
+| React host (`bun serve.ts`) | 127.0.0.1:8093 | `start_v2.ps1` |
+| MOP's own proxy (a copy of Caddy, `Caddyfile.mop_v2`, admin API off) | **V2_PORT (8091)** - the address users open | `start_v2.ps1` |
+
+1. **Install (Administrator, after unpacking the package; own folder only):** `powershell -File deploy\install_v2.ps1` - API packages into the venv, Bun 1.4.4 into
+   `toolsun` (checksum verified), a copy of Caddy into `tools\caddy`, then `bun install --frozen-lockfile` and `bun run build`. Safe to repeat.
+2. **Settings (`deploy\production.env`):** `V2_ENABLE=1`, `V2_PORT=8091`, `V2_ORIGIN=<exactly what users type>` e.g. `http://<server>:8091` - no trailing slash. The API
+   refuses any request whose Origin differs, so an IP address and a host name are different origins: choose one. Use `https://` once the infrastructure team puts a
+   certificate in front (the session cookie then becomes Secure by itself).
+3. **Start:** restart the scheduled task (`start_app.ps1` starts V2 when V2_ENABLE=1; a V2 failure is logged and never stops the dashboard), or from a remote session
+   `powershell -File deploy\start_v2.ps1 -Detached` (a plain start from ssh dies with the session). Stop: `stop_v2.ps1`, or `stop_app.ps1` stops both.
+4. **Check:** `health_check.ps1` adds `v2 api` and `v2 screens`. Sign in with an existing account (the same users and passwords as the dashboard).
+5. **Rollback:** `stop_v2.ps1`, set `V2_ENABLE=0`. Nothing else changes; V2 has no schema of its own.
+Logs: `logs2_api_<date>.*`, `v2_web_<date>.*`, `v2_proxy_<date>.*`, `v2_<date>.log`. Firewall: open V2_PORT (not 8092 / 8093) for the office network only.
+Limits: one API worker only (a reconciliation started from the screens uses one in-process worker, protected by the engine's own running-run check); the developer's
+own notes say production acceptance is open and some older drill-downs are not recreated - keep the dashboard until a finance user has accepted V2.

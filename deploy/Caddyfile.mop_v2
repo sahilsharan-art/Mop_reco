@@ -1,0 +1,30 @@
+# MOP V2: the one address the browser sees. This is MOP's OWN proxy instance, run from tools\caddy with this file; it does not touch,
+# reload or share anything with the other applications' proxies on this server (admin API off, no automatic HTTPS, no stored state).
+#   /api/mop/*  -> the Python API   (127.0.0.1:8092, private)
+#   everything else -> the React host (127.0.0.1:8093, private)
+# The browser must reach the application at exactly the address written in MOP_V2_ORIGIN (production.env V2_ORIGIN).
+# HTTPS is added in front of this by the infrastructure team (a certificate on their terminator); until then the session cookie is not Secure.
+{
+	admin off
+	auto_https off
+	persist_config off
+	# keep Caddy's own small working files inside this application's folder (set by start_v2.ps1), not in a user profile
+	storage file_system {$MOP_CADDY_DATA}
+}
+
+:{$MOP_V2_PORT} {
+	request_body {
+		max_size 1GB
+	}
+	handle /api/mop/* {
+		reverse_proxy 127.0.0.1:8092 {
+			transport http {
+				response_header_timeout 300s
+				read_timeout 300s
+			}
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8093
+	}
+}
