@@ -6,33 +6,29 @@ import { Button } from "../ui";
 import { Screen } from "../Screen";
 import { DataTable } from "../DataTable";
 import { useWorkspace } from "../Workspace";
+import { ExceptionBills, ExceptionTransactions } from "./ExceptionPairing";
+type Tab = "bills" | "transactions" | "register" | "parked";
+const TABS: [Tab, string][] = [
+  ["bills", "Exception bills"],
+  ["transactions", "Exception transactions"],
+  ["register", "Full register"],
+  ["parked", "Awaiting Axis"],
+];
 export function ExceptionsPage() {
-  const [tab, setTab] = useState(false);
+  const [tab, setTab] = useState<Tab>("bills");
   return (
     <>
-      <div
-        className="segmented"
-        role="tablist"
-        aria-label="Exception registers"
-      >
-        <Button
-          role="tab"
-          aria-selected={!tab}
-          variant={tab ? "secondary" : "primary"}
-          onClick={() => setTab(false)}
-        >
-          Exception register
-        </Button>
-        <Button
-          role="tab"
-          aria-selected={tab}
-          variant={tab ? "primary" : "secondary"}
-          onClick={() => setTab(true)}
-        >
-          Awaiting Axis
-        </Button>
+      <div className="segmented" role="tablist" aria-label="Exception views">
+        {TABS.map(([key, title]) => (
+          <Button key={key} role="tab" aria-selected={tab === key} variant={tab === key ? "primary" : "secondary"} onClick={() => setTab(key)}>
+            {title}
+          </Button>
+        ))}
       </div>
-      {tab ? <ParkedTable /> : <Screen kind="exceptions" />}
+      {tab === "bills" ? <ExceptionBills /> : null}
+      {tab === "transactions" ? <ExceptionTransactions /> : null}
+      {tab === "register" ? <Screen kind="exceptions" /> : null}
+      {tab === "parked" ? <ParkedTable /> : null}
     </>
   );
 }

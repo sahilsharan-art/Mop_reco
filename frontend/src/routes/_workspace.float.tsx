@@ -1,5 +1,5 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { Screen } from "../components/Screen";
+import { FloatPage } from "../components/screens/FloatPage";
 import { meta } from "../lib/meta";
 import { meQuery } from "../lib/api";
 export const Route = createFileRoute("/_workspace/float")({
@@ -9,5 +9,5 @@ export const Route = createFileRoute("/_workspace/float")({
       "Float",
       "MOP Reconciliation float workspace with existing Python engine data.",
     ),
-  component: () => <Screen kind="float" />,
+  component: FloatPage,
 });

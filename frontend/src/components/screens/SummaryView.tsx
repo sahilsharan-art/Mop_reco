@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { DataTable } from "../DataTable";
+import { SummaryTables } from "./SummaryTables";
 import type React from "react";
 import { useState, useMemo } from "react";
 import { useSuspenseQuery, useQueryClient } from "@tanstack/react-query";
@@ -272,6 +273,7 @@ export function SummaryView({ data }: { data: Summary }) {
           )}
         </section>
       </div>
+      <SummaryTables data={data} />
       <section className="section">
         <div className="section-heading">
           <div>

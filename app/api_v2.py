@@ -332,11 +332,6 @@ def create_app(session_factory=None, config=None, origin=None):
         grid = floats.build_float_grid(sheet(s, p), cfg().raw)
         return floats.with_remarks(grid, floats.float_remarks_for_range(s, p[1], p[2], p[3]))
 
-    @app.get(PREFIX + '/float')
-    def float_rows(p=Depends(period), u=Depends(signed_in), s=Depends(db), offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200)):
-        frame = float_frame(s, p)
-        return {'rows': clean(frame.iloc[offset:offset+limit]), 'total': len(frame)}
-
     @app.post(PREFIX + '/float/remark')
     def float_remark(data: FloatAction, u=Depends(signed_in), s=Depends(db)):
         if not s.query(StoreDayAgg.id).filter(StoreDayAgg.store == data.store, StoreDayAgg.business_date == data.business_date.isoformat()).first():
@@ -510,6 +505,8 @@ def create_app(session_factory=None, config=None, origin=None):
 
     from api_v2_workflows import register
     register(app, db=db, signed_in=signed_in, cfg=cfg, factory=factory, clean=clean, prefix=PREFIX, period=period, sheet=sheet)
+    import api_v2_gaps
+    api_v2_gaps.register(app, db=db, signed_in=signed_in, cfg=cfg, factory=factory, clean=clean, prefix=PREFIX, period=period, sheet=sheet, match_state=match_state)
     return app
 
 app = create_app()

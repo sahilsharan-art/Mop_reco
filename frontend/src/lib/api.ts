@@ -24,6 +24,8 @@ export const bootstrapQuery = queryOptions({queryKey:['bootstrap'],queryFn:()=>a
 // Screens do not poll: Summary / Cash / Float cost seconds to compute and used to be re-run every minute per open tab. Only a screen that
 // shows something changing (a run in progress) passes a poll interval; everything else is fresh for two minutes and refreshed by Apply / a save.
 export const screenQuery = (path:string, pollMs = 0) => queryOptions({queryKey:['screen',path],queryFn:()=>api<TableData | Summary>(path),retry:false,staleTime:120000,refetchInterval:pollMs||false});
+/** A typed read for the screens that carry their own sections. The key starts with 'screen', so every save that refreshes the screens refreshes these too. */
+export const apiQuery = <T,>(path: string, enabled = true) => queryOptions({queryKey:['screen',path],queryFn:()=>api<T>(path),retry:false,staleTime:120000,enabled});
 export const noticesQuery = (filter: Filter) => queryOptions({queryKey:['notices',params(filter)],queryFn:()=>api<{run_id:number;notices:Notice[]}>('/notices?'+params(filter)),retry:false,staleTime:120000});
 export async function download(path:string) { const response=await fetch('/api/mop'+path,{credentials:'same-origin'}); if(!response.ok) { const body=await response.json().catch(()=>null); throw new ApiError(response.status,body?.detail??'Export failed.'); } const url=URL.createObjectURL(await response.blob());const a=document.createElement('a');a.href=url;a.download=response.headers.get('Content-Disposition')?.match(/filename="([^"]+)"/)?.[1]??'mop-export.xlsx';a.click();URL.revokeObjectURL(url); }
 export const money = (v:unknown) => typeof v==='number'?new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR',maximumFractionDigits:2}).format(v):'—';
