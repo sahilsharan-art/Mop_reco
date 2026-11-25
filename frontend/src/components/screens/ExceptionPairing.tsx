@@ -1,12 +1,13 @@
 import { useDeferredValue, useEffect, useState } from "react";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Download, MessageSquare, Sparkles } from "lucide-react";
+import { Download, MessageSquare, Sparkles, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { api, apiQuery, download, display, money, params, type Row } from "../../lib/api";
 import { useWorkspace } from "../Workspace";
 import { Button, Modal, Pill } from "../ui";
 import { RecordModal } from "./RecordModal";
 import { BulkAccept } from "./BulkAccept";
+import { TableUpload } from "./TableUpload";
 import { Collapsible, Grid, Pager, type Col } from "./shared";
 
 const n0 = (v: unknown) => Number(v ?? 0).toLocaleString("en-IN");
@@ -91,6 +92,7 @@ export function ExceptionBills() {
   const [cluster, setCluster] = useState<number | null>(null);
   const [remark, setRemark] = useState<Row | null>(null);
   const [accept, setAccept] = useState(false);
+  const [upload, setUpload] = useState(false);
   const [secondOpen, setSecondOpen] = useState(false);
   const filterKey = JSON.stringify(filter);
   useEffect(() => {
@@ -207,6 +209,10 @@ export function ExceptionBills() {
         </div>
         {live ? (
           <div className="toolbar-actions">
+            <Button variant="secondary" onClick={() => setUpload(true)}>
+              <Upload size={15} />
+              Upload filled table…
+            </Button>
             <Button variant="secondary" onClick={() => setAccept(true)}>
               <Sparkles size={15} />
               Accept the system's suggestions…
@@ -249,6 +255,7 @@ export function ExceptionBills() {
       {cluster !== null ? <ClusterModal cid={cluster} runId={runId} close={() => setCluster(null)} done={refresh} /> : null}
       {remark ? <RecordModal kind="exceptions" row={remark} close={() => setRemark(null)} refresh={refresh} /> : null}
       {accept ? <BulkAccept close={() => setAccept(false)} done={refresh} /> : null}
+      {upload ? <TableUpload kind="bills" close={() => setUpload(false)} done={refresh} /> : null}
     </div>
   );
 }
@@ -349,6 +356,7 @@ export function ExceptionTransactions() {
   const [bill, setBill] = useState<Record<string, string>>({});
   const [busyKey, setBusyKey] = useState("");
   const [remark, setRemark] = useState<Row | null>(null);
+  const [upload, setUpload] = useState(false);
   const filterKey = JSON.stringify(filter);
   useEffect(() => {
     setOffset(0);
@@ -426,6 +434,14 @@ export function ExceptionTransactions() {
             Refunds screen, never as revenue.
           </p>
         </div>
+        {live ? (
+          <div className="toolbar-actions">
+            <Button variant="secondary" onClick={() => setUpload(true)}>
+              <Upload size={15} />
+              Upload filled table…
+            </Button>
+          </div>
+        ) : null}
       </div>
       <Controls status={status} setStatus={setStatus} sort={sort} setSort={setSort} count={data.total} value={data.value} kind="transactions"
         exportPath={`/exceptions/transactions/export?${params(filter, { status, sort })}`} />
@@ -433,6 +449,7 @@ export function ExceptionTransactions() {
       {data.rows.some((r) => r["gateway"] === "axis") ? <p className="muted">Axis does not supply a transaction time.</p> : null}
       <Pager offset={offset} total={data.total} setOffset={setOffset} />
       {remark ? <RecordModal kind="exceptions" row={remark} close={() => setRemark(null)} refresh={refresh} /> : null}
+      {upload ? <TableUpload kind="transactions" close={() => setUpload(false)} done={refresh} /> : null}
     </div>
   );
 }

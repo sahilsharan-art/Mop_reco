@@ -1790,3 +1790,12 @@ td.heat-neg {
 .pair-more { font-size: 11px; color: var(--muted-foreground); }
 .pair-summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
 @media (max-width: 760px) { .stmt-grid, .strip-grid { grid-template-columns: 1fr; } }
+
+/* The filled-table upload (Exceptions) */
+.upload-pick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin: 12px 0;
+}

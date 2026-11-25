@@ -14,7 +14,7 @@ from io import BytesIO
 from typing import Literal
 
 import pandas as pd
-from fastapi import Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import Depends, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from mop_reco import exception_pairing as ep
@@ -24,6 +24,7 @@ from mop_reco import manual_match as mm
 from mop_reco import queries as q
 from mop_reco import store_sheet as ss
 from mop_reco import store_sheet_source as source
+from mop_reco import table_upload as tu
 from mop_reco.db import CmsSlip, Exception_, ManualMatch, Run, TransactionRefund
 from mop_reco.export import ExportMeta, build_export
 from sqlalchemy import func
@@ -330,6 +331,45 @@ def register(app, *, db, signed_in, cfg, factory, clean, prefix, period, sheet, 
                                                 value_column="amount", title=title))
         mime = "text/csv" if result.fmt == "csv" else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         return Response(result.data, media_type=mime, headers={"Content-Disposition": f'attachment; filename="{result.filename}"'})
+
+    @app.post(prefix + "/exceptions/{kind}/upload")
+    def exception_table_upload(kind: Literal["bills", "transactions"], file: UploadFile = File(...), run_id: int = Form(...),
+                               confirm: bool = Form(False), expect_accepted: int = Form(-1), u=Depends(signed_in), s=Depends(db)):
+        """The table's own export, filled in (CLAUDE.md 6.23). Every upload is CHECKED first and returns each row's verdict with its
+        reasons; nothing is written unless `confirm` is true, and then ALL OR NOTHING: one rejected row applies nothing, and everything
+        is written in one database transaction. The file is validated again at apply time, so a transaction claimed since the preview is
+        refused rather than trusted from the earlier check. No override exists on this route."""
+        latest_run(s, run_id)
+        name = str(file.filename or "")
+        if not name.lower().endswith((".xlsx", ".csv")):
+            raise HTTPException(422, "Choose the table's export, as an XLSX or CSV file.")
+        content = file.file.read(20 * 1024 * 1024 + 1)
+        file.file.close()
+        if len(content) > 20 * 1024 * 1024:
+            raise HTTPException(413, "The file is larger than 20 MB.")
+        expected = et.bill_columns(pairing=True, screen=False) if kind == "bills" else list(et.TXN_COLUMNS)
+        try:
+            frame = tu.read_table_file(content, name, expected)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        preview = tu.preview_bills(s, run_id, frame) if kind == "bills" else tu.preview_txns(s, run_id, frame)
+        accepted, rejected, ignored = len(preview.accepted), len(preview.rejected), len(preview.ignored)
+        result = {"kind": kind, "file": name, "rows_in_file": preview.total_rows, "accepted": accepted, "rejected": rejected, "ignored": ignored,
+                  "summary": preview.summary_line("transaction" if kind == "bills" else "bill, refund or change"),
+                  "actions": {a: sum(1 for r in preview.accepted if a in r.kind.split("+")) for a in ("match", "refund", "remark")},
+                  "can_apply": preview.can_apply, "applied": False,
+                  "rows": clean(preview.as_frame().query("verdict != 'ignore'").sort_values("verdict", ascending=False, kind="stable"))}
+        if confirm:
+            if expect_accepted != accepted:
+                raise HTTPException(409, f"The file now checks differently ({accepted} acceptable rows, {expect_accepted} when you reviewed it). Check it again.")
+            if not preview.can_apply:
+                raise HTTPException(422, f"{rejected} row(s) are rejected, so nothing is applied. Fix them and upload the file again.")
+            try:
+                counts = tu.apply_preview(s, preview, u.display_name, name)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc))
+            result.update(applied=True, counts=counts)
+        return result
 
     def gateway_of(pool: pd.DataFrame, ref: str):
         hits = pool[pool["txn_ref"].astype(str) == ref] if len(pool) else pool

@@ -203,3 +203,129 @@ def test_exception_table_exports_carry_the_pairing_columns_but_never_the_screen_
     assert 'More' not in cells and 'Match' not in cells                           # screen affordances are never data
     t = c.get('/api/mop/exceptions/transactions/export')
     assert t.status_code == 200 and 'TXN-AAA' in _cells(t.content)
+
+
+# ------------------------------------------------------------------------------------------------ Exceptions: the filled table, uploaded
+
+BILLS = {'BILL-1': 500.0, 'BILL-2': 777.0}
+
+
+def _seed_real(factory):
+    """Two open bills with their REAL exception keys (an upload finds a bill's exception by key) and one transaction."""
+    from mop_reco.exceptions import bill_exception_key
+    for number, amount in BILLS.items():
+        _exc(factory, bill_exception_key('2026-01-01', 'DEMO-A', number, 'PAYTM EDC'), 'bill_not_matched', 'DEMO-A', amount, {'bill_no': number, 'mop': 'PAYTM EDC'})
+    _exc(factory, 'paytm|TXN-AAA', 'unmapped_gateway_transaction', 'DEMO-A', 500.0, {'gateway': 'paytm', 'transaction_id': 'TXN-AAA'}, time='10:00:00')
+
+
+def _stub_engine(monkeypatch, valid=True):
+    """The bill lookup answers per bill number; the validator and the recorder are stubs, so only the upload's own rules are under test."""
+    monkeypatch.setattr(mm, 'find_bill_for_match', lambda s, run_id, n: (
+        ({'business_date': '2026-01-01', 'store': 'DEMO-A', 'bill_no': n, 'mop': 'PAYTM EDC', 'amount': BILLS[n]}, True, '') if n in BILLS else (None, False, f'bill {n} not found')))
+    monkeypatch.setattr(mm, 'targeted_pool_many', lambda refs, **k: pd.DataFrame())
+    monkeypatch.setattr(mm, 'targeted_pool', lambda ref, **k: pd.DataFrame())
+    problems = [] if valid else ['amount differs: 400.00 against 500.00']
+    monkeypatch.setattr(mm, 'validate_by_id', lambda *a, **k: SimpleNamespace(ok=valid, case=mm.CASE_CLEAN if valid else mm.CASE_DISCREPANT, problems=problems,
+                                                                             gateway='paytm', txn={}, date_lag_note=''))
+    recorded = []
+    monkeypatch.setattr(mm, 'record', lambda *a, **k: recorded.append(a) or SimpleNamespace(id=1))
+    return recorded
+
+
+def _fill(content: bytes, edits: dict) -> bytes:
+    """The export with cells typed against named bills - what a person does in Excel. The header block above the table is kept."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(content))
+    ws = wb[wb.sheetnames[0]]
+    head = next(r for r in range(1, ws.max_row + 1) if 'bill_no' in [str(x.value) for x in ws[r]])
+    names = [str(x.value) for x in ws[head]]
+    for r in range(head + 1, ws.max_row + 1):
+        bill = str(ws.cell(r, names.index('bill_no') + 1).value)
+        for col, val in edits.get(bill, {}).items():
+            ws.cell(r, names.index(col) + 1).value = val
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def _post_upload(c, h, body, kind='bills', confirm=False, expect=-1, run_id=1):
+    files = {'file': ('table.xlsx', body, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
+    return c.post(f'/api/mop/exceptions/{kind}/upload', headers=h, files=files,
+                  data={'run_id': str(run_id), 'confirm': 'true' if confirm else 'false', 'expect_accepted': str(expect)})
+
+
+def test_a_filled_table_is_checked_first_and_writes_nothing_until_confirmed(setup, monkeypatch):
+    c, f = setup
+    _seed_real(f)
+    h = login(c)
+    recorded = _stub_engine(monkeypatch)
+    body = _fill(c.get('/api/mop/exceptions/bills/export').content, {'BILL-2': {'remark': 'chasing the gateway'}})
+    out = _post_upload(c, h, body).json()
+    assert out['applied'] is False and out['rejected'] == 0 and out['can_apply'] is True
+    assert out['actions'] == {'match': 1, 'refund': 0, 'remark': 1}       # BILL-1 carries the system's own suggestion (TXN-AAA), BILL-2 a remark
+    assert recorded == []                                                 # a check never writes
+
+
+def test_one_rejected_row_applies_nothing_and_confirming_is_refused(setup, monkeypatch):
+    c, f = setup
+    _seed_real(f)
+    h = login(c)
+    recorded = _stub_engine(monkeypatch, valid=False)
+    body = _fill(c.get('/api/mop/exceptions/bills/export').content, {'BILL-2': {'remark': 'fine'}})
+    check = _post_upload(c, h, body).json()
+    assert check['rejected'] == 1 and check['accepted'] == 1 and check['can_apply'] is False
+    assert any('amount differs' in str(row['why']) for row in check['rows'])
+    refused = _post_upload(c, h, body, confirm=True, expect=check['accepted'])
+    assert refused.status_code == 422 and 'nothing is applied' in refused.json()['detail']
+    assert recorded == []                                                 # the acceptable remark row was not applied either
+
+
+def test_a_clean_file_applies_in_one_step_and_a_changed_check_is_refused(setup, monkeypatch):
+    c, f = setup
+    _seed_real(f)
+    h = login(c)
+    recorded = _stub_engine(monkeypatch)
+    body = _fill(c.get('/api/mop/exceptions/bills/export').content, {'BILL-2': {'remark': 'chasing the gateway'}})
+    check = _post_upload(c, h, body).json()
+    stale = _post_upload(c, h, body, confirm=True, expect=check['accepted'] + 5)
+    assert stale.status_code == 409 and recorded == []                    # checks differently from what was reviewed: nothing written
+    done = _post_upload(c, h, body, confirm=True, expect=check['accepted'])
+    assert done.status_code == 200, done.text
+    counts = done.json()['counts']
+    assert done.json()['applied'] is True and counts['matched'] == 1 and counts['remarks'] == 1 and len(recorded) == 1
+    assert _post_upload(c, h, body).json()['actions']['remark'] == 0      # the remark is recorded now: that row is unchanged
+
+
+def test_a_file_that_is_not_the_table_is_refused_with_the_reason_and_needs_sign_in(setup):
+    c, _ = setup
+    h = login(c)
+    junk = io.BytesIO()
+    pd.DataFrame({'a': [1]}).to_excel(junk, index=False)
+    r = _post_upload(c, h, junk.getvalue())
+    assert r.status_code == 422 and 'does not look like' in r.json()['detail']
+    c.cookies.clear()
+    assert _post_upload(c, {}, junk.getvalue()).status_code in (401, 403)   # no session, no CSRF token: refused before anything is read
+
+
+def test_a_filled_transactions_table_matches_by_the_bill_typed_and_never_by_both_match_and_refund(setup, monkeypatch):
+    c, f = setup
+    _seed_real(f)
+    h = login(c)
+    recorded = _stub_engine(monkeypatch)
+    monkeypatch.setattr(mm, 'validate', lambda *a, **k: SimpleNamespace(ok=True, case=mm.CASE_CLEAN, problems=[], gateway='paytm', txn={}, date_lag_note=''))
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(c.get('/api/mop/exceptions/transactions/export').content))
+    ws = wb[wb.sheetnames[0]]
+    head = next(r for r in range(1, ws.max_row + 1) if 'transaction_id' in [str(x.value) for x in ws[r]])
+    names = [str(x.value) for x in ws[head]]
+    ws.cell(head + 1, names.index('matched_bill') + 1).value = 'BILL-1'
+    out = io.BytesIO()
+    wb.save(out)
+    ok = _post_upload(c, h, out.getvalue(), kind='transactions').json()
+    assert ok['accepted'] == 1 and ok['rejected'] == 0 and ok['actions']['match'] == 1
+    ws.cell(head + 1, names.index('customer_name') + 1).value = 'A Customer'            # a match AND a refund on one row
+    both = io.BytesIO()
+    wb.save(both)
+    bad = _post_upload(c, h, both.getvalue(), kind='transactions').json()
+    assert bad['rejected'] == 1 and 'not both' in str(bad['rows'])
+    assert recorded == []
