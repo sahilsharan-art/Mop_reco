@@ -84,7 +84,7 @@ APP_PORT stays running and is the rollback. Three private pieces, one public por
 | MOP's own proxy (a copy of Caddy, `Caddyfile.mop_v2`, admin API off) | **V2_PORT (8091)** - the address users open | `start_v2.ps1` |
 
 1. **Install (Administrator, after unpacking the package; own folder only):** `powershell -File deploy\install_v2.ps1` - API packages into the venv, Bun 1.4.4 into
-   `toolsun` (checksum verified), a copy of Caddy into `tools\caddy`, then `bun install --frozen-lockfile` and `bun run build`. Safe to repeat.
+   `tools\bun` (checksum verified), a copy of Caddy into `tools\caddy`, then `bun install --frozen-lockfile` and `bun run build`. Safe to repeat.
 2. **Settings (`deploy\production.env`):** `V2_ENABLE=1`, `V2_PORT=8091`, `V2_ORIGIN=<exactly what users type>` e.g. `http://<server>:8091` - no trailing slash. The API
    refuses any request whose Origin differs, so an IP address and a host name are different origins: choose one. Use `https://` once the infrastructure team puts a
    certificate in front (the session cookie then becomes Secure by itself).
