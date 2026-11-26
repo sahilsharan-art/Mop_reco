@@ -1,6 +1,6 @@
 # Give the account the application runs as exactly the access it needs, and no more. Run as Administrator.
 #   read + run   : the whole application folder (code, venv)
-#   change       : logs, warehouse, db, exports, uploads_archive, and the source-data folders (uploads and runs write there)
+#   change       : logs, warehouse, db, exports, uploads_archive, uploaded_sources, uploads_staging, and the source-data folders (uploads and runs write there)
 #   read only    : secrets (the encrypted database password)
 # It cannot change the code, the settings or the secrets.
 param([string]$Account = '', [string]$Root = '')
@@ -19,7 +19,7 @@ function Grant([string]$Path, [string]$Rights) {
 
 "Account: $Account ($($Resolved.Name), $($Resolved.Sid))    Application folder: $Root"
 Grant $Root 'RX'
-$changeFolders = @('logs', 'warehouse', 'db', 'exports', 'uploads_archive',
+$changeFolders = @('logs', 'warehouse', 'db', 'exports', 'uploads_archive', 'uploaded_sources', 'uploads_staging',
                    '1. POS Sales', '2. Settlement reports', '3. CMS received', '4. Petty cash ledger', 'Customer Refund')
 foreach ($name in $changeFolders) {
     $p = Join-Path $Root $name
