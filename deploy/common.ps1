@@ -76,7 +76,8 @@ function Set-AppEnvironment($s) {
     # The ERP database (read-only, a login shared with other applications). Only when ERP_DB_HOST is set; the password is
     # the machine-encrypted secrets\erp.sec if it has been stored. The app itself forces every ERP session read-only.
     # Where each source comes from: 'file' (default) or 'erp'. SOURCE_POS / SOURCE_PTC in production.env -> MOP_SOURCE_POS / MOP_SOURCE_PTC.
-    foreach ($pair in @(@('SOURCE_POS', 'MOP_SOURCE_POS'), @('SOURCE_PTC', 'MOP_SOURCE_PTC'))) {
+    # SOURCES_FROM=uploads: the file sources are read only from uploaded_sources\ (the numbered folders are no longer read; they stay untouched).
+    foreach ($pair in @(@('SOURCE_POS', 'MOP_SOURCE_POS'), @('SOURCE_PTC', 'MOP_SOURCE_PTC'), @('SOURCES_FROM', 'MOP_SOURCES_FROM'))) {
         if ($s[$pair[0]]) { Set-Item -Path ('Env:' + $pair[1]) -Value $s[$pair[0]] }
     }
     if ($s['ERP_DB_HOST']) {

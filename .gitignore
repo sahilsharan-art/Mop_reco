@@ -72,3 +72,7 @@ secrets/
 !deploy/set_secrets.ps1
 
 node_modules/
+
+# Files uploaded through the Upload screen (business data), and withdrawn uploads
+uploaded_sources/
+uploads_archive/

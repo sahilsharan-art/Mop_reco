@@ -352,10 +352,20 @@ def probe_dates(config, source: str, path: Path) -> set:
     return days
 
 
+# The sources read from files that someone uploads. POS and petty cash are not here: the ERP supplies them and their dates are the
+# warehouse's own.
+UPLOAD_ONLY_DATE_SOURCES = ("paytm_settlement", "axis_edc", "bajaj", "axis_cms")
+
+
 def source_dates(config, source: str, root: Path = None) -> set:
     """Every business date this source holds: the dates already ingested (warehouse) plus the dates inside any file
     newer than the last ingest - the files nobody has run yet. A file that cannot be read is skipped, never fatal."""
     days, newest = warehouse_dates(source, root)
+    uploads_only = getattr(config, "uploads_only", False) and source in UPLOAD_ONLY_DATE_SOURCES
+    if uploads_only:
+        # The numbered folders are no longer the way in: a date counts only if an UPLOADED file holds it. Partitions left in the
+        # warehouse by the folder-based runs are history (and the comparison baseline), not evidence that anything was supplied.
+        days, newest = set(), 0.0
     try:
         files = config.source_status(source).files
     except Exception:  # noqa: BLE001 - a source that is not configured holds nothing

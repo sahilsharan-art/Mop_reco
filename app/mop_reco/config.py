@@ -28,6 +28,19 @@ REQUIRED_TOP_LEVEL_KEYS = (
 REQUIRED_SETTLEMENT_CYCLE_KEYS = ("paytm", "axis", "bajaj", "cms")
 
 
+# Where uploaded files live when the numbered folders are no longer the way in: <base_dir>/uploaded_sources/<source>/<Mon'YY>/.
+# Each file-fed source gets its own folder, so one source's "most recently modified" choice can never pick another's file.
+UPLOADS_FOLDER_NAME = "uploaded_sources"
+UPLOAD_FED_SOURCES = ("pos_bill_wise", "pos_store_wise", "ptc", "paytm_settlement", "axis_edc", "bajaj", "axis_cms",
+                      "bank_statement")
+
+
+def sources_from_uploads() -> bool:
+    """MOP_SOURCES_FROM=uploads (set from SOURCES_FROM in deploy/production.env). Default is the numbered folders."""
+    import os
+    return os.environ.get("MOP_SOURCES_FROM", "").strip().lower() == "uploads"
+
+
 class ConfigError(ValueError):
     """Raised when config.yaml is missing, malformed, or breaks a non-negotiable rule."""
 
@@ -66,6 +79,9 @@ class Config:
     tolerance: float
     encodings: dict  # source name -> declared text encoding (only for text-based formats)
     raw: dict  # the untouched parsed YAML, for anything not modelled above yet
+    # True when the file sources are read ONLY from what was uploaded (MOP_SOURCES_FROM=uploads) and no longer from the
+    # numbered operator folders. The folders are left exactly as they are, as the reference to compare uploads against.
+    uploads_only: bool = False
 
     def encoding_for(self, source_name: str) -> Optional[str]:
         """The declared encoding for a source, or None if it doesn't need one
@@ -150,6 +166,16 @@ def load_config(path: Optional[Path] = None) -> Config:
                 f"{path}: source '{name}' must be a string path or null, got {rel_path!r}"
             )
 
+    uploads_only = sources_from_uploads()
+    if uploads_only:
+        # Break the link with the operator folders: every file-fed source is read from its own uploaded_sources folder.
+        # pos_store_wise shares pos_bill_wise's folder exactly as it shared the numbered one. Masters are not in this list
+        # (they live in the database), and nothing in the numbered folders is read, moved or deleted.
+        for name in UPLOAD_FED_SOURCES:
+            if name in sources:
+                key = "pos_bill_wise" if name == "pos_store_wise" else name
+                sources[name] = (base_dir / UPLOADS_FOLDER_NAME / key).resolve()
+
     mop_classification = raw["mop_classification"]
     if not isinstance(mop_classification, dict) or not mop_classification:
         raise ConfigError(f"{path}: 'mop_classification' must be a non-empty mapping")
@@ -190,4 +216,5 @@ def load_config(path: Optional[Path] = None) -> Config:
         tolerance=float(tolerance),
         encodings=encodings,
         raw=raw,
+        uploads_only=uploads_only,
     )
