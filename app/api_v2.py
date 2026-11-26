@@ -24,11 +24,11 @@ from sqlalchemy.orm import defer
 import threading
 import time
 
-from mop_reco import auth, queries as q, exceptions, store_tasks as tasks, masters_db as masters, uploads
+from mop_reco import auth, queries as q, exceptions, store_tasks as tasks, masters_db as masters, uploads, upload_tools
 from mop_reco import store_sheet_source as source, float_tracker as floats, run_coverage as rc, manual_match as mm
 import api_v2_notices as notices
 from mop_reco import store_sheet as store_sheet_mod
-from mop_reco.db import get_session, Run, StoreDayAgg, AppUser, StoreTask, Exception_, UploadedFile, ManualMatch
+from mop_reco.db import get_session, init_db, Run, StoreDayAgg, AppUser, StoreTask, Exception_, UploadedFile, ManualMatch
 from mop_reco.config import load_config
 from mop_reco.export import build_export, ExportMeta
 
@@ -107,6 +107,10 @@ class UserAction(BaseModel):
 def create_app(session_factory=None, config=None, origin=None):
     app = FastAPI(title='MOP Reconciliation V2 API', docs_url=None, redoc_url=None, openapi_url=None)
     factory = session_factory or get_session
+    if session_factory is None:
+        # The dashboard runs the same additive upgrade on its first page load; V2 must not depend on someone opening it. New tables and
+        # nullable columns only - nothing is dropped or altered (db.init_db).
+        init_db()
     allowed_origin = origin or os.environ.get('MOP_V2_ORIGIN', 'http://localhost:8091')
     secure = allowed_origin.startswith('https://')
 
@@ -271,7 +275,7 @@ def create_app(session_factory=None, config=None, origin=None):
                 'date_to': dates[-1] if dates else '', 'stores': [r[0] for r in stores],
                 'masters': [{'key': k, 'title': masters.TITLES[k]} for k in masters.MASTER_FIELDS],
                 'sources': [{'key': x.key, 'title': x.display_name, 'extensions': list(x.extensions),
-                             'month_specific': x.month_specific, 'note': x.note} for x in uploads.SOURCE_REGISTRY]}
+                             'month_specific': x.month_specific, 'note': x.note} for x in upload_tools.uploadable_specs(s, cfg())]}
 
     @app.get(PREFIX + '/summary')
     def summary(p=Depends(period), u=Depends(signed_in), s=Depends(db)):
@@ -430,9 +434,9 @@ def create_app(session_factory=None, config=None, origin=None):
     @app.post(PREFIX + '/uploads')
     async def upload(file: UploadFile = File(...), source_key: str = Form(...), month: str = Form(''),
                      confirm: bool = Form(False), u=Depends(signed_in), s=Depends(db)):
-        spec = uploads.SOURCE_BY_KEY.get(source_key)
+        spec = {x.key: x for x in upload_tools.uploadable_specs(s, cfg())}.get(source_key)
         if spec is None:
-            raise HTTPException(422, 'Unknown report type.')
+            raise HTTPException(422, 'Unknown report type, or one the ERP or the Masters screen supplies.')
         if spec.month_specific and not month:
             raise HTTPException(422, 'Choose a month for this report.')
         original = file.filename or 'upload'
@@ -505,6 +509,8 @@ def create_app(session_factory=None, config=None, origin=None):
 
     from api_v2_workflows import register
     register(app, db=db, signed_in=signed_in, cfg=cfg, factory=factory, clean=clean, prefix=PREFIX, period=period, sheet=sheet)
+    import api_v2_uploads
+    api_v2_uploads.register(app, db=db, signed_in=signed_in, cfg=cfg, factory=factory, clean=clean, prefix=PREFIX)
     import api_v2_gaps
     api_v2_gaps.register(app, db=db, signed_in=signed_in, cfg=cfg, factory=factory, clean=clean, prefix=PREFIX, period=period, sheet=sheet, match_state=match_state)
     return app

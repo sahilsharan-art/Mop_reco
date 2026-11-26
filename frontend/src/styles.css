@@ -1799,3 +1799,58 @@ td.heat-neg {
   align-items: center;
   margin: 12px 0;
 }
+
+/* The Upload screen: month grid and the add-files form */
+.cover-grid th,
+.cover-grid td {
+  text-align: center;
+  min-width: 112px;
+}
+.cover-grid td.sticky-cell {
+  text-align: left;
+  min-width: 160px;
+}
+.cover-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #e3e9f0);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
+  text-align: left;
+}
+.cover-cell b {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.cover-cell.cover-none {
+  color: var(--ink-soft, #6b7a8c);
+  background: transparent;
+  border-style: dashed;
+}
+.cover-cell.cover-present {
+  border-color: #1a8050;
+  background: #e8f5ee;
+}
+.cover-cell.cover-partial {
+  border-color: #b07b18;
+  background: #fbf1dc;
+}
+.cover-cell:hover {
+  box-shadow: 0 0 0 2px rgba(46, 111, 230, 0.25);
+}
+.upload-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+  margin: 12px 0;
+}

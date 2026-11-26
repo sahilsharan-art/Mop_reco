@@ -1,5 +1,5 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { Screen } from "../components/Screen";
+import { UploadsPage } from "../components/screens/UploadsPage";
 import { meta } from "../lib/meta";
 import { meQuery } from "../lib/api";
 export const Route = createFileRoute("/_workspace/uploads")({
@@ -9,5 +9,5 @@ export const Route = createFileRoute("/_workspace/uploads")({
       "Upload",
       "MOP Reconciliation upload workspace with existing Python engine data.",
     ),
-  component: () => <Screen kind="uploads" />,
+  component: UploadsPage,
 });

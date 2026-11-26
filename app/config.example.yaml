@@ -253,3 +253,6 @@ erp:
   # differ, same total amount. true = merge them so R1 reproduces the audited file result; false = keep each tender as its own line.
   merge_reference_less_lines: true
 
+# The Upload screen: the first month its month-by-month grid starts from (YYYY-MM). A parameter, never a date typed into code.
+uploads:
+  first_month: "2026-04"

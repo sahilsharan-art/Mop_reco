@@ -72,10 +72,12 @@ SOURCE_REGISTRY = [
     SourceSpec("pos_bill_wise", "POS bill-wise", (".xlsb", ".xlsx"), True,
               ("BILLNO", "PSITE_POSBILL_CODE", "STORE_NAME", "BILLDATE",
                "MOPDESC", "BASEAMT")),
+    # Every column the run's reader needs (ingest.PAYTM_REQUIRED_COLUMNS), so a file that passes this check cannot then fail the run on a
+    # missing column (found 2026-11-26: a file with the first nine passed here and failed the run's header search).
     SourceSpec("paytm_settlement", "Paytm settlement", (".zip",), True,
               ("transaction_id", "transaction_date", "status", "transaction_type",
-               "original_mid", "amount", "settled_amount", "settled_date",
-               "payment_mode")),
+               "original_mid", "amount", "commission", "gst", "payout_id", "utr_no",
+               "settled_amount", "settled_date", "payment_mode", "reference_transaction_id")),
     SourceSpec("axis_edc", "Axis EDC settlement", (".xlsx",), True,
               ("RRN", "TRAN_DATE", "TRAN_TIME", "MID", "GROSS_AMT", "NET_AMT")),
     SourceSpec("bajaj", "Bajaj Pay settlement", (".xlsx",), True,

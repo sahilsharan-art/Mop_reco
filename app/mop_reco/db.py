@@ -851,6 +851,22 @@ class UploadedFile(Base):
     deleted_by = Column(String, nullable=True)
     # Where the file was moved on delete (outside every source folder, so a run can never read it).
     archived_path = Column(Text, nullable=True)
+    # The file is read once, when it is stored, into per-date row counts and totals (UploadFileStat): when that finished, or why not.
+    stats_at = Column(DateTime, nullable=True)
+    stats_error = Column(Text, nullable=True)
+
+
+class UploadFileStat(Base):
+    """What one uploaded file holds, per business date: how many rows and what total. Written once when the file is stored, read by the
+    month grid and by the comparison with what the numbered folders held. Derived data, replaced if the file is re-read - never edited."""
+    __tablename__ = "upload_file_stats"
+
+    id = Column(Integer, primary_key=True)
+    upload_id = Column(Integer, ForeignKey("uploaded_files.id"), nullable=False, index=True)
+    source_key = Column(String, nullable=False, index=True)
+    business_date = Column(String, nullable=False, index=True)    # ISO date as the source's own date column gives it
+    rows = Column(Integer, nullable=False)
+    amount = Column(Numeric(18, 2), nullable=True)
 
 
 class MasterVersion(Base):
@@ -1070,6 +1086,8 @@ _ADDED_COLUMNS = [
     ("manual_matches", "shared_group", "TEXT"),
     ("transaction_refunds", "source", "TEXT"),
     ("uploaded_files", "archived_path", "TEXT"),
+    ("uploaded_files", "stats_at", "TIMESTAMP"),
+    ("uploaded_files", "stats_error", "TEXT"),
     ("master_versions", "created_by", "TEXT"),
     ("master_versions", "change_note", "TEXT"),
     ("master_versions", "source_kind", "TEXT"),

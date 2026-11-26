@@ -11,6 +11,8 @@ business date (the CMS file does); output is partitioned accordingly.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -152,6 +154,21 @@ def _resolve_cms_store_column(session, pickup_codes, locations, amounts, busines
     return stores, rows_with_store, rows_without_date, unmapped_agg
 
 
+# A comparison reads the uploaded files with the run's own readers and must not touch warehouse/ (the manual-match pool reads it live).
+# Scoped to the calling thread/context, so a run in another thread is unaffected.
+_DRY_RUN = contextvars.ContextVar("mop_ingest_dry_run", default=False)
+
+
+@contextlib.contextmanager
+def dry_run():
+    """Inside this block the per-date warehouse partitions are NOT written. Reading, normalising and resolving are unchanged."""
+    token = _DRY_RUN.set(True)
+    try:
+        yield
+    finally:
+        _DRY_RUN.reset(token)
+
+
 def _write_parquet_by_date(df: pd.DataFrame, source: str, date_col: str):
     """Partitions df by the business date column and writes one Parquet file
     per distinct date to warehouse/<source>/<date>.parquet. Returns
@@ -161,9 +178,11 @@ def _write_parquet_by_date(df: pd.DataFrame, source: str, date_col: str):
     otherwise mean a row with no business date just vanishes from the
     warehouse with nothing said about it. Counted and returned explicitly
     instead, so the caller can put it in the load report rather than lose it."""
+    rows_without_date = int(df[date_col].isna().sum())
+    if _DRY_RUN.get():
+        return {}, rows_without_date
     out_dir = WAREHOUSE_ROOT / source
     out_dir.mkdir(parents=True, exist_ok=True)
-    rows_without_date = int(df[date_col].isna().sum())
     written = {}
     for business_date, group in df.groupby(date_col, dropna=True):
         date_str = pd.Timestamp(business_date).strftime("%Y-%m-%d")

@@ -23,7 +23,7 @@ SOURCES = {  # source -> (the money column, the key column) used for the per-dat
     "paytm_settlement": ("amount", "transaction_id"),
     "axis_edc": ("GROSS_AMT", "RRN"),
     "bajaj": ("Transaction Amount", "Transaction Id"),
-    "axis_cms": ("credit_amount", "SLIPNO"),
+    "axis_cms": ("SLIPAMOUNT", "SLIPNO"),
 }
 
 

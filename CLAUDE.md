@@ -3926,6 +3926,32 @@ which stays the truth until September is reconciled, then is extended to APR_SEP
 * Measured on 19 Oct: October = Paytm, Bajaj, CMS, petty cash present; POS and Axis absent (their Oct folders are empty); incomplete. Gaps inside
   the files that did arrive: Paytm 02-09 Oct, Bajaj 02-11 Oct, CMS 02, 04, 10-11 Oct.
 
+### 6.44 Uploads are the only way in for the file sources; the Upload screen rebuilt (2026-11-26)
+
+* **The link with the numbered folders is broken by a setting, not by deleting anything.** `SOURCES_FROM=uploads` in `deploy\production.env` (-> `MOP_SOURCES_FROM`) points
+  every file-fed source (POS, PTC, Paytm, Axis EDC, Bajaj, Axis CMS, bank statement) at `<app>\uploaded_sources\<source>\<Mon'YY>\` (`config.UPLOAD_FED_SOURCES`; one folder per
+  source so "newest file" never crosses sources; the folder name is still only a container, 4 and 6.10). The numbered folders are never read, moved or edited (rule 7) and stay as the
+  reference to compare against. Masters are not affected (they are in the database, 6.38). Default (variable unset) is the folders, so the dev PC and the tests are unchanged.
+  Rollback: remove the line and restart.
+* **Coverage follows the uploads.** In that mode `run_coverage.source_dates` for Paytm, Axis EDC, Bajaj and CMS counts only dates held by an UPLOADED file; partitions the folder-based
+  runs left in the warehouse are history, not evidence that something was supplied, so the Run guard (6.27) says "not arrived" until files are uploaded. The warehouse partitions are left
+  in place (the manual-match pool reads them) and are replaced date by date when a run reads the uploads.
+* **Baseline.** `scripts/snapshot_folder_baseline.py` (run ONCE, before the switch) copies those four sources' warehouse partitions to `warehouse/_folder_baseline/` and writes
+  `BASELINE.json` (raw files read, and per date the rows and the money total). It refuses to overwrite.
+* **The Upload screen (V2: `UploadsPage.tsx`, `api_v2_uploads.py`, `upload_tools.py`).** (1) Not offered: POS and petty cash while the ERP is their source, and the masters held in the
+  database (`upload_tools.uploadable_specs`). (2) **Month grid**: report x month from `uploads.first_month` in config (no date in code); each cell shows files, "D of M days", from - to, who and
+  when, with partial months marked; a cell opens the form. (3) **One upload, one check**: `POST /uploads/stage` saves the file once, validates it once and returns a token; `POST /uploads/confirm`
+  moves it into its month folder - no second upload and no second check (it used to do both twice). Several files per month in one go; a token is single use, belongs to whoever staged it, and
+  staged files older than six hours are swept. (4) **Read once at upload**: the stored file is read into per-date rows and totals (`upload_file_stats`, with the run's own readers, in the
+  background; a failure is recorded on the upload, never raised; a restart catches up the pending ones). (5) **History** with filters (data, month, status): who, when, rows, dates in the file, read
+  state, the run that used it, and Withdraw (moves the file to `uploads_archive/`, the row stays). (6) **Compare with the folder data**: the QUICK view sums each file's own statistics (instant;
+  overlapping files count twice, so "more than the folders" is usually overlap and "less" is missing data); the EXACT comparison (a background job) reads every uploaded file with the run's own
+  readers inside `ingest.dry_run()` (the warehouse is not written) and compares each date to the paisa. Proved on the real files: Axis EDC 228 of 228 dates, Bajaj 110 of 110 and CMS 184 of 184 equal.
+* **The upload check now requires every column the run reads** (Paytm: `ingest.PAYTM_REQUIRED_COLUMNS`); a file with nine of the fourteen passed the check and then failed the run. Paytm dates are read with
+  the explicit `dd-mm-yyyy hh:mm:ss` format (dayfirst guessing reads an ISO date as 11 January).
+* **The V2 API now runs `db.init_db()` at start** (additive tables and nullable columns only). Before this only the Streamlit dashboard did, so a V2-only start after an upgrade answered 500 until someone opened the dashboard.
+* **Not done:** a per-file Parquet cache for the Paytm / Axis readers (a run still parses the uploaded files; measure first - a Paytm month is about 50 MB); the NAS write-once archive (6.37).
+
 ## 7. Acceptance numbers
 
 Every stage is proved against these. They come from the two workbooks already
