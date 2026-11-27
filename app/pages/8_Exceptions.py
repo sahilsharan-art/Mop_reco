@@ -37,6 +37,7 @@ from dashboard_common import (
     stop_if_no_dates,
     tile,
 )
+from mop_reco import store_scope
 from mop_reco import bulk_accept as ba
 from mop_reco import exception_pairing as ep
 from mop_reco import exception_tables as et
@@ -78,7 +79,7 @@ def _parked_section():
                     ParkedBillLine.business_date <= date_to.isoformat())
             .order_by(ParkedBillLine.business_date, ParkedBillLine.store, ParkedBillLine.bill_no).all())
     if store:
-        rows = [r for r in rows if r.store == store]
+        rows = [r for r in rows if store_scope.contains(store, r.store)]
     if not rows:
         return
     frame = pd.DataFrame(rows, columns=["date", "store", "bill_no", "mop", "amount", "axis_ref"])

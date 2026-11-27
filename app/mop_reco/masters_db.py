@@ -38,13 +38,16 @@ SOURCE_EXCEL = "excel"
 
 # master name -> its fields, in column order. The first field(s) identify a row.
 MASTER_FIELDS = {
-    "store": ("store_name", "store"),
+    "store": ("store_name", "store", "cluster", "region"),
     "mid_axis": ("mid", "store"),
     "mid_paytm": ("mid", "store"),
     "pickup_code": ("pickup_code", "store"),
     "pickup_location": ("pickup_code", "location", "store"),
     "opening_balance": ("cost_centre", "opening"),
 }
+# fields a row may leave blank: a store's cluster / region (2026-11-27). A store with none is kept and shown as Unassigned (store_scope),
+# never dropped and never guessed into a region.
+OPTIONAL_FIELDS = {"store": ("cluster", "region")}
 KEY_FIELDS = {
     "store": ("store_name",), "mid_axis": ("mid",), "mid_paytm": ("mid",),
     "pickup_code": ("pickup_code",), "pickup_location": ("pickup_code", "location"),
@@ -147,6 +150,8 @@ def _clean_row(name: str, row: dict) -> dict:
         v = row.get(f)
         if isinstance(v, str):
             v = v.strip()
+        if f in OPTIONAL_FIELDS.get(name, ()) and v in (None, ""):
+            continue            # an optional field with no value is simply absent: rows (and their fingerprints) from before it existed are unchanged
         out[f] = v
     return out
 
@@ -191,6 +196,8 @@ def validate(name: str, rows: list, previous_rows: Optional[list] = None, store_
     for i, r in enumerate(cleaned, start=1):
         was_there = tuple(str(r.get(f)) for f in fields) in prev_rows_set      # this very row was already stored
         for f in fields:
+            if f in OPTIONAL_FIELDS.get(name, ()):
+                continue
             if r[f] is None or (isinstance(r[f], str) and r[f] == ""):
                 issue(f"row {i}: '{f}' is blank", was_there)
         if name == "opening_balance":
@@ -240,6 +247,22 @@ def validate(name: str, rows: list, previous_rows: Optional[list] = None, store_
         for k in dups:
             issue(f"'{' / '.join(k[0])}' appears {seen_exact[k]} times against the same store", prev_seen.get(k, 0) > 1)
 
+    if name == "store":
+        no_region = sorted({r["store"] for r in cleaned if r.get("store") and not r.get("region")})
+        no_cluster = sorted({r["store"] for r in cleaned if r.get("store") and not r.get("cluster")})
+        if no_region:
+            v.warnings.append(f"{len(no_region)} store(s) have no region and show as Unassigned: " + ", ".join(no_region[:15])
+                              + (" ..." if len(no_region) > 15 else ""))
+        if no_cluster:
+            v.warnings.append(f"{len(no_cluster)} store(s) have no cluster and show as Unassigned: " + ", ".join(no_cluster[:15])
+                              + (" ..." if len(no_cluster) > 15 else ""))
+        owners: dict = {}
+        for r in cleaned:
+            if r.get("store"):
+                owners.setdefault(r["store"], set()).add((r.get("cluster") or "", r.get("region") or ""))
+        split = sorted(c for c, o in owners.items() if len(o) > 1)
+        for c in split:
+            v.warnings.append(f"store {c} appears with more than one cluster / region - the first row is used")
     if store_codes is not None and name != "store" and "store" in fields:
         known = {_canon(c) for c in store_codes} | set(store_codes)
         prev_unknown = {r["store"] for r in prev_clean if r.get("store") and r["store"] not in known}

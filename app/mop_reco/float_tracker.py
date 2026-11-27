@@ -39,6 +39,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 
 from . import masters
+from . import store_scope
 from .db import FloatRemark, FloatRemarkEvent
 
 logger = logging.getLogger("mop_reco")
@@ -216,7 +217,7 @@ def set_float_remark(session, store: str, business_date: str, remark: str,
 
     now = datetime.now()
     current = (session.query(FloatRemark)
-              .filter(FloatRemark.store == store,
+              .filter(store_scope.clause(FloatRemark.store, store),
                       FloatRemark.business_date == str(business_date))
               .first())
     if current is None:
@@ -246,7 +247,7 @@ def float_remarks_for_range(session, date_from=None, date_to=None,
     if date_to is not None:
         query = query.filter(FloatRemark.business_date <= str(date_to))
     if store:
-        query = query.filter(FloatRemark.store == store)
+        query = query.filter(store_scope.clause(FloatRemark.store, store))
     return {(r.store, r.business_date): r for r in query.all()}
 
 
@@ -254,7 +255,7 @@ def float_remark_history(session, store: str, business_date: str) -> pd.DataFram
     """Every remark ever recorded for this store-date, oldest first — the
     current one is simply the last row."""
     rows = (session.query(FloatRemarkEvent)
-           .filter(FloatRemarkEvent.store == store,
+           .filter(store_scope.clause(FloatRemarkEvent.store, store),
                    FloatRemarkEvent.business_date == str(business_date))
            .order_by(FloatRemarkEvent.remark_at.asc()).all())
     return pd.DataFrame([{

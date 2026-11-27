@@ -271,7 +271,10 @@ def test_the_range_label_includes_the_store_or_says_all_stores():
     body = source[source.index("def _write_status_pill("):
                  source.index("def range_label_ddmmyyyy(")]
     # The store is escaped before it reaches raw HTML (audit S-3); the wording is unchanged.
-    assert 'store_words = html.escape(f"{store} only") if store else "all stores"' in body
+    assert "store_words = html.escape(words or store_scope.label(store))" in body
+    # the wording itself lives in store_scope.label: one store, every store, or a region / cluster of stores
+    from mop_reco import store_scope
+    assert store_scope.label(None) == "all stores" and store_scope.label("ABD") == "ABD only"
 
 
 # ---------------------------------------------------------------------------

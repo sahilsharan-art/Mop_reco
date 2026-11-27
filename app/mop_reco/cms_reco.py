@@ -31,6 +31,7 @@ from datetime import date
 
 import pandas as pd
 
+from . import store_scope
 from .db import StoreDayAgg
 
 
@@ -43,7 +44,7 @@ def _full_range_frame(session, run_id: int, store: str = None) -> pd.DataFrame:
                       StoreDayAgg.cash_deposit, StoreDayAgg.cash_received).filter(
         StoreDayAgg.run_id == run_id)
     if store:
-        q = q.filter(StoreDayAgg.store == store)
+        q = q.filter(store_scope.clause(StoreDayAgg.store, store))
     rows = q.all()
     if not rows:
         return pd.DataFrame(columns=["business_date", "store", "cash_deposit", "cash_received"])

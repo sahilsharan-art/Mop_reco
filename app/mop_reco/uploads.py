@@ -615,6 +615,9 @@ def history(session) -> list:
 # ---------------------------------------------------------------------------
 REFUND_SOURCE_KEY = "customer_refunds"
 REFUND_REPORT_NAME = "Customer refunds"
+STORE_MASTER_SOURCE_KEY = "store_master_clusters"
+STORE_MASTER_REPORT_NAME = "Store master (Cluster and Region)"
+NO_FILE_SOURCES = (REFUND_SOURCE_KEY, STORE_MASTER_SOURCE_KEY)     # history lines whose file is not kept (bank details / saved as a master version)
 REFUND_STATUS_CHECKED = "checked"
 REFUND_STATUS_RECORDED = "recorded"
 
@@ -697,3 +700,14 @@ def delete_upload(session, upload_id: int, operator: str, run_in_progress: bool,
         return True, (f"'{row.original_file_name}' was already missing from its folder; the history row is marked "
                       "deleted.")
     return True, f"'{row.original_file_name}' removed from the source folder and kept in {archived}."
+
+
+def note_store_master_upload(session, file_name: str, size_bytes: int, stores: int, operator: str, note: str) -> UploadedFile:
+    """One history line per store master upload. The workbook itself is not kept: the rows are the new version of the store master,
+    which holds who, when, why and a full copy (CLAUDE.md 6.12), so the history line points there instead of duplicating the file."""
+    row = UploadedFile(uploaded_at=datetime.now(), source_key=STORE_MASTER_SOURCE_KEY, report_name=STORE_MASTER_REPORT_NAME, month=None,
+                       original_file_name=file_name, stored_path="", size_bytes=size_bytes, row_count=int(stores),
+                       uploaded_by=operator, status=REFUND_STATUS_RECORDED, note=note)
+    session.add(row)
+    session.commit()
+    return row

@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mop_reco.config import load_config
 from mop_reco.db import Exception_, R1BillLine, Run, get_session, init_db
 from mop_reco.export import XLSX_ROW_LIMIT, ExportMeta, build_export
+from mop_reco import store_scope
 from mop_reco.formatting import count as fmt_count
 from mop_reco.formatting import display_date, money_cr, money_short, money_table
 
@@ -35,6 +36,8 @@ K_OPERATOR = "operator"
 K_DATE_FROM = "flt_date_from"
 K_DATE_TO = "flt_date_to"
 K_STORE = "flt_store"
+K_REGION = "flt_region"
+K_CLUSTER = "flt_cluster"
 
 
 # What this system reconciles TODAY. R3a and R3b (cash) are blocked, so the
@@ -218,7 +221,18 @@ def build_stamp() -> str:
     return datetime.fromtimestamp(boot).strftime("%d %b %Y, %H:%M:%S") if boot else "unknown"
 
 
-def _write_status_pill(run, date_from, date_to, store=None):
+def _store_hierarchy(session):
+    """Region -> cluster -> store from the CURRENT store master (empty until the master carries clusters and regions)."""
+    from mop_reco import masters_db
+    try:
+        return store_scope.Hierarchy.from_rows(masters_db.current_rows(session, "store"))
+    except Exception:  # noqa: BLE001 - the filters must never take a page down; without a hierarchy the Store filter alone is shown
+        logging.getLogger("mop_reco").warning("store hierarchy could not be read", exc_info=True)
+        session.rollback()
+        return store_scope.Hierarchy()
+
+
+def _write_status_pill(run, date_from, date_to, store=None, words=None):
     """"Live . run #11 . 01/04/2026 to 31/08/2026 . all stores" - which run is on screen and
     what filter is active, directly under the navigation bar on every page. Called from
     `sidebar()` once the range is settled."""
@@ -226,7 +240,7 @@ def _write_status_pill(run, date_from, date_to, store=None):
     if slot is None or run is None:
         return
     label = range_label_ddmmyyyy(date_from, date_to)
-    store_words = html.escape(f"{store} only") if store else "all stores"
+    store_words = html.escape(words or store_scope.label(store))
     slot.markdown(
         f"<div class='mop-pill' title='Build: code loaded {build_stamp()}'><span class='mop-pill-dot'></span>"
         f"<span class='mop-pill-live'>Live</span>"
@@ -660,9 +674,12 @@ def sidebar(session, run, show_store: bool = True):
         st.session_state["w_flt_from"] = None
         st.session_state["w_flt_to"] = None
         st.session_state["w_flt_store"] = "All stores"
+        st.session_state["w_flt_region"] = store_scope.ALL_REGIONS
         st.session_state[K_DATE_FROM] = None
         st.session_state[K_DATE_TO] = None
         st.session_state[K_STORE] = "All stores"
+        st.session_state[K_REGION] = store_scope.ALL_REGIONS
+        st.session_state[K_CLUSTER] = store_scope.ALL_CLUSTERS
 
     dates = loaded_dates(run.id) if run else []
     with st.sidebar:
@@ -674,6 +691,8 @@ def sidebar(session, run, show_store: bool = True):
 
         first, last = date.fromisoformat(dates[0]), date.fromisoformat(dates[-1])
         st.session_state.setdefault(K_STORE, "All stores")
+        st.session_state.setdefault(K_REGION, store_scope.ALL_REGIONS)
+        st.session_state.setdefault(K_CLUSTER, store_scope.ALL_CLUSTERS)
 
         # The quick-picker offers one year beyond the loaded range (the
         # "next calendar year", so a year is selectable before its data
@@ -715,13 +734,36 @@ def sidebar(session, run, show_store: bool = True):
             min_value=first, max_value=picker_max, key="w_flt_to",
             format="DD/MM/YYYY")
 
+        loaded = loaded_stores(run.id) if run else []
+        hierarchy = _store_hierarchy(session)
+        region = st.session_state[K_REGION]
+        cluster = st.session_state[K_CLUSTER]
         if show_store:
-            options = ["All stores"] + (loaded_stores(run.id) if run else [])
+            if hierarchy.has_any:
+                # Region -> Cluster -> Store, each narrowing the next; only stores the run loaded are offered. A widget key that
+                # carries the choice above it gives a fresh widget when that choice changes (widget-state trap 2).
+                region_options = [store_scope.ALL_REGIONS] + hierarchy.regions(loaded)
+                if region not in region_options:
+                    region = store_scope.ALL_REGIONS
+                region = st.selectbox("Region", region_options, index=region_options.index(region), key="w_flt_region")
+                cluster_options = [store_scope.ALL_CLUSTERS] + hierarchy.clusters(region, loaded)
+                if cluster not in cluster_options:
+                    cluster = store_scope.ALL_CLUSTERS
+                cluster = st.selectbox("Cluster", cluster_options, index=cluster_options.index(cluster),
+                                       key=f"w_flt_cluster__{region}")
+                store_pool = hierarchy.stores(region, cluster, loaded)
+                store_key = f"w_flt_store__{region}__{cluster}"
+            else:
+                region, cluster = store_scope.ALL_REGIONS, store_scope.ALL_CLUSTERS
+                store_pool = loaded
+                store_key = "w_flt_store"
+            st.session_state[K_REGION], st.session_state[K_CLUSTER] = region, cluster
+            options = ["All stores"] + store_pool
             if st.session_state[K_STORE] not in options:
                 st.session_state[K_STORE] = "All stores"
             st.session_state[K_STORE] = st.selectbox(
                 "Store", options, index=options.index(st.session_state[K_STORE]),
-                key="w_flt_store")
+                key=store_key)
 
         cols = st.columns(2)
         if cols[0].button("Clear filters", key="flt_clear", width="stretch"):
@@ -773,11 +815,21 @@ def sidebar(session, run, show_store: bool = True):
         st.error("'From' is after 'To' — no dates are selected. Fix it in the sidebar.")
         st.stop()
 
-    store = st.session_state[K_STORE]
-    _write_range_label(date_from, date_to, None if store == "All stores" else store)
-    _write_status_pill(run, date_from, date_to, None if store == "All stores" else store)
+    try:
+        scope = store_scope.resolve(hierarchy, loaded, st.session_state[K_REGION], st.session_state[K_CLUSTER],
+                                    st.session_state[K_STORE])
+    except ValueError:
+        picked = st.session_state[K_CLUSTER] if st.session_state[K_CLUSTER] != store_scope.ALL_CLUSTERS else st.session_state[K_REGION]
+        st.error(f"No store of '{picked}' is in this run, so there is nothing to show. Choose another region or cluster in the sidebar.")
+        st.stop()
+    words = store_scope.label(
+        scope,
+        None if st.session_state[K_REGION] == store_scope.ALL_REGIONS else st.session_state[K_REGION],
+        None if st.session_state[K_CLUSTER] == store_scope.ALL_CLUSTERS else st.session_state[K_CLUSTER])
+    _write_range_label(date_from, date_to, scope)
+    _write_status_pill(run, date_from, date_to, scope, words)
     _coverage_notices(run, first, last, date_from, date_to)
-    return date_from, date_to, (None if store == "All stores" else store)
+    return date_from, date_to, scope
 
 
 def _operator_footer():

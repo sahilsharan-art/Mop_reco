@@ -31,6 +31,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 
 from . import cms_reco, float_tracker, masters
+from . import store_scope
 from .db import ManualMatch, R1BillLine, StoreDayAgg, StoreTask, StoreTaskEvent
 
 OPEN_BILL, CMS_NOT_DONE, HIGH_FLOAT = "open_bill", "cms_not_done", "high_float"
@@ -496,7 +497,7 @@ def _filtered(session, date_from=None, date_to=None, store=None, types=None, sta
     if date_to:
         q = q.filter(StoreTask.business_date <= str(date_to))
     if store:
-        q = q.filter(StoreTask.store == store)
+        q = q.filter(store_scope.clause(StoreTask.store, store))
     if types:
         q = q.filter(StoreTask.task_type.in_(list(types)))
     if statuses:

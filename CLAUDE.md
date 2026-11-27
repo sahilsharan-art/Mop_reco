@@ -3966,6 +3966,34 @@ which stays the truth until September is reconciled, then is extended to APR_SEP
 * Deployed to 10.0.1.98 by copying `refund_panel.py`, `pages/6_Upload.py`, `pages/8_Exceptions.py` (backups in `D:\Citykart_Applications\backup_pre_refund_upload\`). `refunds.py` goes in at the next dashboard restart
   (replacing a loaded module trips the stale-module self-check, 9a); the page works without it.
 
+### 6.46 Region -> Cluster -> Store: the store master carries them, and every page can be filtered by them (2026-11-27)
+
+* **The store master gained two OPTIONAL fields, `cluster` and `region`** (`masters_db.MASTER_FIELDS["store"]` = store_name, store, cluster, region; `OPTIONAL_FIELDS`). A blank is allowed, never an error: such a store is kept and shown as
+  **Unassigned** (`store_scope.UNASSIGNED`) - never dropped, never guessed into a region (rules 4 and 5). An optional field with no value is simply ABSENT from the stored row (`_clean_row`), so every version stored before they
+  existed keeps its fingerprint (the snapshot import checks it - the first cut added empty keys and broke 18 tests). `validate` warns (never blocks) about stores with no region / cluster and about a code listed with two different
+  clusters / regions.
+* **Upload: Upload page -> Report name -> "Store master (Cluster and Region)"** (`store_master_panel.py`; parser, merge and comparison in `mop_reco/store_master_file.py`, pure). Read by column NAME (header row found in the first 15 rows;
+  aliases: Store Code / Cluster or Cluster Name / Region or Region Type or REGION_TYPE; SITES NAMES optional; extra columns ignored). **Two shapes:** (a) Store Code + Cluster + Region only - the shape the business supplies
+  (STORE MASTER.xlsx: STORE CODE, CLUSTER NAME, REGION_TYPE) - is applied ONTO the stored store master by code (`merge_into_current`): each stored row keeps its site name, nothing is added or removed, a code in the file that
+  the master lacks is named (it cannot be added without a name) and a stored code the file lacks is named and stays Unassigned; (b) a full file with site names replaces the master, and a stored store it leaves out is named and
+  Save stays disabled until a box is ticked. Either way it is saved as a NEW version (old kept, restorable on Masters, 6.12); refused with the row named: a missing Store Code / Cluster / Region column, a code on two rows with different
+  cluster / region, an Excel error value. It works only where the masters are in the database (`masters_db.in_database`). Saving writes one `uploaded_files` line (`store_master_clusters`, status `recorded`, no file kept).
+  The first cut required site names and rejected the real file ("no column for site name") - the store master already holds every full name.
+* **The global filter is now Region -> Cluster -> Store** (`dashboard_common.sidebar`, shown only once the master carries any region / cluster). Each narrows the next and offers only stores the run loaded; a loaded store the master lacks is
+  reachable under Unassigned. The widget key of Cluster / Store carries the choice above it (widget-state trap 2); Clear filters resets all three. The status pill says what is on screen: "all stores", "ABD only", "cluster X, 12 stores",
+  "region Y, 48 stores" (`store_scope.label`). A region or cluster with no loaded store stops the page with a message - **never "all stores"**.
+* **The filter value `store` that every page passes to the engines is now None | "ABD" | a tuple of stores** (`mop_reco/store_scope.py`: `normalize`, `clause` for SQL, `mask` for pandas, `contains` for plain values, `resolve`,
+  `Hierarchy`). All 47 `== store` comparisons (queries, store_sheet_source, float_tracker, manual_match, refunds, store_tasks, cms_reco, exception_tables, the Float / Cash position / Exceptions pages) go through those helpers; a single
+  store behaves exactly as before (`clause` of one code is `==`). An empty selection is refused by `normalize`, because it would read as "no filter". **Not covered: the V2 React screens** (they still take one store).
+* **Proved:** (1) on the development database (run #29) with a made-up 7-region hierarchy that was deleted afterwards - Summary, Exceptions, Store Task and Cash position render under a region / cluster filter, and the regions plus
+  Unassigned add up to the all-stores sheet on six columns with a difference of 0.00 over 232 of 232 stores; (2) on PRODUCTION (run #7, 01/04-24/11) with the real STORE MASTER.xlsx applied in memory only: 226 file stores all matched
+  the stored master, 7 regions R1..R7 and 17 clusters (R1 48 stores / Rs 237.37 Cr, R2 57 / 288.96, R3 31 / 134.93, R4 22 / 121.19, R5 36 / 177.24, R6 19 / 72.30, R7 13 / 59.92, Unassigned 6 stores / -Rs 41,337) summing to the
+  all-stores Rs 1,091.90 Cr with a difference of 0.00 on total sale, digital sale, cash sale, digital received, cash deposit and cash received. The 12 stored stores the file lacks (BGR BNP BSR FARUKHNAGAR FRD GPB JPR LMN LPA NBR RGE TZP)
+  carry no sales or deposits in that run (GPB: Rs 32,300 of petty cash on 1-6 April; seven have no rows at all) - closed stores and a warehouse entry. Tests: `test_store_scope.py`, `test_store_master_file.py`,
+  `test_store_master_panel.py` (the panel end to end through AppTest, including the merge file).
+* **Deployed to 10.0.1.98 on 2026-11-27 in two steps with a restart each** (upload first, then the filters; backups in `D:\Citykart_Applications\backup_pre_store_master_upload` and `backup_pre_region_filters`). At the time of writing the
+  upload had not yet been saved, so production's store master still carried no cluster / region and the sidebar showed only Store. **Not done:** region / cluster roll-up TABLES on Summary (filters were asked for, not tables).
+
 ## 7. Acceptance numbers
 
 Every stage is proved against these. They come from the two workbooks already

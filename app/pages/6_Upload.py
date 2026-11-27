@@ -32,6 +32,7 @@ from dashboard_common import (
 )
 import refund_panel
 import run_panel
+import store_master_panel
 from mop_reco import uploads as up
 from mop_reco.config import load_config
 from mop_reco.db import Run
@@ -102,14 +103,18 @@ if len(_uploadable) < len(up.SOURCE_REGISTRY):
     st.caption("The masters (store, MID, pickup code, pickup location) and the opening cash balance are held in the "
                "database and edited on the **Masters** page - they are not uploaded.")
 REFUND_REPORT = "Customer refunds"      # not a run source: it is checked and recorded as refunds, not stored in a month folder
-report_names = [s.display_name for s in _uploadable] + [REFUND_REPORT]
+STORE_MASTER_REPORT = up.STORE_MASTER_REPORT_NAME      # saved as a new version of the store master (with its Cluster and Region), not stored in a folder
+report_names = [s.display_name for s in _uploadable] + [REFUND_REPORT, STORE_MASTER_REPORT]
 c1, c2 = st.columns(2)
 report_name = c1.selectbox("Report name", report_names, key="up_report_name")
-spec = None if report_name == REFUND_REPORT else next(s for s in _uploadable if s.display_name == report_name)
+spec = None if report_name in (REFUND_REPORT, STORE_MASTER_REPORT) else next(s for s in _uploadable if s.display_name == report_name)
 
 if spec is None:
     c2.selectbox("Month", ["not month-specific"], key="up_month_refund_disabled", disabled=True)
-    refund_panel.render(session, key="rfu")
+    if report_name == STORE_MASTER_REPORT:
+        store_master_panel.render(session, key="smu")
+    else:
+        refund_panel.render(session, key="rfu")
 else:
     months = _available_months()
     month_labels = [_month_label(m) for m in months]
@@ -277,8 +282,8 @@ else:
         cols[2].write(fmt_count(r.row_count) if r.row_count is not None else "—")
         cols[3].write(f"{r.date_range_start} to {r.date_range_end}" if r.date_range_start else "—")
         cols[4].write(r.uploaded_at.strftime("%d/%m/%Y %H:%M"))
-        if r.source_key == up.REFUND_SOURCE_KEY:
-            # A Customer refunds workbook: no file is kept (bank details are never stored), so there is nothing to delete.
+        if r.source_key in up.NO_FILE_SOURCES:
+            # A Customer refunds workbook (bank details never stored) or a store master upload (saved as a master version): no file is kept, nothing to delete.
             cols[5].write(r.status)
             cols[6].caption("no file kept")
             cols[0].caption(html.escape(str(r.note or "")))

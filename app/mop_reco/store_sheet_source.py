@@ -24,6 +24,7 @@ from sqlalchemy import Float, cast, func
 
 from . import mop_matrix as mm
 from . import store_sheet as ss
+from . import store_scope
 from .db import DateTotalAgg, DigitalModeAgg, ManualMatch, MopDayAgg, ParkedBillLine, R1BillLine, StoreDayAgg
 
 logger = logging.getLogger("mop_reco")
@@ -202,7 +203,7 @@ def data_quality_rows(sheet: pd.DataFrame, cms: pd.DataFrame) -> pd.DataFrame:
     def codes_and_slips(store, day):
         if feeding.empty:
             return "", ""
-        rows = feeding[(feeding["store"] == store) & (feeding["DEPDATE_s"] == day)]
+        rows = feeding[(store_scope.mask(feeding["store"], store)) & (feeding["DEPDATE_s"] == day)]
         codes = sorted(set(rows["PICKUPPOINTCODE"].dropna().astype(str)))
         slips = sorted(set(rows["SLIPNO"].dropna().astype(str))) if "SLIPNO" in rows.columns else []
         return ", ".join(codes), ", ".join(slips)
@@ -365,7 +366,7 @@ def source_records(session, run_id, business_date: str, store: str,
     rows = session.query(R1BillLine).filter(
         R1BillLine.run_id == run_id,
         R1BillLine.business_date == business_date,
-        R1BillLine.store == store).all()
+        store_scope.clause(R1BillLine.store, store)).all()
     records.digital_bills = pd.DataFrame([{
         "bill_no": r.bill_no, "mop": r.mop, "amount": float(r.amount or 0),
         "matched": bool(r.matched), "status": r.status,
@@ -591,7 +592,7 @@ def _mop_bucket_sales(session, run_id: int, date_from: date, date_to: date,
         MopDayAgg.business_date <= date_to.isoformat(),
     )
     if store:
-        query = query.filter(MopDayAgg.store == store)
+        query = query.filter(store_scope.clause(MopDayAgg.store, store))
     rows = query.group_by(MopDayAgg.bucket).all()
     sums = {bucket: float(total or 0.0) for bucket, total in rows}
 
@@ -603,7 +604,7 @@ def _mop_bucket_sales(session, run_id: int, date_from: date, date_to: date,
         dates = {d.isoformat() for d in pd.date_range(date_from, date_to).date}
         pos = _read("pos_bill_wise", POS_COLUMNS, dates)
         if store and not pos.empty:
-            pos = pos[pos["store"] == store]
+            pos = pos[store_scope.mask(pos["store"], store)]
         if not pos.empty:
             mop_buckets = mm.load_mop_buckets(load_config())
             bucketed = mm.bucket_sales_by_store_date(pos, mop_buckets)
@@ -774,7 +775,7 @@ def _digital_mode_sales(session, run_id: int, date_from: date, date_to: date,
         DigitalModeAgg.business_date <= date_to.isoformat(),
     )
     if store:
-        query = query.filter(DigitalModeAgg.store == store)
+        query = query.filter(store_scope.clause(DigitalModeAgg.store, store))
     sums = {mode: float(total or 0.0) for mode, total in
            query.group_by(DigitalModeAgg.mode).all()}
     for m in ("card", "upi", "unclassified"):
@@ -799,7 +800,7 @@ def _digital_mode_sales(session, run_id: int, date_from: date, date_to: date,
             R1BillLine.business_date <= date_to.isoformat(),
         )
         if store:
-            rows = rows.filter(R1BillLine.store == store)
+            rows = rows.filter(store_scope.clause(R1BillLine.store, store))
         sums = {"card": 0.0, "upi": 0.0, "unclassified": 0.0}
         for matched, gateway, payment_mode, mop, amount in rows.all():
             mode = mm.classify_digital_mode(gateway, payment_mode, mop) if matched else "unclassified"
@@ -820,7 +821,7 @@ def _digital_mode_sales(session, run_id: int, date_from: date, date_to: date,
         ManualMatch.business_date <= date_to.isoformat(),
     )
     if store:
-        active = active.filter(ManualMatch.store == store)
+        active = active.filter(store_scope.clause(ManualMatch.store, store))
     active_rows = active.all()
     reclassified_bill_nos = set()
     if active_rows:
@@ -876,7 +877,7 @@ def _digital_mode_sales(session, run_id: int, date_from: date, date_to: date,
             R1BillLine.business_date <= date_to.isoformat(),
         )
         if store:
-            open_query = open_query.filter(R1BillLine.store == store)
+            open_query = open_query.filter(store_scope.clause(R1BillLine.store, store))
         total_open = int(open_query.scalar() or 0)
         provisional_bills = max(0, total_open - len(reclassified_bill_nos))
 
@@ -1096,7 +1097,7 @@ def store_cash_summary(session, run_id: int, date_from: date, date_to: date,
         StoreDayAgg.business_date <= date_to.isoformat(),
     )
     if store:
-        bounds = bounds.filter(StoreDayAgg.store == store)
+        bounds = bounds.filter(store_scope.clause(StoreDayAgg.store, store))
     first_date, last_date = bounds.one()
 
     if not first_date:
@@ -1112,7 +1113,7 @@ def store_cash_summary(session, run_id: int, date_from: date, date_to: date,
             StoreDayAgg.business_date >= date_from.isoformat(),
             StoreDayAgg.business_date <= date_to.isoformat())
         if store:
-            query = query.filter(StoreDayAgg.store == store)
+            query = query.filter(store_scope.clause(StoreDayAgg.store, store))
         return query
 
     opening = _scope(session.query(func.sum(StoreDayAgg.opening_balance))
@@ -1253,7 +1254,7 @@ def _live_digital_received(session, run_id: int, date_from: date, date_to: date,
             R1BillLine.business_date <= date_to.isoformat())
             .group_by(R1BillLine.business_date, R1BillLine.store))
         if store:
-            query = query.filter(R1BillLine.store == store)
+            query = query.filter(store_scope.clause(R1BillLine.store, store))
         return {(r.business_date, r.store): float(r.total or 0.0) for r in query.all()}
 
     engine_matched = _grouped_sum(session.query(
@@ -1297,7 +1298,7 @@ def _live_digital_received_fast(session, run_id: int, date_from: date, date_to: 
             R1BillLine.business_date <= date_to.isoformat())
             .group_by(R1BillLine.business_date, R1BillLine.store))
         if store:
-            query = query.filter(R1BillLine.store == store)
+            query = query.filter(store_scope.clause(R1BillLine.store, store))
         return {(r.business_date, r.store): float(r.total or 0.0) for r in query.all()}
 
     unmatched = _grouped_sum(session.query(
@@ -1358,7 +1359,7 @@ def defect_b_summary(session, run_id: int, date_from: date, date_to: date,
         StoreDayAgg.defect_b == True,  # noqa: E712
     )
     if store:
-        query = query.filter(StoreDayAgg.store == store)
+        query = query.filter(store_scope.clause(StoreDayAgg.store, store))
     n, v = query.one()
     return int(n or 0), float(v or 0.0)
 
@@ -1390,7 +1391,7 @@ def load_fast(session, run_id: int, date_from: date, date_to: date,
         StoreDayAgg.business_date <= date_to.isoformat(),
     )
     if store:
-        query = query.filter(StoreDayAgg.store == store)
+        query = query.filter(store_scope.clause(StoreDayAgg.store, store))
     rows = query.all()
 
     if not rows:

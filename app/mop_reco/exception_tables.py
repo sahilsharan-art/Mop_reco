@@ -21,6 +21,7 @@ import pandas as pd
 
 from . import exception_pairing as ep
 from . import queries as q
+from . import store_scope
 from .formatting import blank, display_date
 
 # --- the declared schema ----------------------------------------------------------------
@@ -171,7 +172,7 @@ def manual_bill_frame(session, run_id: int, date_from=None, date_to=None, store=
 
     rows = [m for m in session.query(ManualMatch).filter(ManualMatch.lifecycle == "active",
                                                          ManualMatch.status == "matched_manual").all()
-            if _in_range(m.business_date, date_from, date_to) and (not store or m.store == store)]
+            if _in_range(m.business_date, date_from, date_to) and (not store or store_scope.contains(store, m.store))]
     cols = bill_matched_columns() + [KEY, "id"]
     if not rows:
         return pd.DataFrame(columns=cols)
@@ -240,7 +241,7 @@ def manual_txn_frame(session, date_from=None, date_to=None, store=None) -> pd.Da
     for r in refunds:
         items.append(("refund", r, {}, r.gateway, r.transaction_ref, str(r.business_date), r.store,
                       float(r.amount or 0), r.uploaded_at))
-    items = [i for i in items if _in_range(i[5], date_from, date_to) and (not store or i[6] == store)]
+    items = [i for i in items if _in_range(i[5], date_from, date_to) and (not store or store_scope.contains(store, i[6]))]
     if not items:
         return pd.DataFrame(columns=cols)
     keys = [txn_exception_key(i[3], i[4]) for i in items]

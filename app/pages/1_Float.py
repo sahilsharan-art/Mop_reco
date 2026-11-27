@@ -34,6 +34,7 @@ from dashboard_common import (
     stop_if_no_dates,
     tile,
 )
+from mop_reco import store_scope
 from mop_reco import float_tracker as ft
 from mop_reco import store_sheet_source as src
 from mop_reco.export import ExportMeta
@@ -86,7 +87,7 @@ if grid_all.empty:
     st.warning("Nothing loaded for this selection.")
     st.stop()
 
-grid = grid_all if store is None else grid_all[grid_all["store"] == store]
+grid = grid_all if store is None else grid_all[store_scope.mask(grid_all["store"], store)]
 
 remarks = ft.float_remarks_for_range(session, date_from, date_to, store)
 full = ft.with_remarks(grid, remarks)
@@ -205,7 +206,7 @@ if dq_count:
                       on_click=lambda: st.session_state.update({"fl_dq_open": True}))
         else:
             cms_for_dq = _cms_cached(src.cms_source_fingerprint())
-            sheet_for_dq = raw_sheet if not store else raw_sheet[raw_sheet["store"] == store]
+            sheet_for_dq = raw_sheet if not store else raw_sheet[store_scope.mask(raw_sheet["store"], store)]
             dq_shown = src.data_quality_rows(sheet_for_dq, cms_for_dq)
             dq_table = dq_shown.rename(columns={
                 "store": "Store", "business_date": "Date", "I": "I (deposit)",

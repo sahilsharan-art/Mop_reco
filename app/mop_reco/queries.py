@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 from sqlalchemy import case, func, or_
 
+from . import store_scope
 from .db import (
     Exception_,
     ManualMatch,
@@ -38,7 +39,7 @@ def _apply_bill_filters(query, run_id, date_from=None, date_to=None, store=None)
     if date_to is not None:
         query = query.filter(R1BillLine.business_date <= str(date_to))
     if store:
-        query = query.filter(R1BillLine.store == store)
+        query = query.filter(store_scope.clause(R1BillLine.store, store))
     return query
 
 
@@ -49,7 +50,7 @@ def _apply_exception_filters(query, date_from=None, date_to=None, store=None,
     if date_to is not None:
         query = query.filter(Exception_.business_date <= str(date_to))
     if store:
-        query = query.filter(Exception_.store == store)
+        query = query.filter(store_scope.clause(Exception_.store, store))
     if open_only:
         query = query.filter(Exception_.status.in_(OPEN_STATUSES))
     return query
@@ -93,7 +94,7 @@ def _r1_result_rows(session, run_id, date_from=None, date_to=None, store=None):
     if date_to is not None:
         base = base.filter(ReconciliationResult.business_date <= str(date_to))
     if store:
-        base = base.filter(ReconciliationResult.store == store)
+        base = base.filter(store_scope.clause(ReconciliationResult.store, store))
     if session.query(ReconciliationResult.id).filter(
             ReconciliationResult.run_id == run_id, ReconciliationResult.reconciliation == "R1").first() is None:
         return None
@@ -144,7 +145,7 @@ def verdict(session, run_id, date_from=None, date_to=None, store=None) -> Verdic
     if date_to is not None:
         manual_scope = manual_scope.filter(ManualMatch.business_date <= str(date_to))
     if store:
-        manual_scope = manual_scope.filter(ManualMatch.store == store)
+        manual_scope = manual_scope.filter(store_scope.clause(ManualMatch.store, store))
     manual_bill_nos = {b for (b,) in manual_scope.all() if b}
     if manual_bill_nos:
         still_open = _apply_bill_filters(
@@ -550,7 +551,7 @@ def match_split(session, run_id, date_from=None, date_to=None,
     if date_to:
         overlay = overlay.filter(ManualMatch.business_date <= str(date_to))
     if store:
-        overlay = overlay.filter(ManualMatch.store == store)
+        overlay = overlay.filter(store_scope.clause(ManualMatch.store, store))
 
     for status, count, value in overlay.group_by(ManualMatch.status).all():
         if status == "matched_manual":
@@ -583,7 +584,7 @@ def manual_matches(session, date_from=None, date_to=None, store=None,
     if date_to:
         query = query.filter(ManualMatch.business_date <= str(date_to))
     if store:
-        query = query.filter(ManualMatch.store == store)
+        query = query.filter(store_scope.clause(ManualMatch.store, store))
     if operator:
         query = query.filter(ManualMatch.operator == operator)
     if reason_code:
@@ -1161,7 +1162,7 @@ def _active_manual_bill_nos(session, date_from=None, date_to=None, store=None) -
     if date_to is not None:
         query = query.filter(ManualMatch.business_date <= str(date_to))
     if store:
-        query = query.filter(ManualMatch.store == store)
+        query = query.filter(store_scope.clause(ManualMatch.store, store))
     return {b for (b,) in query.all() if b}
 
 
@@ -1194,7 +1195,7 @@ def _bill_match_summary_from_results(session, run_id, date_from, date_to, store,
     if date_to is not None:
         base = base.filter(ReconciliationResult.business_date <= str(date_to))
     if store:
-        base = base.filter(ReconciliationResult.store == store)
+        base = base.filter(store_scope.clause(ReconciliationResult.store, store))
     if session.query(ReconciliationResult.id).filter(
             ReconciliationResult.run_id == run_id,
             ReconciliationResult.reconciliation == "R1").first() is None:
@@ -1537,7 +1538,7 @@ def edc_other_collision(session, run_id, business_date, store, amount) -> pd.Dat
     rows = (session.query(R1BillLine)
             .filter(R1BillLine.run_id == run_id,
                     R1BillLine.business_date == str(business_date),
-                    R1BillLine.store == store,
+                    store_scope.clause(R1BillLine.store, store),
                     R1BillLine.amount == amount)
             .order_by(R1BillLine.bill_no)
             .all())
@@ -1612,7 +1613,7 @@ def unmapped_transactions_frame(session, date_from=None, date_to=None,
     if frame.empty:
         return pd.DataFrame(columns=_UNMAPPED_TXN_COLUMNS)
     if store:
-        frame = frame[frame["store"] == store]
+        frame = frame[store_scope.mask(frame["store"], store)]
     frame = frame[frame["resolution"] == "unmapped"]
     out = frame.rename(columns={"txn_ref": "transaction_id", "business_date": "date"})
     out["matched_bill_no"] = out["matched_bill_no"]
@@ -1721,7 +1722,7 @@ def _transaction_resolution_from_agg(session, run_id, date_from, date_to, store)
         TxnDayAgg.run_id == run_id,
         TxnDayAgg.business_date >= str(date_from), TxnDayAgg.business_date <= str(date_to))
     if store:
-        query = query.filter(TxnDayAgg.store == store)
+        query = query.filter(store_scope.clause(TxnDayAgg.store, store))
     tn, tv, mn, mv, pn, pv, cn, cv, with_pool, rows = query.one()
     out = TransactionResolution()
     sale_basis = bool(rows) and with_pool == rows
@@ -1735,7 +1736,7 @@ def _transaction_resolution_from_agg(session, run_id, date_from, date_to, store)
         out.auto_n, out.auto_v = int(mn or 0), float(mv or 0.0)
 
     for _gateway, day, txn_store, amount, counts in _manual_txn_facts(session):
-        if str(date_from) <= day <= str(date_to) and (not store or txn_store == store):
+        if str(date_from) <= day <= str(date_to) and (not store or store_scope.contains(store, txn_store)):
             out.manual_n += 1 if counts else 0
             out.manual_v += amount
     out.mapped_n, out.mapped_v = out.auto_n + out.manual_n, out.auto_v + out.manual_v
@@ -1743,7 +1744,7 @@ def _transaction_resolution_from_agg(session, run_id, date_from, date_to, store)
     refunds = session.query(TransactionRefund).filter(
         TransactionRefund.business_date >= str(date_from), TransactionRefund.business_date <= str(date_to))
     if store:
-        refunds = refunds.filter(TransactionRefund.store == store)
+        refunds = refunds.filter(store_scope.clause(TransactionRefund.store, store))
     for r in refunds.all():
         amount = float(r.amount or 0.0)
         out.refunded_n += 1
@@ -1779,7 +1780,7 @@ def transaction_resolution_summary(session, date_from=None, date_to=None,
     frame = gt.gateway_transactions_with_resolution(session, date_from, date_to,
                                                      warehouse=warehouse)
     if store:
-        frame = frame[frame["store"] == store]
+        frame = frame[store_scope.mask(frame["store"], store)]
     if frame.empty:
         return out
 
@@ -1809,7 +1810,7 @@ def transaction_resolution_summary(session, date_from=None, date_to=None,
     # The slow path's `mapped` already includes what a person matched; split it. (A transaction that is also refunded
     # is `refunded` here, not `mapped`, so it takes no part in this split.)
     for _gateway, day, txn_store, amount, counts in _manual_txn_facts(session):
-        if counts and str(date_from) <= day <= str(date_to) and (not store or txn_store == store):
+        if counts and str(date_from) <= day <= str(date_to) and (not store or store_scope.contains(store, txn_store)):
             out.manual_n += 1
             out.manual_v += amount
     out.auto_n, out.auto_v = out.mapped_n - out.manual_n, out.mapped_v - out.manual_v
@@ -1835,7 +1836,7 @@ def manual_match_bill_report(session, date_from=None, date_to=None,
     if date_to is not None:
         query = query.filter(ManualMatch.business_date <= str(date_to))
     if store:
-        query = query.filter(ManualMatch.store == store)
+        query = query.filter(store_scope.clause(ManualMatch.store, store))
     rows = query.order_by(ManualMatch.created_at.desc()).all()
 
     records = []

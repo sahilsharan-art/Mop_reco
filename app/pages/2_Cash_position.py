@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import store_detail_view
 from dashboard_common import (confirm_with_operator, db_session, latest_run, no_run_yet, page, sidebar,
                               stop_if_no_dates, tile)
+from mop_reco import store_scope
 from mop_reco import cms_blocks as cb
 from mop_reco import cms_blocks_export as cbx
 from mop_reco.config import load_config
@@ -160,7 +161,7 @@ saved = cb.remarks_for(session, p0, p1)
 sm_all["remark"] = [saved.get(s, ("", "", None))[0] for s in sm_all["store"]]
 sm = sm_all
 if store:
-    sm = sm[sm["store"] == store]
+    sm = sm[store_scope.mask(sm["store"], store)]
 if store_pick:
     sm = sm[sm["store"].isin(store_pick)]
 if has_remark != "All":
@@ -212,7 +213,7 @@ else:
 
 # --- credited later ---------------------------------------------------------------------------------
 later = cb.credited_later(slips, period0, period1)
-later_view = later if not store else later[later["store"] == store]
+later_view = later if not store else later[store_scope.mask(later["store"], store)]
 st.markdown("##### Credited later than day+1")
 st.markdown(f"**{len(later_view):,} rows, Rs {money_table(later_view['amount'].sum())}** - not captured in the two "
             "credit columns. They stay in Closing as outstanding.")
@@ -253,7 +254,7 @@ if choice == "all":
 b0, b1 = _bounds(block_month)
 bf = cb.blocks_frame(model, b0, b1)
 if store:
-    bf = bf[bf["STORE NAME"] == store]
+    bf = bf[store_scope.mask(bf["STORE NAME"], store)]
 bf = bf.reset_index(drop=True)
 CMS_COLS = [c for c in bf.columns if "CMS (" in c]
 bi = {d: i for i, d in enumerate(model.dates)}

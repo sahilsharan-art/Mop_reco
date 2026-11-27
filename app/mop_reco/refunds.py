@@ -24,6 +24,7 @@ from pathlib import Path
 import pandas as pd
 
 from . import masters
+from . import store_scope
 from .db import TransactionRefund
 from .manual_match import _clean, _clean_ref, gateway_pool_for_date, identify_gateway, targeted_pool_many
 
@@ -343,7 +344,7 @@ def refund_table(session, date_from=None, date_to=None, store=None) -> pd.DataFr
     if date_to:
         q = q.filter(TransactionRefund.business_date <= str(date_to))
     if store:
-        q = q.filter(TransactionRefund.store == store)
+        q = q.filter(store_scope.clause(TransactionRefund.store, store))
     rows = q.order_by(TransactionRefund.business_date.desc(), TransactionRefund.id.desc()).all()
     cols = ["id", "business_date", "store", "gateway", "transaction_id", "amount", "zoho_no", "customer_name",
             "refund_date", "status", "uploaded_by", "uploaded_at"]
@@ -635,7 +636,7 @@ def _open_candidates(session, store: str, amount) -> list:
     if not store or amount is None:
         return []
     rows = session.query(Exception_).filter(
-        Exception_.type == "unmapped_gateway_transaction", Exception_.store == store,
+        Exception_.type == "unmapped_gateway_transaction", store_scope.clause(Exception_.store, store),
         Exception_.status.in_(("open", "under_investigation"))).all()
     return [e.exception_key.split("|", 1)[1] for e in rows if abs(float(e.amount or 0) - float(amount)) < 0.005]
 

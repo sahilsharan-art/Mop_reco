@@ -25,6 +25,7 @@ import pandas as pd
 from types import SimpleNamespace
 
 from . import io_
+from . import store_scope
 from .db import ManualMatch, ManualMatchBatch, ManualMatchEvent, R1BillLine
 from .exceptions import bill_exception_key, set_status
 
@@ -1412,7 +1413,7 @@ def suggested_matches(session, run_id, date_from, date_to, store: str = None,
     if date_to is not None:
         bills_query = bills_query.filter(R1BillLine.business_date <= str(date_to))
     if store:
-        bills_query = bills_query.filter(R1BillLine.store == store)
+        bills_query = bills_query.filter(store_scope.clause(R1BillLine.store, store))
     open_bills = bills_query.all()
     if not open_bills:
         return []
@@ -1424,7 +1425,7 @@ def suggested_matches(session, run_id, date_from, date_to, store: str = None,
     mapped = gt.with_bill_mapping(session, pool)
     unmapped = mapped.loc[~mapped["mapped"]]
     if store:
-        unmapped = unmapped.loc[unmapped["store"] == store]
+        unmapped = unmapped.loc[store_scope.mask(unmapped["store"], store)]
 
     groups: dict = {}
     for b in open_bills:
