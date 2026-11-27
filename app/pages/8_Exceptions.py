@@ -22,6 +22,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import match_strip
+import refund_panel
 from dashboard_common import (
     confirm_with_operator,
     db_session,
@@ -1007,54 +1008,9 @@ _exception_table_block("txns", status_wanted, scope_label, status_view == "Open"
 
 
 def _refund_folder_block():
-    """The finance team's 'Customer Refund' folder, read as it is: every line is judged by the ordinary refund rules, previewed
-    (exportable), and only the lines that pass are recorded - after a confirmation, in ONE database transaction."""
-    with st.expander("Customer refunds - from the Customer Refund folder"):
-        done = st.session_state.pop("_refund_folder_done", None)
-        if done:
-            st.success(done)
-        frame, files = rf.read_refund_folder()
-        if not files:
-            st.info(f"No workbook found in {rf.DEFAULT_FOLDER}.")
-            return
-        st.caption("Read: " + "; ".join(f"{f['file']} ({f['rows']:,} lines, modified {f['modified']:%d/%m/%Y %H:%M})" for f in files)
-                   + ". Bank details in the workbook are never read.")
-        if st.button("Check the folder", key="rf_check"):
-            st.session_state["_refund_judged"] = rf.preview_folder(session, frame)
-        judged = st.session_state.get("_refund_judged")
-        if judged is None:
-            return
-        ok = judged[judged["verdict"] == "apply"]
-        hold = judged[judged["verdict"] == "hold"]
-        done_n = int((judged["verdict"] == "recorded").sum())
-        st.markdown(f"**{fmt_count(done_n)} already recorded** · **{fmt_count(len(ok))} ready to record - "
-                    f"{money_table(float(ok['txn_amount'].sum()))}** · **{fmt_count(len(hold))} held** "
-                    "(nothing is recorded for a held line).")
-        noted = ok[ok["notes"].fillna("").str.len() + ok["extra_remark"].fillna("").str.len() > 0]
-        if len(noted):
-            st.caption(f"{len(noted)} of the lines to record carry a note that is written into the exception's remark:")
-            st.dataframe(noted[["file_row", "transaction_no", "store_code", "store_used", "zoho_no", "notes", "extra_remark"]],
-                         hide_index=True, width="stretch", height=200)
-        if len(hold):
-            st.dataframe(hold[["file", "file_row", "transaction_no", "store_code", "zoho_no", "customer_name",
-                               "amount_file", "txn_amount", "why"]], hide_index=True, width="stretch", height=260)
-        a1, a2, _a3 = st.columns([1.4, 1, 3])
-        operator = confirm_with_operator(
-            a1.button(f"Record {fmt_count(len(ok))} refunds", type="primary", key="rf_apply", disabled=ok.empty),
-            "recording these customer refunds", key="rf_op")
-        if a2.button("Cancel", key="rf_cancel"):
-            st.session_state.pop("_refund_judged", None)
-            st.rerun()
-        if operator:
-            try:
-                n = rf.apply_folder(session, judged, operator)
-            except Exception as exc:  # noqa: BLE001 - shown with its reason; nothing was recorded
-                st.error(f"Nothing was recorded: {exc}")
-                return
-            st.session_state["_refund_folder_done"] = f"{n} customer refund(s) recorded; they leave Exception transactions."
-            st.session_state.pop("_refund_judged", None)
-            st.cache_data.clear()
-            st.rerun()
+    """The finance team's Customer Refund workbook: upload, check, record - the same panel as the Upload page."""
+    with st.expander("Customer refunds - upload the Customer Refund workbook"):
+        refund_panel.render(session, key="rf")
 
 
 _refund_folder_block()

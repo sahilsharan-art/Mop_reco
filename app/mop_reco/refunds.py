@@ -617,6 +617,7 @@ def read_refund_folder(folder=None):
                     "remark": _as_text(rec.get("remark")), "file": path.name, "file_row": pos,
                     "bill_no": _as_text(rec.get("bill_no"))})
                 n += 1
+        wb.close()      # a read-only workbook keeps its file open: on Windows that blocks deleting an uploaded temp copy
         files.append({"file": path.name, "modified": datetime.fromtimestamp(path.stat().st_mtime), "rows": n})
     cols = UPLOAD_COLUMNS + ["process_date", "amount_file", "remark", "file", "file_row", "bill_no"]
     return pd.DataFrame(rows, columns=cols), files

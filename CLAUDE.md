@@ -3952,6 +3952,19 @@ which stays the truth until September is reconciled, then is extended to APR_SEP
 * **The V2 API now runs `db.init_db()` at start** (additive tables and nullable columns only). Before this only the Streamlit dashboard did, so a V2-only start after an upgrade answered 500 until someone opened the dashboard.
 * **Not done:** a per-file Parquet cache for the Paytm / Axis readers (a run still parses the uploaded files; measure first - a Paytm month is about 50 MB); the NAS write-once archive (6.37).
 
+### 6.45 Customer refunds are uploaded on the Upload page (2026-11-27)
+
+* **Why.** Under `SOURCES_FROM=uploads` the server has no `Customer Refund` folder (6.32), so the finance team's workbook had no way in. "Customer refunds" is now a Report name on the Upload page
+  (not month-specific) and the same panel sits in the Exceptions page expander: `app/refund_panel.py` (`render(session, key)`), used by both pages so they cannot differ.
+* **Flow unchanged from 6.32 / 6.33:** upload the `.xlsx` -> `Check the workbook` (`refunds.read_refund_folder` on a temporary copy, columns by NAME, bank details never read, then `preview_folder`) ->
+  ready / held / already recorded with reasons -> `Record N refunds` (`apply_folder`, one database transaction, operator confirmed). A refund is not a run source and does not appear in "Upload history";
+  it appears in Manual match transactions marked "customer refund" with customer, Zoho no, refund date and remark. A line already recorded shows as such, so a second upload records nothing twice.
+* `refunds.read_refund_folder` now closes each workbook (a read-only workbook kept its file open, which on Windows blocked deleting the uploaded temporary copy).
+* **First production use, 2026-11-27 (run #7):** `Customer Refunds.xlsx` read 270 lines -> 268 recorded (Rs 4,06,141, released, source `folder`), open transactions 4,877 / Rs 27,42,045 -> 4,609 / Rs 23,35,904; held: LAM 619220648001
+  (sheet Rs 5,600 vs transaction Rs 6,655 - needs a Bill No, 6.34) and DPT Zoho 141180 (no transaction number). Re-uploading the 268-line sheet reports 268 already recorded, 0 ready, 0 held.
+* Deployed to 10.0.1.98 by copying `refund_panel.py`, `pages/6_Upload.py`, `pages/8_Exceptions.py` (backups in `D:\Citykart_Applicationsackup_pre_refund_upload\`). `refunds.py` goes in at the next dashboard restart
+  (replacing a loaded module trips the stale-module self-check, 9a); the page works without it.
+
 ## 7. Acceptance numbers
 
 Every stage is proved against these. They come from the two workbooks already

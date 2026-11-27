@@ -30,6 +30,7 @@ from dashboard_common import (
     page,
     sidebar,
 )
+import refund_panel
 import run_panel
 from mop_reco import uploads as up
 from mop_reco.config import load_config
@@ -100,109 +101,114 @@ _uploadable = [s for s in up.SOURCE_REGISTRY
 if len(_uploadable) < len(up.SOURCE_REGISTRY):
     st.caption("The masters (store, MID, pickup code, pickup location) and the opening cash balance are held in the "
                "database and edited on the **Masters** page - they are not uploaded.")
-report_names = [s.display_name for s in _uploadable]
+REFUND_REPORT = "Customer refunds"      # not a run source: it is checked and recorded as refunds, not stored in a month folder
+report_names = [s.display_name for s in _uploadable] + [REFUND_REPORT]
 c1, c2 = st.columns(2)
 report_name = c1.selectbox("Report name", report_names, key="up_report_name")
-spec = next(s for s in _uploadable if s.display_name == report_name)
+spec = None if report_name == REFUND_REPORT else next(s for s in _uploadable if s.display_name == report_name)
 
-months = _available_months()
-month_labels = [_month_label(m) for m in months]
-if spec.month_specific:
-    month_label = c2.selectbox("Month", month_labels, index=_next_to_reconcile(months), key="up_month")
-    month = months[month_labels.index(month_label)]
+if spec is None:
+    c2.selectbox("Month", ["not month-specific"], key="up_month_refund_disabled", disabled=True)
+    refund_panel.render(session, key="rfu")
 else:
-    c2.selectbox("Month", ["not month-specific"], key="up_month_disabled", disabled=True)
-    month = None
-
-if spec.note:
-    st.caption(spec.note)
-st.caption(f"Accepted file types: {', '.join(spec.extensions)}.")
-
-uploaded_files = st.file_uploader("Drop the file(s) here - several can be dropped at once (for example the "
-                                  "parts of one Paytm export)", key=f"up_file_{report_name}",
-                                  accept_multiple_files=True)
-
-if uploaded_files:
-    # Streamlit re-runs this whole script on every click. A big file must not be re-saved and re-checked each time
-    # (264 MB written and read again on every press), so each saved copy and its preview are remembered for the same
-    # file + report + month, and dropped when any of them changes or the file is stored / removed from the box.
-    cache = st.session_state.setdefault("up_check_cache", {})
-    wanted_keys = set()
-    checked = []          # (UploadedFile, temp_path, preview)
-    for uploaded in uploaded_files:
-        cache_key = repr((getattr(uploaded, "file_id", None) or uploaded.name, uploaded.size, report_name, month))
-        wanted_keys.add(cache_key)
-        entry = cache.get(cache_key)
-        if entry and Path(entry["path"]).exists():
-            temp_path, preview = Path(entry["path"]), entry["preview"]
-        else:
-            suffix = Path(uploaded.name).suffix
-            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                tmp.write(uploaded.getbuffer())
-                temp_path = Path(tmp.name)
-            with st.spinner(f"Checking {uploaded.name} ({uploaded.size / 1048576:,.0f} MB) - a large file can take "
-                            "a minute..."):
-                try:
-                    preview = up.validate_upload(spec, temp_path, uploaded.name, month, config)
-                except Exception as exc:  # noqa: BLE001 - say what failed instead of crashing the page
-                    preview = up.UploadPreview(ok=False)
-                    preview.errors.append(f"Could not check '{uploaded.name}': {type(exc).__name__}: {exc}")
-            cache[cache_key] = {"path": str(temp_path), "preview": preview}
-        checked.append((uploaded, temp_path, preview))
-    for key in [k for k in cache if k not in wanted_keys]:       # a file removed from the box: free its saved copy
-        try:
-            Path(cache[key]["path"]).unlink()
-        except OSError:
-            pass
-        cache.pop(key, None)
-
-    for uploaded, temp_path, preview in checked:
-        with st.container(border=True):
-            st.markdown(f"**{uploaded.name}** - {uploaded.size / 1048576:,.1f} MB")
-            pc1, pc2 = st.columns(2)
-            pc1.metric("Rows", fmt_count(preview.row_count))
-            if preview.date_range:
-                pc2.metric("Date range in file", f"{preview.date_range[0]} to {preview.date_range[1]}")
-            else:
-                pc2.metric("Date range in file", "—")
-            if preview.columns_found:
-                st.caption("Columns detected: " + ", ".join(str(c) for c in preview.columns_found))
-            if preview.first_rows is not None and not preview.first_rows.empty:
-                st.dataframe(preview.first_rows, hide_index=True, width="stretch")
-            for w in preview.warnings:
-                st.warning(w)
-            for e in preview.errors:
-                st.error(e)
-            if preview.ok:
-                st.success("Validation passed.")
-            else:
-                st.error("Rejected - this file will not be stored. Fix it (or the month selected) and drop it again.")
-
-    ready = [(u, t, p) for u, t, p in checked if p.ok]
-    if ready:
-        label = "Upload" if len(ready) == 1 else f"Upload {len(ready)} files"
-        if len(ready) < len(checked):
-            st.warning(f"{len(checked) - len(ready)} of {len(checked)} file(s) failed the check and will be left out.")
-        st.caption("Nothing is stored until you press the button.")
-        operator = confirm_with_operator(
-            st.button(label, type="primary", key="up_confirm"),
-            "uploading these files" if len(ready) > 1 else "uploading this file", key="up_op")
-        if operator:
-            for uploaded, temp_path, preview in ready:
-                row = up.store_file(spec, temp_path, uploaded.name, month, operator,
-                                    session, config, preview.row_count, preview.date_range)
-                msg = f"Stored '{uploaded.name}' as '{Path(row.stored_path).name}'."
-                if getattr(row, "_renamed", False):
-                    msg += (" A file with that name already existed, so this one was saved with a timestamp "
-                            "suffix - the original was never overwritten.")
-                st.success(msg)
-                if getattr(row, "_config_gap_note", None):
-                    st.warning(row._config_gap_note)
-            st.session_state.pop("up_check_cache", None)        # the saved copies were moved into place
-            st.session_state.pop(f"up_file_{report_name}", None)
-            st.rerun()
+    months = _available_months()
+    month_labels = [_month_label(m) for m in months]
+    if spec.month_specific:
+        month_label = c2.selectbox("Month", month_labels, index=_next_to_reconcile(months), key="up_month")
+        month = months[month_labels.index(month_label)]
     else:
-        st.error("None of the files passed the check - nothing can be stored.")
+        c2.selectbox("Month", ["not month-specific"], key="up_month_disabled", disabled=True)
+        month = None
+
+    if spec.note:
+        st.caption(spec.note)
+    st.caption(f"Accepted file types: {', '.join(spec.extensions)}.")
+
+    uploaded_files = st.file_uploader("Drop the file(s) here - several can be dropped at once (for example the "
+                                      "parts of one Paytm export)", key=f"up_file_{report_name}",
+                                      accept_multiple_files=True)
+
+    if uploaded_files:
+        # Streamlit re-runs this whole script on every click. A big file must not be re-saved and re-checked each time
+        # (264 MB written and read again on every press), so each saved copy and its preview are remembered for the same
+        # file + report + month, and dropped when any of them changes or the file is stored / removed from the box.
+        cache = st.session_state.setdefault("up_check_cache", {})
+        wanted_keys = set()
+        checked = []          # (UploadedFile, temp_path, preview)
+        for uploaded in uploaded_files:
+            cache_key = repr((getattr(uploaded, "file_id", None) or uploaded.name, uploaded.size, report_name, month))
+            wanted_keys.add(cache_key)
+            entry = cache.get(cache_key)
+            if entry and Path(entry["path"]).exists():
+                temp_path, preview = Path(entry["path"]), entry["preview"]
+            else:
+                suffix = Path(uploaded.name).suffix
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(uploaded.getbuffer())
+                    temp_path = Path(tmp.name)
+                with st.spinner(f"Checking {uploaded.name} ({uploaded.size / 1048576:,.0f} MB) - a large file can take "
+                                "a minute..."):
+                    try:
+                        preview = up.validate_upload(spec, temp_path, uploaded.name, month, config)
+                    except Exception as exc:  # noqa: BLE001 - say what failed instead of crashing the page
+                        preview = up.UploadPreview(ok=False)
+                        preview.errors.append(f"Could not check '{uploaded.name}': {type(exc).__name__}: {exc}")
+                cache[cache_key] = {"path": str(temp_path), "preview": preview}
+            checked.append((uploaded, temp_path, preview))
+        for key in [k for k in cache if k not in wanted_keys]:       # a file removed from the box: free its saved copy
+            try:
+                Path(cache[key]["path"]).unlink()
+            except OSError:
+                pass
+            cache.pop(key, None)
+
+        for uploaded, temp_path, preview in checked:
+            with st.container(border=True):
+                st.markdown(f"**{uploaded.name}** - {uploaded.size / 1048576:,.1f} MB")
+                pc1, pc2 = st.columns(2)
+                pc1.metric("Rows", fmt_count(preview.row_count))
+                if preview.date_range:
+                    pc2.metric("Date range in file", f"{preview.date_range[0]} to {preview.date_range[1]}")
+                else:
+                    pc2.metric("Date range in file", "—")
+                if preview.columns_found:
+                    st.caption("Columns detected: " + ", ".join(str(c) for c in preview.columns_found))
+                if preview.first_rows is not None and not preview.first_rows.empty:
+                    st.dataframe(preview.first_rows, hide_index=True, width="stretch")
+                for w in preview.warnings:
+                    st.warning(w)
+                for e in preview.errors:
+                    st.error(e)
+                if preview.ok:
+                    st.success("Validation passed.")
+                else:
+                    st.error("Rejected - this file will not be stored. Fix it (or the month selected) and drop it again.")
+
+        ready = [(u, t, p) for u, t, p in checked if p.ok]
+        if ready:
+            label = "Upload" if len(ready) == 1 else f"Upload {len(ready)} files"
+            if len(ready) < len(checked):
+                st.warning(f"{len(checked) - len(ready)} of {len(checked)} file(s) failed the check and will be left out.")
+            st.caption("Nothing is stored until you press the button.")
+            operator = confirm_with_operator(
+                st.button(label, type="primary", key="up_confirm"),
+                "uploading these files" if len(ready) > 1 else "uploading this file", key="up_op")
+            if operator:
+                for uploaded, temp_path, preview in ready:
+                    row = up.store_file(spec, temp_path, uploaded.name, month, operator,
+                                        session, config, preview.row_count, preview.date_range)
+                    msg = f"Stored '{uploaded.name}' as '{Path(row.stored_path).name}'."
+                    if getattr(row, "_renamed", False):
+                        msg += (" A file with that name already existed, so this one was saved with a timestamp "
+                                "suffix - the original was never overwritten.")
+                    st.success(msg)
+                    if getattr(row, "_config_gap_note", None):
+                        st.warning(row._config_gap_note)
+                st.session_state.pop("up_check_cache", None)        # the saved copies were moved into place
+                st.session_state.pop(f"up_file_{report_name}", None)
+                st.rerun()
+        else:
+            st.error("None of the files passed the check - nothing can be stored.")
 
 st.divider()
 
