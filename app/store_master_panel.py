@@ -71,6 +71,14 @@ def render(session, key: str = "smu") -> None:
                        + ". When one opens again, upload the updated store master that lists it.")
     info = smf.summary(save_rows)
     diff = smf.compare(save_rows, current)
+    already = (masters_db._fingerprint([masters_db._clean_row("store", r) for r in save_rows])
+               == masters_db._fingerprint([masters_db._clean_row("store", r) for r in current]))
+    if already:
+        st.success("This file is ALREADY saved as the store master - there is nothing to save. The summary below is what the store "
+                   "master holds now.")
+    else:
+        st.warning("**Preview only - nothing is saved yet.** Check the numbers below, then press **Save as the new store master** "
+                   "at the bottom of this section.")
     st.markdown(f"**{fmt_count(info['stores'])} stores · {len(info['regions'])} regions · {fmt_count(info['clusters'])} clusters** "
                 f"(header on row {parsed.header_row} of '{uploaded.name}')")
     if info["regions"]:
@@ -111,6 +119,8 @@ def render(session, key: str = "smu") -> None:
         st.error("The store master rules refuse this file: " + "; ".join(candidate.errors[:6]))
         return
 
+    if already:
+        return
     save = st.button("Save as the new store master", type="primary", key=f"{key}_save", disabled=not confirm_removed)
     operator = confirm_with_operator(save, "saving the store master", key=f"{key}_op")
     if operator:

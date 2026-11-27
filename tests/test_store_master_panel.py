@@ -79,6 +79,7 @@ def test_the_preview_shows_the_hierarchy_and_names_what_would_be_removed(env):
     assert any("OLD" in e.value and "would be removed" in e.value for e in at.error)       # a store the file leaves out is named
     save = next(b for b in at.button if b.label == "Save as the new store master")
     assert save.disabled                                                                    # until the removal is ticked
+    assert any("Preview only - nothing is saved yet" in w.value for w in at.warning)        # the banner that says nothing is saved
 
 
 def test_saving_stores_a_new_version_with_cluster_and_region_and_a_history_line(env):
@@ -132,3 +133,17 @@ def test_a_file_without_site_names_is_applied_onto_the_stored_master(env, tmp_pa
     assert rows["APM"]["store_name"] == "CITYKART STORES PVT. LTD. (ARRAH-APM)" and rows["APM"]["cluster"] == "Patna"
     assert rows["OLD"]["region"] == "Closed" and rows["OLD"]["cluster"] == "Closed"   # not in the active-store file: marked Closed
     assert any("marked CLOSED" in w.value and "OLD" in w.value for w in at.warning)
+
+
+def test_after_saving_the_same_file_says_it_is_already_saved_and_offers_no_save(env):
+    session, db, xlsx = env
+    at = _app(env)
+    next(c for c in at.checkbox if "will no longer be in the store master" in c.label).check().run()
+    next(b for b in at.button if b.label == "Save as the new store master").click().run()
+    assert not at.exception
+    # the page reruns with the file still in the uploader: it must say it is saved, not invite a second save
+    again = _app(env)
+    assert not again.exception, [e.value for e in again.exception]
+    assert any("ALREADY saved" in x.value for x in again.success)
+    assert not any(b.label == "Save as the new store master" for b in again.button)
+    assert not any("Preview only" in w.value for w in again.warning)

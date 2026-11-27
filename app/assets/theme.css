@@ -516,6 +516,49 @@ section[data-testid="stSidebar"] div[data-testid="stDateInput"] input {
   opacity: .5;
 }
 
+/* Sidebar button text (2026-11-28). The 12px set on the <button> never reached the words: they sit in an inner <p> that
+   Streamlit sizes at 16px, which is why the Year / Month / Clear buttons looked too large. Size the <p> itself, on one line. */
+section[data-testid="stSidebar"] .stButton button p,
+section[data-testid="stSidebar"] .stButton button div[data-testid="stMarkdownContainer"] p {
+  font-size: 12px;
+  line-height: 1.25;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Region | Cluster | Store picker at the top of the sidebar, above the line (dashboard_common._scope_picker) - the same compact
+   look as the Year / Month buttons, scoped to st.container(key="rcs") so it never leaks onto other buttons. */
+.st-key-rcs { margin-bottom: 2px; }
+.st-key-rcs div[data-testid="stHorizontalBlock"] { gap: 4px; }
+.st-key-rcs .stButton { margin-bottom: 4px; }
+.st-key-rcs .stButton button {
+  padding: 2px 4px;
+  min-height: 28px;
+  font-weight: 500;
+}
+.st-key-rcs .stButton button[kind="primary"] {
+  background: var(--accent);
+  background-image: var(--gradient-primary);
+  border-color: color-mix(in oklab, var(--accent) 70%, black);
+  color: #FFFFFF;
+}
+.st-key-rcs .stButton button[kind="primary"]:hover { color: #FFFFFF; opacity: .92; }
+.st-key-rcs .stButton button[kind="secondary"] {
+  background: var(--surface-alt);
+  border-color: var(--border);
+  color: var(--ink);
+}
+.st-key-rcs .mop-rcs-crumb {
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--ink-soft);
+  margin: 0 0 6px;
+}
+.st-key-rcs .mop-rcs-crumb b { color: var(--ink); font-weight: 600; }
+.st-key-rcs div[data-baseweb="select"] > div { min-height: 32px; font-size: 12px; }
+
 .mop-page-info { padding-top: 8px; color: var(--ink); }
 .mop-page-info b { font-variant-numeric: tabular-nums; }
 

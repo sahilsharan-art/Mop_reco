@@ -38,6 +38,8 @@ K_DATE_TO = "flt_date_to"
 K_STORE = "flt_store"
 K_REGION = "flt_region"
 K_CLUSTER = "flt_cluster"
+K_LEVEL = "flt_level"          # which of Region / Cluster / Store the picker shows
+K_SCOPE_GEN = "_flt_scope_gen" # bumped whenever the scope changes, so the Store list gets a fresh widget
 
 
 # What this system reconciles TODAY. R3a and R3b (cash) are blocked, so the
@@ -632,6 +634,75 @@ def _quick_date_picker(dates: list[str], first: date, last: date):
                 )
 
 
+def _scope_set_level(level: str):
+    st.session_state[K_LEVEL] = level
+
+
+def _scope_pick_region(region: str):
+    st.session_state[K_REGION] = region
+    st.session_state[K_CLUSTER] = store_scope.ALL_CLUSTERS
+    st.session_state[K_STORE] = "All stores"
+    st.session_state[K_SCOPE_GEN] = st.session_state.get(K_SCOPE_GEN, 0) + 1
+
+
+def _scope_pick_cluster(cluster: str):
+    st.session_state[K_CLUSTER] = cluster
+    st.session_state[K_STORE] = "All stores"
+    st.session_state[K_SCOPE_GEN] = st.session_state.get(K_SCOPE_GEN, 0) + 1
+
+
+def _scope_picker(hierarchy, loaded: list):
+    """Region | Cluster | Store as three buttons in a row at the very top of the sidebar, above the line (2026-11-28), styled like the
+    Year / Month quick pickers. The chosen level shows its options underneath: Region and Cluster as a grid of buttons (the clusters
+    are the region's own when a region is chosen), Store as a searchable list (there are over two hundred codes). Every choice is
+    written through an `on_click` callback into the plain session keys, which Streamlit runs BEFORE the rerun - so no widget key is
+    ever written after its widget exists (widget-state trap 3) and the choice survives a page switch (trap 1)."""
+    region, cluster = st.session_state[K_REGION], st.session_state[K_CLUSTER]
+    region_options = hierarchy.regions(loaded)
+    if region != store_scope.ALL_REGIONS and region not in region_options:
+        region = st.session_state[K_REGION] = store_scope.ALL_REGIONS
+    cluster_options = hierarchy.clusters(region, loaded)
+    if cluster != store_scope.ALL_CLUSTERS and cluster not in cluster_options:
+        cluster = st.session_state[K_CLUSTER] = store_scope.ALL_CLUSTERS
+    store_options = hierarchy.stores(region, cluster, loaded)
+    if st.session_state[K_STORE] != "All stores" and st.session_state[K_STORE] not in store_options:
+        st.session_state[K_STORE] = "All stores"
+    level = st.session_state.setdefault(K_LEVEL, "region")
+
+    with st.container(key="rcs"):
+        cols = st.columns(3)
+        for col, (key, label) in zip(cols, (("region", "Region"), ("cluster", "Cluster"), ("store", "Store"))):
+            col.button(label, key=f"rcs_level_{key}", width="stretch", type="primary" if level == key else "secondary",
+                       on_click=_scope_set_level, args=(key,))
+        crumb = " &rsaquo; ".join([
+            f"<b>{html.escape(region)}</b>" if region != store_scope.ALL_REGIONS else "all regions",
+            f"<b>{html.escape(cluster)}</b>" if cluster != store_scope.ALL_CLUSTERS else "all clusters",
+            f"<b>{html.escape(st.session_state[K_STORE])}</b>" if st.session_state[K_STORE] != "All stores" else "all stores"])
+        st.markdown(f"<div class='mop-rcs-crumb'>{crumb}</div>", unsafe_allow_html=True)
+
+        def grid(options, current, all_value, on_pick, prefix):
+            items = [("All", all_value)] + [(o, o) for o in options]
+            for row_start in range(0, len(items), 3):
+                row = st.columns(3)
+                for col, (label, value) in zip(row, items[row_start:row_start + 3]):
+                    col.button(label, key=f"{prefix}_{value}", width="stretch", help=None if label != "All" else "No filter at this level",
+                               type="primary" if current == value else "secondary", on_click=on_pick, args=(value,))
+
+        if level == "region":
+            grid(region_options, region, store_scope.ALL_REGIONS, _scope_pick_region, "rcs_r")
+        elif level == "cluster":
+            if not cluster_options:
+                st.caption("No cluster in this region.")
+            else:
+                grid(cluster_options, cluster, store_scope.ALL_CLUSTERS, _scope_pick_cluster, "rcs_c")
+        else:
+            options = ["All stores"] + store_options
+            gen = st.session_state.get(K_SCOPE_GEN, 0)
+            st.session_state[K_STORE] = st.selectbox(
+                "Store", options, index=options.index(st.session_state[K_STORE]), key=f"w_flt_store_{gen}",
+                label_visibility="collapsed", placeholder="Type a store code")
+
+
 def sidebar(session, run, show_store: bool = True):
     """The global filters, the run stamp, and the operator footer.
 
@@ -680,9 +751,19 @@ def sidebar(session, run, show_store: bool = True):
         st.session_state[K_STORE] = "All stores"
         st.session_state[K_REGION] = store_scope.ALL_REGIONS
         st.session_state[K_CLUSTER] = store_scope.ALL_CLUSTERS
+        st.session_state[K_LEVEL] = "region"
+        st.session_state[K_SCOPE_GEN] = st.session_state.get(K_SCOPE_GEN, 0) + 1
 
     dates = loaded_dates(run.id) if run else []
+    loaded = loaded_stores(run.id) if run else []
+    hierarchy = _store_hierarchy(session)
+    scope_picker_on = bool(dates) and show_store and hierarchy.has_any
     with st.sidebar:
+        st.session_state.setdefault(K_STORE, "All stores")
+        st.session_state.setdefault(K_REGION, store_scope.ALL_REGIONS)
+        st.session_state.setdefault(K_CLUSTER, store_scope.ALL_CLUSTERS)
+        if scope_picker_on:
+            _scope_picker(hierarchy, loaded)         # above the line: Region | Cluster | Store
         st.divider()
         if not dates:
             st.caption("No reconciled dates yet — filters appear after a run.")
@@ -690,9 +771,6 @@ def sidebar(session, run, show_store: bool = True):
             return None, None, None
 
         first, last = date.fromisoformat(dates[0]), date.fromisoformat(dates[-1])
-        st.session_state.setdefault(K_STORE, "All stores")
-        st.session_state.setdefault(K_REGION, store_scope.ALL_REGIONS)
-        st.session_state.setdefault(K_CLUSTER, store_scope.ALL_CLUSTERS)
 
         # The quick-picker offers one year beyond the loaded range (the
         # "next calendar year", so a year is selectable before its data
@@ -734,36 +812,13 @@ def sidebar(session, run, show_store: bool = True):
             min_value=first, max_value=picker_max, key="w_flt_to",
             format="DD/MM/YYYY")
 
-        loaded = loaded_stores(run.id) if run else []
-        hierarchy = _store_hierarchy(session)
-        region = st.session_state[K_REGION]
-        cluster = st.session_state[K_CLUSTER]
-        if show_store:
-            if hierarchy.has_any:
-                # Region -> Cluster -> Store, each narrowing the next; only stores the run loaded are offered. A widget key that
-                # carries the choice above it gives a fresh widget when that choice changes (widget-state trap 2).
-                region_options = [store_scope.ALL_REGIONS] + hierarchy.regions(loaded)
-                if region not in region_options:
-                    region = store_scope.ALL_REGIONS
-                region = st.selectbox("Region", region_options, index=region_options.index(region), key="w_flt_region")
-                cluster_options = [store_scope.ALL_CLUSTERS] + hierarchy.clusters(region, loaded)
-                if cluster not in cluster_options:
-                    cluster = store_scope.ALL_CLUSTERS
-                cluster = st.selectbox("Cluster", cluster_options, index=cluster_options.index(cluster),
-                                       key=f"w_flt_cluster__{region}")
-                store_pool = hierarchy.stores(region, cluster, loaded)
-                store_key = f"w_flt_store__{region}__{cluster}"
-            else:
-                region, cluster = store_scope.ALL_REGIONS, store_scope.ALL_CLUSTERS
-                store_pool = loaded
-                store_key = "w_flt_store"
-            st.session_state[K_REGION], st.session_state[K_CLUSTER] = region, cluster
-            options = ["All stores"] + store_pool
+        if show_store and not scope_picker_on:
+            # the master carries no cluster / region yet: the plain Store list, exactly as before
+            options = ["All stores"] + loaded
             if st.session_state[K_STORE] not in options:
                 st.session_state[K_STORE] = "All stores"
             st.session_state[K_STORE] = st.selectbox(
-                "Store", options, index=options.index(st.session_state[K_STORE]),
-                key=store_key)
+                "Store", options, index=options.index(st.session_state[K_STORE]), key="w_flt_store")
 
         cols = st.columns(2)
         if cols[0].button("Clear filters", key="flt_clear", width="stretch"):
