@@ -854,6 +854,8 @@ class UploadedFile(Base):
     # The file is read once, when it is stored, into per-date row counts and totals (UploadFileStat): when that finished, or why not.
     stats_at = Column(DateTime, nullable=True)
     stats_error = Column(Text, nullable=True)
+    # A line of words about what became of the upload - used by a Customer refunds workbook (checked / recorded N refunds).
+    note = Column(Text, nullable=True)
 
 
 class UploadFileStat(Base):
@@ -1088,6 +1090,7 @@ _ADDED_COLUMNS = [
     ("uploaded_files", "archived_path", "TEXT"),
     ("uploaded_files", "stats_at", "TIMESTAMP"),
     ("uploaded_files", "stats_error", "TEXT"),
+    ("uploaded_files", "note", "TEXT"),
     ("master_versions", "created_by", "TEXT"),
     ("master_versions", "change_note", "TEXT"),
     ("master_versions", "source_kind", "TEXT"),

@@ -237,6 +237,7 @@ else:
                                    if r.date_range_start else "—"),
             "Uploaded by": r.uploaded_by,
             "Status": r.status,
+            "Note": r.note or "",
             "Used by run #": f"#{used_run}" if used_run else "not yet used",
             "Deleted at": r.deleted_at.strftime("%d/%m/%Y %H:%M") if r.deleted_at else "",
             "Deleted by": r.deleted_by or "",
@@ -276,7 +277,12 @@ else:
         cols[2].write(fmt_count(r.row_count) if r.row_count is not None else "—")
         cols[3].write(f"{r.date_range_start} to {r.date_range_end}" if r.date_range_start else "—")
         cols[4].write(r.uploaded_at.strftime("%d/%m/%Y %H:%M"))
-        if r.status == "stored":
+        if r.source_key == up.REFUND_SOURCE_KEY:
+            # A Customer refunds workbook: no file is kept (bank details are never stored), so there is nothing to delete.
+            cols[5].write(r.status)
+            cols[6].caption("no file kept")
+            cols[0].caption(html.escape(str(r.note or "")))
+        elif r.status == "stored":
             cols[5].write(f"in use by run #{used_run}" if used_run else "stored")
             if cols[6].button("Delete", key=f"up_del_{r.id}", disabled=run_in_progress, width="stretch"):
                 st.session_state["up_delete_pending"] = r.id

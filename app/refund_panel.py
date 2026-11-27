@@ -14,6 +14,7 @@ import streamlit as st
 
 from dashboard_common import confirm_with_operator
 from mop_reco import refunds as rf
+from mop_reco import uploads as up
 from mop_reco.formatting import count as fmt_count
 from mop_reco.formatting import money_table
 
@@ -49,8 +50,12 @@ def render(session, key: str = "rf") -> None:
                 + (f", or place it in {rf.DEFAULT_FOLDER}." if rf.DEFAULT_FOLDER.exists() else "."))
         return
     st.caption("Read: " + "; ".join(f"{f['file']} ({f['rows']:,} lines)" for f in files) + ".")
-    if st.button("Check the workbook", key=f"{key}_check"):
+    checker = confirm_with_operator(st.button("Check the workbook", key=f"{key}_check"), "checking this workbook",
+                                    key=f"{key}_checkop")
+    if checker:
         st.session_state[f"_{key}_judged"] = rf.preview_folder(session, frame)
+        if uploaded is not None:           # the upload history keeps one line per workbook: who checked it, and what it held
+            up.note_refund_workbook(session, uploaded.name, uploaded.size, frame, st.session_state[f"_{key}_judged"], checker)
     judged = st.session_state.get(f"_{key}_judged")
     if judged is None:
         return
@@ -81,6 +86,9 @@ def render(session, key: str = "rf") -> None:
         except Exception as exc:  # noqa: BLE001 - shown with its reason; nothing was recorded
             st.error(f"Nothing was recorded: {exc}")
             return
+        if uploaded is not None:
+            up.note_refund_workbook(session, uploaded.name, uploaded.size, frame, judged, operator, recorded=int(n),
+                                    recorded_value=float(ok["txn_amount"].sum()))
         st.session_state[f"_{key}_done"] = f"{n} customer refund(s) recorded; they leave Exception transactions."
         st.session_state.pop(f"_{key}_judged", None)
         st.cache_data.clear()

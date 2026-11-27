@@ -608,6 +608,48 @@ def history(session) -> list:
     return session.query(UploadedFile).order_by(UploadedFile.uploaded_at.desc()).all()
 
 
+# ---------------------------------------------------------------------------
+# The Customer Refund workbook (2026-11-27). It is not a run source, so no file is kept: it carries the customers' bank details
+# (IFSC, account numbers), which the application never reads or stores. What IS kept is the audit line - which workbook, who, when,
+# how many lines, what became of them - in the same history as every other upload.
+# ---------------------------------------------------------------------------
+REFUND_SOURCE_KEY = "customer_refunds"
+REFUND_REPORT_NAME = "Customer refunds"
+REFUND_STATUS_CHECKED = "checked"
+REFUND_STATUS_RECORDED = "recorded"
+
+
+def note_refund_workbook(session, file_name: str, size_bytes: int, frame, judged, operator: str,
+                         recorded: Optional[int] = None, recorded_value: Optional[float] = None) -> UploadedFile:
+    """One history row per distinct workbook (same name and size), created when it is first checked and updated by every later check
+    or by the record: the row says what the LAST action did. `frame` is the workbook as read, `judged` the per-line verdicts."""
+    dates = sorted(d for d in (str(x) for x in frame["date"]) if d and d != "None") if "date" in frame else []
+    counts = judged["verdict"].value_counts().to_dict() if judged is not None and len(judged) else {}
+    if recorded is not None:
+        value = f" (Rs {recorded_value:,.2f})" if recorded_value is not None else ""
+        note, status = f"{recorded:,} customer refund(s) recorded{value} by {operator}", REFUND_STATUS_RECORDED
+    else:
+        note = (f"checked by {operator}: {counts.get('recorded', 0):,} already recorded, {counts.get('apply', 0):,} ready to record, "
+                f"{counts.get('hold', 0):,} held")
+        status = REFUND_STATUS_CHECKED
+    row = (session.query(UploadedFile)
+           .filter(UploadedFile.source_key == REFUND_SOURCE_KEY, UploadedFile.original_file_name == file_name,
+                   UploadedFile.size_bytes == size_bytes)
+           .order_by(UploadedFile.id.desc()).first())
+    if row is None:
+        row = UploadedFile(uploaded_at=datetime.now(), source_key=REFUND_SOURCE_KEY, report_name=REFUND_REPORT_NAME, month=None,
+                           original_file_name=file_name, stored_path="", size_bytes=size_bytes, uploaded_by=operator)
+        session.add(row)
+    if row.status == REFUND_STATUS_RECORDED and recorded is None:
+        return row                      # a later plain check of a workbook already recorded never overwrites what was recorded
+    row.row_count = int(len(frame))
+    row.date_range_start = dates[0] if dates else None
+    row.date_range_end = dates[-1] if dates else None
+    row.status, row.note = status, note
+    session.commit()
+    return row
+
+
 ARCHIVE_DIR_NAME = "uploads_archive"
 
 
