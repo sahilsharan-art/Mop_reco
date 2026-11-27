@@ -3962,7 +3962,7 @@ which stays the truth until September is reconciled, then is extended to APR_SEP
 * `refunds.read_refund_folder` now closes each workbook (a read-only workbook kept its file open, which on Windows blocked deleting the uploaded temporary copy).
 * **First production use, 2026-11-27 (run #7):** `Customer Refunds.xlsx` read 270 lines -> 268 recorded (Rs 4,06,141, released, source `folder`), open transactions 4,877 / Rs 27,42,045 -> 4,609 / Rs 23,35,904; held: LAM 619220648001
   (sheet Rs 5,600 vs transaction Rs 6,655 - needs a Bill No, 6.34) and DPT Zoho 141180 (no transaction number). Re-uploading the 268-line sheet reports 268 already recorded, 0 ready, 0 held.
-* Deployed to 10.0.1.98 by copying `refund_panel.py`, `pages/6_Upload.py`, `pages/8_Exceptions.py` (backups in `D:\Citykart_Applicationsackup_pre_refund_upload\`). `refunds.py` goes in at the next dashboard restart
+* Deployed to 10.0.1.98 by copying `refund_panel.py`, `pages/6_Upload.py`, `pages/8_Exceptions.py` (backups in `D:\Citykart_Applications\backup_pre_refund_upload\`). `refunds.py` goes in at the next dashboard restart
   (replacing a loaded module trips the stale-module self-check, 9a); the page works without it.
 
 ## 7. Acceptance numbers
