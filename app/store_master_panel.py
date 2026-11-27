@@ -56,17 +56,19 @@ def render(session, key: str = "smu") -> None:
         # no site names in the file: it is applied onto the STORED store master by Store Code (each stored row keeps its site name)
         merge = smf.merge_into_current(parsed.rows, current)
         save_rows = merge["merged"]
-        st.info("This file has no site-name column, so it is applied onto the stored store master by Store Code: each store keeps its "
-                f"site name and takes the Cluster and Region from your file ({fmt_count(merge['applied'])} stores matched). "
+        st.info("This file is read as the list of your ACTIVE stores. It has no site-name column, so it is applied onto the stored store "
+                f"master by Store Code: each store keeps its site name and takes the Cluster and Region from your file "
+                f"({fmt_count(merge['applied'])} stores matched). A store of the master that is not in the file is marked Closed. "
                 "No store is added or removed.")
         if merge["not_in_master"]:
             st.warning(f"{len(merge['not_in_master'])} store code(s) in your file are NOT in the store master, so their cluster and "
                        "region cannot be stored (no site name is known for them): " + ", ".join(merge["not_in_master"][:40])
                        + (" ..." if len(merge["not_in_master"]) > 40 else "")
                        + ". Add them on the Masters page (store master) first, then upload again.")
-        if merge["not_in_file"]:
-            st.warning(f"{len(merge['not_in_file'])} store(s) of the store master are not in your file and will show as Unassigned: "
-                       + ", ".join(merge["not_in_file"][:40]) + (" ..." if len(merge["not_in_file"]) > 40 else ""))
+        if merge["closed"]:
+            st.warning(f"{len(merge['closed'])} store(s) of the store master are not in your file, so they will be marked CLOSED: "
+                       + ", ".join(merge["closed"][:40]) + (" ..." if len(merge["closed"]) > 40 else "")
+                       + ". When one opens again, upload the updated store master that lists it.")
     info = smf.summary(save_rows)
     diff = smf.compare(save_rows, current)
     st.markdown(f"**{fmt_count(info['stores'])} stores · {len(info['regions'])} regions · {fmt_count(info['clusters'])} clusters** "
@@ -78,6 +80,8 @@ def render(session, key: str = "smu") -> None:
     with st.expander(f"Every cluster ({len(info['per_cluster'])})"):
         st.dataframe(pd.DataFrame(info["per_cluster"]).rename(columns={"region": "Region", "cluster": "Cluster", "stores": "Stores"}),
                      hide_index=True, width="stretch", height=300)
+    if info.get("closed"):
+        st.caption(f"{len(info['closed'])} closed store(s) are kept in the store master and shown under 'Closed' in the Region filter.")
     if info["no_region"] or info["no_cluster"]:
         st.warning(f"{len(info['no_region'])} store(s) have no region and {len(info['no_cluster'])} have no cluster. They are kept and "
                    "shown as Unassigned - never guessed into a region.")

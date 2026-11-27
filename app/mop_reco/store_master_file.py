@@ -166,8 +166,9 @@ def summary(rows: list) -> dict:
             per_cluster.append({"region": rg, "cluster": cl, "stores": len(h.stores(rg, cl))})
     return {
         "rows": len(rows), "stores": len(h.region_of),
-        "regions": [r for r in regions if r != store_scope.UNASSIGNED],
-        "clusters": len({c for c in h.cluster_of.values() if c != store_scope.UNASSIGNED}),
+        "regions": [r for r in regions if r not in (store_scope.UNASSIGNED, store_scope.CLOSED)],
+        "clusters": len({c for c in h.cluster_of.values() if c not in (store_scope.UNASSIGNED, store_scope.CLOSED)}),
+        "closed": sorted(s for s, r in h.region_of.items() if r == store_scope.CLOSED),
         "no_region": sorted(s for s, r in h.region_of.items() if r == store_scope.UNASSIGNED),
         "no_cluster": sorted(s for s, c in h.cluster_of.items() if c == store_scope.UNASSIGNED),
         "per_region": per_region, "per_cluster": per_cluster,
@@ -202,12 +203,13 @@ def compare(rows: list, current_rows: list) -> dict:
 
 
 def merge_into_current(rows: list, current_rows: list) -> dict:
-    """A file with Store Code, Cluster and Region only (no site names) is applied onto the STORED store master by store code: every
-    stored row keeps its site name and takes the file's cluster / region for its code. Store codes replaced by the company (NLD -> NEG,
-    KGP -> MKG) are matched through the alias. Nothing is invented and nothing removed:
-      merged         the new full list of rows (every stored row, with its cluster / region)
+    """A file with Store Code, Cluster and Region only (no site names) is the list of the ACTIVE stores. It is applied onto the STORED
+    store master by store code: every stored row keeps its site name; a store in the file takes the file's cluster / region; a stored
+    store the file does not list is marked CLOSED (region and cluster `store_scope.CLOSED`) - until a later file lists it again.
+    Store codes replaced by the company (NLD -> NEG, KGP -> MKG) are matched through the alias. Nothing is invented and nothing removed:
+      merged         the new full list of rows (every stored row)
       not_in_master  codes in the file with no stored row - they cannot be added (no site name is known); reported by code
-      not_in_file    stored codes the file does not mention - they keep whatever cluster / region they had (none yet = Unassigned)
+      closed         stored codes the file does not list, now marked Closed
     """
     def canon(code: str) -> str:
         return masters_db._canon(code) or code
@@ -216,15 +218,16 @@ def merge_into_current(rows: list, current_rows: list) -> dict:
     for r in rows:
         file_attr.setdefault(canon(r["store"]), (r["cluster"], r["region"]))
     stored_codes = {canon(str(r.get("store") or "").strip()) for r in current_rows if str(r.get("store") or "").strip()}
-    merged, not_in_file = [], set()
+    merged, closed = [], set()
     for r in current_rows:
         code = str(r.get("store") or "").strip()
         new = dict(r)
         if code and canon(code) in file_attr:
             new["cluster"], new["region"] = file_attr[canon(code)]
         elif code:
-            not_in_file.add(code)
+            new["cluster"], new["region"] = store_scope.CLOSED, store_scope.CLOSED
+            closed.add(code)
         merged.append(new)
     not_in_master = sorted(c for c in file_attr if c not in stored_codes)
-    return {"merged": merged, "not_in_master": not_in_master, "not_in_file": sorted(not_in_file),
+    return {"merged": merged, "not_in_master": not_in_master, "closed": sorted(closed),
             "applied": len(file_attr) - len(not_in_master)}

@@ -60,8 +60,10 @@ def test_a_file_with_only_code_cluster_and_region_is_a_merge_file(tmp_path):
     m = smf.merge_into_current(parsed.rows, current)
     assert [r["store_name"] for r in m["merged"]] == ["CITYKART (ARRAH-APM)", "CITYKART (KOLKATA-KPH)", "CITYKART (OTHER-OTH)"]   # names kept
     assert m["merged"][0]["cluster"] == "Patna" and m["merged"][1]["region"] == "East"
-    assert "cluster" not in m["merged"][2]                                                    # a store the file does not mention is untouched
-    assert m["not_in_master"] == ["ZZZ"] and m["not_in_file"] == ["OTH"] and m["applied"] == 2  # reported by code, never added or dropped
+    assert m["merged"][2]["region"] == "Closed" and m["merged"][2]["cluster"] == "Closed"     # the file is the ACTIVE list: a store it lacks is Closed
+    assert m["not_in_master"] == ["ZZZ"] and m["closed"] == ["OTH"] and m["applied"] == 2     # reported by code, never added or dropped
+    info = smf.summary(m["merged"])
+    assert info["regions"] == ["East", "North"] and info["closed"] == ["OTH"] and info["no_region"] == []   # Closed is not a business region
     assert smf.compare(m["merged"], current)["removed"] == [] and smf.compare(m["merged"], current)["added"] == []
 
 

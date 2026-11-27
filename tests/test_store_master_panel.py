@@ -130,4 +130,5 @@ def test_a_file_without_site_names_is_applied_onto_the_stored_master(env, tmp_pa
     rows = {r["store"]: r for r in mdb.current_rows(session, "store")}
     assert set(rows) == {"APM", "OLD"}                          # no store added or removed
     assert rows["APM"]["store_name"] == "CITYKART STORES PVT. LTD. (ARRAH-APM)" and rows["APM"]["cluster"] == "Patna"
-    assert "cluster" not in rows["OLD"]                         # not in the file: untouched, shows as Unassigned
+    assert rows["OLD"]["region"] == "Closed" and rows["OLD"]["cluster"] == "Closed"   # not in the active-store file: marked Closed
+    assert any("marked CLOSED" in w.value and "OLD" in w.value for w in at.warning)

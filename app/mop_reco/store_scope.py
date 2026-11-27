@@ -12,7 +12,8 @@ of these and a single store behaves identically. An EMPTY selection is never pro
 stops the page instead.
 
 The hierarchy comes from the store master's `cluster` and `region` fields. A store with a blank region or cluster is kept, under
-`UNASSIGNED` - never dropped and never guessed into a region (CLAUDE.md rules 4 and 5).
+`UNASSIGNED` - never dropped and never guessed into a region (CLAUDE.md rules 4 and 5). A store the active-store file no longer lists is
+stored with region and cluster `CLOSED` (set at upload time, never inferred here).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional, Union
 
 UNASSIGNED = "Unassigned"
+CLOSED = "Closed"          # a store of the master that the active-store file no longer lists (store_master_file.merge_into_current)
 ALL_REGIONS = "All regions"
 ALL_CLUSTERS = "All clusters"
 ALL_STORES = "All stores"
@@ -137,7 +139,8 @@ class Hierarchy:
 
 
 def _unassigned_last(name: str):
-    return (name == UNASSIGNED, name.lower())
+    """Real regions / clusters first, then Closed, then Unassigned."""
+    return (name == UNASSIGNED, name == CLOSED, name.lower())
 
 
 def resolve(h: Hierarchy, loaded_stores: Iterable[str], region: Optional[str] = None, cluster: Optional[str] = None,

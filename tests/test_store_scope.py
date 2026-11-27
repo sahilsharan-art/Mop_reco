@@ -100,3 +100,11 @@ def test_a_set_of_stores_filters_a_real_query(session):
     assert count("KPH") == (1, 800.0)                        # one store: exactly as before
     assert count(("ABD", "AGT")) == (2, 300.0)               # a cluster
     assert count(("ABD", "AGT", "BIA")) == (3, 700.0)        # a region
+
+
+def test_closed_stores_sort_after_the_regions_and_before_unassigned():
+    rows = ROWS + [{"store_name": "G", "store": "OLD", "cluster": "Closed", "region": "Closed"}]
+    h = ss.Hierarchy.from_rows(rows)
+    assert h.regions(["ABD", "KPH", "OLD", "XYZ"]) == ["East", "North", "Closed", ss.UNASSIGNED]
+    assert h.stores("Closed", None, ["ABD", "OLD"]) == ["OLD"]
+    assert ss.resolve(h, ["ABD", "OLD"], region="Closed") == "OLD"
