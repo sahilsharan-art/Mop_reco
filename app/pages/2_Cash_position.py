@@ -26,7 +26,7 @@ from mop_reco import store_scope
 from mop_reco import cms_blocks as cb
 from mop_reco import cms_blocks_export as cbx
 from mop_reco.config import load_config
-from mop_reco.formatting import display_date, money_short, money_table
+from mop_reco.formatting import display_date, money_short, money_table, money_cell
 
 page("Cash position")
 
@@ -389,7 +389,7 @@ with st.expander(f"Relation to store sheet column J - remainder {money_table(bri
         ("Store sheet column J (as stored)", bridge.store_sheet_j),
         ("Unexplained remainder", bridge.unexplained),
     ]
-    st.dataframe(pd.DataFrame({"Item": [r[0] for r in rows], "Rs": [money_table(r[1]) for r in rows]}),
+    st.dataframe(pd.DataFrame({"Item": [r[0] for r in rows], "Rs": [money_cell(r[1]) for r in rows]}),
                  hide_index=True, width="stretch")
     if abs(bridge.unexplained) > cb.EPS:
         st.error(f"MISMATCH - Rs {money_table(bridge.unexplained)} of the difference between this page and column J "

@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dashboard_common import require_operator
 from mop_reco import manual_match as mm
 from mop_reco.config import load_config
-from mop_reco.formatting import money_table
+from mop_reco.formatting import money_table, money_cell
 
 BLANK = ("", "nan", "None", "—", None)
 
@@ -46,7 +46,7 @@ def editable_table(df: pd.DataFrame) -> pd.DataFrame:
         "Store": df["store"],
         "Bill no": df["bill_no"],
         "MOP": df["mop"],
-        "Amount (Rs)": df["amount"].map(money_table),
+        "Amount (Rs)": df["amount"].map(money_cell),
         "Status": df["status"],
         "Gateway": df["gateway"].fillna("—"),
         "Matched txn": df["matched_txn"].fillna(""),

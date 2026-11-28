@@ -53,7 +53,8 @@ from mop_reco import queries as q
 from mop_reco import store_sheet as ss
 from mop_reco import store_sheet_source as src
 from mop_reco.export import ExportMeta
-from mop_reco.formatting import count as fmt_count
+from mop_reco import formatting
+from mop_reco.formatting import count as fmt_count, money_cell
 from mop_reco.formatting import blank, display_date, money_cr, money_short, money_table
 
 page("MOP RECO_Store Wise")
@@ -303,9 +304,12 @@ if _adj_open:
     {_adjustment_row("Credit Note Issued", matrix.credit_note_issued, colour="var(--bad)")}
     {_adjustment_row("Credit Note Received", matrix.credit_note_received)}"""
 
+# "Full amount" makes every figure about twenty characters: a class that keeps the cells on one line, a little smaller, and the table
+# wide enough to read (the scroll wrapper takes over on a narrow window) - instead of figures running into their neighbours.
+_full_cls = " mop-matrix--full" if formatting.get_unit() == formatting.UNIT_FULL else ""
 matrix_html = f"""
 <div class='mop-matrix-scroll'>
-<table class='mop-matrix'>
+<table class='mop-matrix{_full_cls}'>
   <thead>
     <tr class='mop-matrix-grouprow'>
       <th></th><th></th>
@@ -648,5 +652,5 @@ with st.expander(_notes_label):
                   "can be attributed neither to a store nor to a business "
                   "date — consistent with §6.7 excluding them from credits.")
         st.dataframe(unresolved.assign(
-            value=unresolved["value"].map(money_table)), hide_index=True,
+            value=unresolved["value"].map(money_cell)), hide_index=True,
             width="stretch")

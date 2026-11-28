@@ -10,6 +10,7 @@ Indian conventions throughout:
 from __future__ import annotations
 
 import datetime as _dt
+from contextvars import ContextVar
 
 import pandas as pd
 
@@ -17,6 +18,22 @@ CRORE = 10_000_000
 LAKH = 100_000
 
 DATE_DISPLAY_FORMAT = "%d/%m/%Y"
+
+# How money is DISPLAYED (2026-11-28): "auto" keeps every page as it always was (the Summary matrix in crores, tables in full rupees,
+# tiles in the best short unit); "crore" shows every displayed figure in crores; "full" shows every displayed figure as full rupees.
+# One ContextVar, set at the start of each page run from the sidebar's choice; the dashboard serves each session in its own thread, so
+# one person's choice never reaches another. Only DISPLAY forms follow it (money_cr, money_short, money_cell, money_note): exact
+# figures - tooltips, MISMATCH messages, exports, anything stated to the paisa - use money_table / indian_group, which never change.
+UNIT_AUTO, UNIT_CRORE, UNIT_FULL = "auto", "crore", "full"
+_UNIT = ContextVar("money_unit", default=UNIT_AUTO)
+
+
+def set_unit(unit: str) -> None:
+    _UNIT.set(unit if unit in (UNIT_AUTO, UNIT_CRORE, UNIT_FULL) else UNIT_AUTO)
+
+
+def get_unit() -> str:
+    return _UNIT.get()
 
 
 def display_date(value) -> str:
@@ -114,7 +131,8 @@ def money_short(value, unit_prefix: str = "Rs ") -> str:
     >= 1 crore  -> 'Rs 54.14 Cr'
     >= 1 lakh   -> 'Rs 2.29 L'
     otherwise   -> 'Rs 61,996'  (still grouped, never bare)
-    """
+
+    Follows the display unit: "crore" always shows crores, "full" always shows the full rupee figure."""
     if value is None:
         return "—"
     try:
@@ -122,8 +140,13 @@ def money_short(value, unit_prefix: str = "Rs ") -> str:
     except (TypeError, ValueError):
         return str(value)
 
+    unit = _UNIT.get()
+    if unit == UNIT_CRORE:
+        return money_cr(num)
     sign = "-" if num < 0 else ""
     magnitude = abs(num)
+    if unit == UNIT_FULL:
+        return f"{sign}{unit_prefix}{indian_group(magnitude)}"
 
     if magnitude >= CRORE:
         return f"{sign}{unit_prefix}{magnitude / CRORE:,.2f} Cr"
@@ -142,7 +165,9 @@ def money_cr(value) -> str:
     particulars matrix): 'Rs 103.10 Cr', 'Rs 0.02 Cr'. Display only — the
     underlying value is never rounded, and a total must always be computed
     from the unrounded values and formatted last, never summed from already-
-    rounded Cr strings."""
+    rounded Cr strings.
+
+    The display unit can switch it to the full rupee figure ("Full amount"); crores is what it shows otherwise."""
     if value is None:
         return "—"
     try:
@@ -150,7 +175,32 @@ def money_cr(value) -> str:
     except (TypeError, ValueError):
         return str(value)
     sign = "-" if num < 0 else ""
+    if _UNIT.get() == UNIT_FULL:
+        return f"{sign}Rs {indian_group(abs(num))}"
     return f"{sign}Rs {abs(num) / CRORE:,.2f} Cr"
+
+
+def money_cell(value) -> str:
+    """Money in a TABLE CELL, following the display unit: "auto" and "full" give the full figure with Indian grouping (as `money_table`
+    always has); "crore" gives crores to four decimals ('0.0073 Cr' = Rs 73,000), because a store-day is far smaller than a crore and two
+    decimals would flatten it to 0.00. Display only; use `money_table` where the exact figure must be stated."""
+    if value is None:
+        return "—"
+    if _UNIT.get() != UNIT_CRORE:
+        return indian_group(value)
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"{'-' if num < 0 else ''}{abs(num) / CRORE:,.4f} Cr"
+
+
+def money_note(value) -> str:
+    """A visible figure next to a count ("Rs 27,14,365.00"), following the display unit: "auto" and "full" give 'Rs ' + the full
+    figure (as before); "crore" gives 'Rs 0.27 Cr'."""
+    if _UNIT.get() == UNIT_CRORE:
+        return money_cr(value)
+    return f"Rs {money_table(value)}"
 
 
 def count(value) -> str:

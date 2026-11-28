@@ -1,4 +1,4 @@
-"""The Region | Cluster | Store picker at the top of the sidebar (2026-11-28): its choices, and the sidebar font fix."""
+"""The Region | Cluster | Store buttons at the top of the sidebar (2026-11-28): each button IS its filter. Their choices, and the sidebar font fix."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ class FakeState(dict):
 
 @pytest.fixture
 def state(monkeypatch):
-    fake = FakeState({dc.K_REGION: ss.ALL_REGIONS, dc.K_CLUSTER: ss.ALL_CLUSTERS, dc.K_STORE: "All stores", dc.K_LEVEL: "region"})
+    fake = FakeState({dc.K_REGION: ss.ALL_REGIONS, dc.K_CLUSTER: ss.ALL_CLUSTERS, dc.K_STORE: "All stores"})
     monkeypatch.setattr(dc.st, "session_state", fake)
     return fake
 
@@ -38,18 +38,22 @@ def test_choosing_a_cluster_resets_only_the_store(state):
     assert state[dc.K_REGION] == "R1" and state[dc.K_CLUSTER] == "BR2" and state[dc.K_STORE] == "All stores"
 
 
-def test_the_level_buttons_only_change_what_is_shown(state):
-    state[dc.K_REGION], state[dc.K_CLUSTER] = "R1", "BR1"
-    dc._scope_set_level("store")
-    assert state[dc.K_LEVEL] == "store" and state[dc.K_REGION] == "R1" and state[dc.K_CLUSTER] == "BR1"
+def test_the_store_list_copies_its_value_into_the_plain_key_before_the_rerun(state):
+    """So the Store button's label, drawn earlier in the same run, already shows the choice ("Store: BIA")."""
+    state["w_flt_store_0"] = "BIA"
+    dc._scope_store_changed("w_flt_store_0")
+    assert state[dc.K_STORE] == "BIA"
 
 
-def test_the_picker_sits_above_the_line_and_the_old_selectboxes_are_gone():
+def test_each_button_is_its_own_filter_and_sits_above_the_line():
     source = (APP / "dashboard_common.py").read_text(encoding="utf-8")
     body = source[source.index("def sidebar("):]
-    assert body.index("_scope_picker(hierarchy, loaded)") < body.index("st.divider()")          # Region | Cluster | Store, then the line
-    assert 'st.selectbox("Region"' not in source and 'st.selectbox("Cluster"' not in source
-    assert '("region", "Region"), ("cluster", "Cluster"), ("store", "Store")' in source          # the three buttons, in that order
+    assert body.index("_scope_picker(hierarchy, loaded)") < body.index("st.divider()")          # the buttons, then the line
+    picker = source[source.index("def _scope_picker("):source.index("def sidebar(")]
+    # three popover buttons in the order Region, Cluster, Store; a chosen value turns the button primary and shows "Region: R1"
+    assert picker.index('"Region"') < picker.index('"Cluster"') < picker.index('"Store"')
+    assert picker.count(".popover(") == 3 and 'type="primary" if' in picker and 'f"{name}: {chosen}"' in picker
+    assert "st.selectbox(\"Region\"" not in source and "st.selectbox(\"Cluster\"" not in source   # no separate dropdowns any more
 
 
 def test_sidebar_button_text_is_sized_on_the_paragraph_inside_the_button():
@@ -58,4 +62,24 @@ def test_sidebar_button_text_is_sized_on_the_paragraph_inside_the_button():
     assert 'section[data-testid="stSidebar"] .stButton button p' in css
     rule = css[css.index('section[data-testid="stSidebar"] .stButton button p'):]
     assert "font-size: 12px" in rule[:400] and "white-space: nowrap" in rule[:400]
-    assert ".st-key-rcs .stButton button" in css and ".mop-rcs-crumb" in css
+    # the picker's popover buttons and the popover panel (drawn outside the sidebar) are sized too
+    assert 'button[data-testid="stPopoverButton"] p' in css and 'div[data-testid="stPopoverBody"] .stButton button p' in css
+    assert chr(21) not in css and "\\25BE" in css            # the caret is a CSS escape, not a stray control character
+
+
+def test_the_amounts_buttons_toggle_and_the_unit_is_applied_at_the_start_of_every_page(monkeypatch):
+    from mop_reco import formatting
+    fake = FakeState()
+    monkeypatch.setattr(dc.st, "session_state", fake)
+    dc._unit_toggle("crore")
+    assert fake[dc.K_UNIT] == "crore"
+    dc._unit_toggle("full")
+    assert fake[dc.K_UNIT] == "full"
+    dc._unit_toggle("full")                                  # choosing the chosen one again goes back to the standard view
+    assert fake[dc.K_UNIT] == "auto"
+    source = (APP / "dashboard_common.py").read_text(encoding="utf-8")
+    page_body = source[source.index("def page("):source.index("def _store_hierarchy")] if "def _store_hierarchy" in source else source
+    assert "formatting.set_unit(st.session_state.get(K_UNIT" in source
+    body = source[source.index("def sidebar("):]
+    assert body.index("_unit_picker()") < body.index("st.divider()")          # the Amounts buttons sit above the line too
+    formatting.set_unit("auto")

@@ -15,7 +15,7 @@ from __future__ import annotations
 import streamlit as st
 
 from dashboard_common import tile
-from mop_reco.formatting import count as fmt_count
+from mop_reco.formatting import count as fmt_count, money_note
 from mop_reco.formatting import money_cr, money_short, money_table
 
 
@@ -84,20 +84,20 @@ def render_tiles(ov, key: str = "match-ribbon"):
         st.markdown("**Bills**")
         c1, c2, _c3 = st.columns(3)
         tile(c1, "OPEN (UNMATCHED)", fmt_count(b["open"]["count"]),
-             state="attention" if b["open"]["count"] else "clean", note=f"Rs {money_table(b['open']['value'])}",
+             state="attention" if b["open"]["count"] else "clean", note=money_note(b['open']['value']),
              tooltip=f"Rs {money_table(b['open']['value'])} - no transaction matched yet")
         tile(c2, "CLOSED - MANUALLY MATCHED", fmt_count(b["manual"]["count"]), state="clean",
-             note=f"Rs {money_table(b['manual']['value'])}",
+             note=money_note(b['manual']['value']),
              tooltip=f"Rs {money_table(b['manual']['value'])} - matched by a person (inline or upload)")
         _bill_notes(ov)          # the explanatory sentence is not shown; a MISMATCH still is
 
         st.markdown("**Transactions**")
         r1, r2, r3 = st.columns(3)
         tile(r1, "OPEN (UNMAPPED)", fmt_count(t.unmapped_n), state="attention" if t.unmapped_n else "clean",
-             note=f"Rs {money_table(t.unmapped_v)}", tooltip=f"Rs {money_table(t.unmapped_v)} - money received, no bill")
-        tile(r2, "CLOSED - MANUALLY MATCHED", fmt_count(t.manual_n), state="clean", note=f"Rs {money_table(t.manual_v)}",
+             note=money_note(t.unmapped_v), tooltip=f"Rs {money_table(t.unmapped_v)} - money received, no bill")
+        tile(r2, "CLOSED - MANUALLY MATCHED", fmt_count(t.manual_n), state="clean", note=money_note(t.manual_v),
              tooltip=f"Rs {money_table(t.manual_v)} - matched to a bill by a person")
-        tile(r3, "CUSTOMER REFUNDS", fmt_count(t.refunded_n), state="neutral", note=f"Rs {money_table(t.refunded_v)}",
+        tile(r3, "CUSTOMER REFUNDS", fmt_count(t.refunded_n), state="neutral", note=money_note(t.refunded_v),
              tooltip=f"Rs {money_table(t.refunded_v)} - paid back to the customer; never a bill match, never revenue")
         _txn_notes(ov)           # the explanatory sentences are not shown; a MISMATCH still is
         _controls(ov, quiet=True)

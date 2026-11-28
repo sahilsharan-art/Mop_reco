@@ -38,7 +38,7 @@ from mop_reco import store_scope
 from mop_reco import float_tracker as ft
 from mop_reco import store_sheet_source as src
 from mop_reco.export import ExportMeta
-from mop_reco.formatting import count as fmt_count
+from mop_reco.formatting import count as fmt_count, money_cell
 from mop_reco.formatting import display_date, money_short, money_table
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "app" / "config.yaml"
@@ -176,7 +176,7 @@ if not negative_rows.empty:
         }).copy()
         neg_table["Business date"] = neg_table["Business date"].map(display_date)
         for column in ("Opening", "Deposit", "Float"):
-            neg_table[column] = neg_table[column].map(money_table)
+            neg_table[column] = neg_table[column].map(money_cell)
         st.dataframe(neg_table, hide_index=True, width="stretch")
         frame_export_button(
             negative_rows,
@@ -215,7 +215,7 @@ if dq_count:
             }).copy()
             dq_table["Date"] = dq_table["Date"].map(display_date)
             for column in ("I (deposit)", "J (credit)", "J - I"):
-                dq_table[column] = dq_table[column].map(money_table)
+                dq_table[column] = dq_table[column].map(money_cell)
             st.dataframe(dq_table, hide_index=True, width="stretch")
             st.caption(f"Total: {fmt_count(len(dq_shown))} store-day(s), "
                       f"{money_short(dq_total)}.")
@@ -255,7 +255,7 @@ st.caption(f"{fmt_count(len(view_df))} row(s) in this view.")
 def _float_cell(row) -> str:
     # Flagged, never hidden — a negative float is a real number (catch-up or
     # misdated deposit), not an error to floor away (2026-09-15).
-    text = money_table(row["float_amount"])
+    text = money_cell(row["float_amount"])
     return f"⚠ {text}" if row["negative_float"] else text
 
 
@@ -264,15 +264,15 @@ def _display(frame: pd.DataFrame) -> pd.DataFrame:
         "Store": frame["store"],
         "Business date": frame["business_date"].map(display_date),
         "Day": frame["day_name"],
-        "Opening": frame["opening_balance"].map(money_table),
-        "Cash sale": frame["cash_sale"].map(money_table),
-        "Deposit": frame["cash_deposit"].map(money_table),
+        "Opening": frame["opening_balance"].map(money_cell),
+        "Cash sale": frame["cash_sale"].map(money_cell),
+        "Deposit": frame["cash_deposit"].map(money_cell),
         "Float": frame.apply(_float_cell, axis=1),
-        "Float threshold": frame["float_threshold"].map(money_table),
+        "Float threshold": frame["float_threshold"].map(money_cell),
         "High float?": frame["high_float"].map({True: "Yes", False: ""}),
         "Days held high": frame["days_held_high"],
-        "Cash received": frame["cash_received"].map(money_table),
-        "Closing balance": frame["closing_balance"].map(money_table),
+        "Cash received": frame["cash_received"].map(money_cell),
+        "Closing balance": frame["closing_balance"].map(money_cell),
         "Remark": frame["remark"],
         "Remark by": frame["remark_by"],
         "Remark at": frame["remark_at"].map(

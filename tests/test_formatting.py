@@ -163,3 +163,53 @@ def test_blank_never_shows_the_literal_string_nan():
 def test_blank_passes_through_a_real_value():
     assert blank("bulk_upload") == "bulk_upload"
     assert blank(0) == "0"
+
+
+# ---------------------------------------------------------------------------
+# The display unit (2026-11-28): Crore / Full amount for every DISPLAYED figure; exact figures never change.
+# ---------------------------------------------------------------------------
+
+import pytest as _pytest
+
+from mop_reco import formatting as _fmt
+
+
+@_pytest.fixture(autouse=False)
+def _unit():
+    yield _fmt.set_unit
+    _fmt.set_unit("auto")                     # never leak a unit into another test
+
+
+def test_auto_keeps_every_page_exactly_as_it_was(_unit):
+    _unit("auto")
+    v = 27143650.5
+    assert _fmt.money_cr(v) == "Rs 2.71 Cr" and _fmt.money_short(v) == "Rs 2.71 Cr" and _fmt.money_short(61996) == "Rs 61,996"
+    assert _fmt.money_cell(v) == "2,71,43,650.50" and _fmt.money_note(v) == "Rs 2,71,43,650.50"
+
+
+def test_crore_shows_every_display_form_in_crores(_unit):
+    _unit("crore")
+    assert _fmt.money_short(61996) == "Rs 0.01 Cr" and _fmt.money_short(27143650.5) == "Rs 2.71 Cr"       # never lakhs or bare rupees
+    assert _fmt.money_cr(27143650.5) == "Rs 2.71 Cr" and _fmt.money_note(27143650.5) == "Rs 2.71 Cr"
+    assert _fmt.money_cell(73000) == "0.0073 Cr"                  # a table cell keeps four decimals: a store-day is far below a crore
+    assert _fmt.money_cell(-1914000) == "-0.1914 Cr" and _fmt.money_cell(None) == "—"
+
+
+def test_full_shows_every_display_form_as_the_full_figure(_unit):
+    _unit("full")
+    assert _fmt.money_cr(999737703590.0 / 100) == "Rs 9,99,73,77,035.90"
+    assert _fmt.money_short(61996) == "Rs 61,996.00" and _fmt.money_short(27143650.5) == "Rs 2,71,43,650.50"
+    assert _fmt.money_short(-5) == "-Rs 5.00" and _fmt.money_cr(-5) == "-Rs 5.00"
+    assert _fmt.money_cell(27143650.5) == "2,71,43,650.50" and _fmt.money_note(27143650.5) == "Rs 2,71,43,650.50"
+
+
+def test_exact_figures_are_exact_in_every_unit(_unit):
+    """Tooltips, MISMATCH messages and exports state the figure to the paisa - the unit must never touch them."""
+    for unit in ("auto", "crore", "full"):
+        _unit(unit)
+        assert _fmt.money_table(27143650.5) == "2,71,43,650.50" and _fmt.indian_group(125.0) == "125.00"
+
+
+def test_an_unknown_unit_falls_back_to_auto(_unit):
+    _unit("bogus")
+    assert _fmt.get_unit() == "auto"

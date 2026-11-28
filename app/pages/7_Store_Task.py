@@ -40,7 +40,7 @@ from mop_reco import store_task_summary as sts
 from mop_reco import store_tasks as stt
 from mop_reco.db import ManualMatch, StoreTask
 from mop_reco.export import ExportMeta
-from mop_reco.formatting import count as fmt_count
+from mop_reco.formatting import count as fmt_count, money_cell
 from mop_reco.formatting import display_date, money_short, money_table
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "app" / "config.yaml"
@@ -161,7 +161,7 @@ elif last:
 
 by_type = stt.type_summary(session, today, **tile_filters)
 shown = by_type.copy()
-shown["Value"] = shown["Value"].map(money_table)
+shown["Value"] = shown["Value"].map(money_cell)
 st.dataframe(shown, hide_index=True, width="stretch")
 
 if st.button("Check tasks against the data now", key="st_resync",
@@ -195,7 +195,7 @@ else:
     overdue_mask = p["_overdue"].tolist()
     ids = p["_id"].tolist()
     view = p.drop(columns=["_id", "_overdue"]).copy()
-    view["Amount"] = view["Amount"].map(money_table)
+    view["Amount"] = view["Amount"].map(money_cell)
     view = view.drop(columns=["Due by"])
     for c in ("Business date", "Raised on", "Closed on"):
         view[c] = view[c].map(lambda v: display_date(v) if v else "")

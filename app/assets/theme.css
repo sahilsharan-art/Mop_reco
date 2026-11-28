@@ -528,36 +528,82 @@ section[data-testid="stSidebar"] .stButton button div[data-testid="stMarkdownCon
   text-overflow: ellipsis;
 }
 
-/* Region | Cluster | Store picker at the top of the sidebar, above the line (dashboard_common._scope_picker) - the same compact
-   look as the Year / Month buttons, scoped to st.container(key="rcs") so it never leaks onto other buttons. */
-.st-key-rcs { margin-bottom: 2px; }
+/* Region | Cluster | Store at the top of the sidebar, above the line (dashboard_common._scope_picker): three compact buttons, each one
+   IS its filter - it shows its name, or the choice in blue ("Region: R1"), and opens its options in a popover. Scoped to
+   st.container(key="rcs") so nothing leaks onto the app's other buttons; same look as the Year / Month buttons. */
+.st-key-rcs { margin-bottom: 4px; }
 .st-key-rcs div[data-testid="stHorizontalBlock"] { gap: 4px; }
-.st-key-rcs .stButton { margin-bottom: 4px; }
-.st-key-rcs .stButton button {
-  padding: 2px 4px;
+.st-key-rcs button[data-testid="stPopoverButton"] {
+  padding: 2px 6px;
   min-height: 28px;
   font-weight: 500;
+  justify-content: center;
 }
-.st-key-rcs .stButton button[kind="primary"] {
+.st-key-rcs button[data-testid="stPopoverButton"] p {
+  font-size: 12px;
+  line-height: 1.25;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* the chevron is a font icon (Material Symbols is not available here, theme.css hides it elsewhere): a small caret instead */
+.st-key-rcs button[data-testid="stPopoverButton"] > div > div:last-child { display: none; }
+.st-key-rcs button[data-testid="stPopoverButton"] p::after { content: " \25BE"; font-size: 9px; opacity: .7; }
+.st-key-rcs button[data-testid="stPopoverButton"][kind="primary"] {
   background: var(--accent);
   background-image: var(--gradient-primary);
   border-color: color-mix(in oklab, var(--accent) 70%, black);
   color: #FFFFFF;
 }
-.st-key-rcs .stButton button[kind="primary"]:hover { color: #FFFFFF; opacity: .92; }
-.st-key-rcs .stButton button[kind="secondary"] {
+.st-key-rcs button[data-testid="stPopoverButton"][kind="secondary"] {
   background: var(--surface-alt);
   border-color: var(--border);
   color: var(--ink);
 }
-.st-key-rcs .mop-rcs-crumb {
-  font-size: 11px;
-  line-height: 1.3;
+
+/* Amounts: Crore | Full amount (dashboard_common._unit_picker) - two compact buttons under the Region | Cluster | Store row. */
+.st-key-unit { margin: 2px 0 4px; }
+.st-key-unit .mop-unit-label {
+  font-family: var(--font-heading);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
   color: var(--ink-soft);
-  margin: 0 0 6px;
+  margin: 4px 0 4px;
 }
-.st-key-rcs .mop-rcs-crumb b { color: var(--ink); font-weight: 600; }
-.st-key-rcs div[data-baseweb="select"] > div { min-height: 32px; font-size: 12px; }
+.st-key-unit div[data-testid="stHorizontalBlock"] { gap: 4px; }
+.st-key-unit .stButton { margin-bottom: 0; }
+.st-key-unit .stButton button { padding: 2px 4px; min-height: 28px; font-weight: 500; }
+.st-key-unit .stButton button[kind="primary"] {
+  background: var(--accent);
+  background-image: var(--gradient-primary);
+  border-color: color-mix(in oklab, var(--accent) 70%, black);
+  color: #FFFFFF;
+}
+.st-key-unit .stButton button[kind="secondary"] { background: var(--surface-alt); border-color: var(--border); color: var(--ink); }
+
+/* The popover panel is drawn outside the sidebar, so its buttons are styled here (the picker is the only popover with buttons in it
+   besides the account menu, which has none). Compact, 12px, 3 to a row. */
+div[data-testid="stPopoverBody"] { min-width: 300px; padding: 8px 10px; }
+div[data-testid="stPopoverBody"] div[data-testid="stHorizontalBlock"] { gap: 4px; }
+div[data-testid="stPopoverBody"] .stButton { margin-bottom: 4px; }
+div[data-testid="stPopoverBody"] .stButton button { padding: 2px 4px; min-height: 28px; font-weight: 500; }
+div[data-testid="stPopoverBody"] .stButton button p {
+  font-size: 12px; line-height: 1.25; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+div[data-testid="stPopoverBody"] .stButton button[kind="primary"] {
+  background: var(--accent);
+  background-image: var(--gradient-primary);
+  border-color: color-mix(in oklab, var(--accent) 70%, black);
+  color: #FFFFFF;
+}
+div[data-testid="stPopoverBody"] .stButton button[kind="secondary"] {
+  background: var(--surface-alt);
+  border-color: var(--border);
+  color: var(--ink);
+}
 
 .mop-page-info { padding-top: 8px; color: var(--ink); }
 .mop-page-info b { font-variant-numeric: tabular-nums; }
@@ -1010,6 +1056,13 @@ div[data-testid="stLayoutWrapper"]:has(> .st-key-topnav) {
 
 /* --- the matrix's row labels match the figures beside them (2026-10-26) --- */
 .mop-matrix .mop-matrix-rowlabel { font-size: 14px; }
+
+/* "Full amount" (formatting.UNIT_FULL): figures are about twenty characters, so the matrix keeps them on one line, a touch smaller,
+   and never narrower than it needs; a narrow window scrolls the table sideways instead of overlapping neighbours. */
+.mop-matrix--full { min-width: 1000px; }
+.mop-matrix--full .mop-matrix-figure { font-size: 12.5px; white-space: nowrap; }
+.mop-matrix--full .mop-matrix-row--sale .mop-matrix-figure { font-size: 13.5px; }
+.mop-matrix--full .mop-matrix-cell { padding-left: 8px; padding-right: 8px; }
 .mop-matrix .mop-matrix-row--sale .mop-matrix-rowlabel { font-size: 16px; }
 .mop-matrix-headrow th, .mop-matrix-grouprow th { font-size: 12.5px; }
 .mop-matrix-pct { font-size: 12px; }

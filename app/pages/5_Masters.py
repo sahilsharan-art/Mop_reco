@@ -18,7 +18,7 @@ from mop_reco import master_gaps as mg
 from mop_reco import masters_db
 from mop_reco.export import ExportMeta
 from mop_reco.config import load_config
-from mop_reco.formatting import display_date, money_table
+from mop_reco.formatting import display_date, money_table, money_cell
 from mop_reco.masters import (
     MASTER_SPECS,
     check_mid_integrity,
@@ -85,7 +85,7 @@ if _run is not None:
             f"({int(_in['rows'].sum()):,} rows, Rs {money_table(_in['value'].sum())}) but were loaded after the "
             "dates they appear on, and masters apply from the date they were loaded (never rewriting an earlier "
             "date) - so they stay unresolved for those dates. Nothing is guessed.")
-        _show = _gaps.assign(value=_gaps["value"].map(money_table), first_seen=_gaps["first_seen"].map(display_date),
+        _show = _gaps.assign(value=_gaps["value"].map(money_cell), first_seen=_gaps["first_seen"].map(display_date),
                              last_seen=_gaps["last_seen"].map(display_date))
         st.dataframe(_show, hide_index=True, width="stretch")
         frame_export_button(

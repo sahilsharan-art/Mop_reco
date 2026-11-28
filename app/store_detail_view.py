@@ -11,7 +11,7 @@ import streamlit as st
 
 from mop_reco import store_sheet as ss
 from mop_reco import store_sheet_source as src
-from mop_reco.formatting import count as fmt_count
+from mop_reco.formatting import count as fmt_count, money_cell
 from mop_reco.formatting import display_date, money_table
 from mop_reco.store_sheet_export import build_workbook
 
@@ -98,9 +98,9 @@ def display(frame: pd.DataFrame, include_float: bool = False) -> pd.DataFrame:
             # or the grand total) is a Defect B data artefact, not a
             # negative receivable — it floors to zero here and is named in
             # the Data quality expander instead, never displayed raw.
-            out[label] = frame[name].map(lambda k: money_table(max(0.0, float(k))))
+            out[label] = frame[name].map(lambda k: money_cell(max(0.0, float(k))))
         else:
-            out[label] = frame[name].map(money_table)
+            out[label] = frame[name].map(money_cell)
     return pd.DataFrame(out)
 
 

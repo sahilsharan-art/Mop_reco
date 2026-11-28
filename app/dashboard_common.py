@@ -27,8 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mop_reco.config import load_config
 from mop_reco.db import Exception_, R1BillLine, Run, get_session, init_db
 from mop_reco.export import XLSX_ROW_LIMIT, ExportMeta, build_export
-from mop_reco import store_scope
-from mop_reco.formatting import count as fmt_count
+from mop_reco import formatting, store_scope
+from mop_reco.formatting import count as fmt_count, money_cell
 from mop_reco.formatting import display_date, money_cr, money_short, money_table
 
 # --- session keys ----------------------------------------------------------
@@ -38,7 +38,7 @@ K_DATE_TO = "flt_date_to"
 K_STORE = "flt_store"
 K_REGION = "flt_region"
 K_CLUSTER = "flt_cluster"
-K_LEVEL = "flt_level"          # which of Region / Cluster / Store the picker shows
+K_UNIT = "flt_unit"             # how amounts are shown: auto (as always) | crore | full (formatting.set_unit)
 K_SCOPE_GEN = "_flt_scope_gen" # bumped whenever the scope changes, so the Store list gets a fresh widget
 
 
@@ -81,6 +81,7 @@ def page(title: str, purpose: str = "", icon: str = None, nav: bool = True):
     The active date range is written beside the title by `sidebar()` once it
     knows what it is — see `page_range_slot`.
     """
+    formatting.set_unit(st.session_state.get(K_UNIT, formatting.UNIT_AUTO))      # the amounts' display unit, for this run
     # The landing page's title IS the app name; don't repeat it in the tab.
     tab = title if title == APP_NAME else f"{title} — {APP_NAME}"
     st.set_page_config(page_title=tab, layout="wide")
@@ -446,7 +447,7 @@ def stmt_row(label, value, use_cr: bool = False) -> str:
     whole table (Summary's Cash Position/Cash With Agency). Defaults to
     the original full-rupee `money_table()` so every other caller (CMS
     Reco's own statement table) is unaffected."""
-    figure = money_cr(abs(value)) if use_cr else money_table(abs(value))
+    figure = money_cr(abs(value)) if use_cr else money_cell(abs(value))
     return (f"<tr class='mop-stmt-row'>"
             f"<td class='mop-stmt-rowlabel'>{label}</td>"
             f"<td class='mop-stmt-figure'>{figure}</td></tr>")
@@ -459,7 +460,7 @@ def stmt_table(title, period, rows_html, result_label, result_value,
     # The operation rows carry their sign in their "Add:/Less:" label, so their figures stay positive. The RESULT is a total, not an
     # operation: a negative one (a closing cash balance below zero is an impossible book) keeps its minus sign, because red alone
     # must never be the only signal (CLAUDE.md 8.1; audit D-007).
-    result_figure = money_cr(result_value) if use_cr else money_table(result_value)
+    result_figure = money_cr(result_value) if use_cr else money_cell(result_value)
     total_row = (
         f"<tr class='mop-stmt-row mop-stmt-total{warn_cls}'>"
         f"<td class='mop-stmt-rowlabel'>{result_label}</td>"
@@ -634,10 +635,6 @@ def _quick_date_picker(dates: list[str], first: date, last: date):
                 )
 
 
-def _scope_set_level(level: str):
-    st.session_state[K_LEVEL] = level
-
-
 def _scope_pick_region(region: str):
     st.session_state[K_REGION] = region
     st.session_state[K_CLUSTER] = store_scope.ALL_CLUSTERS
@@ -651,12 +648,39 @@ def _scope_pick_cluster(cluster: str):
     st.session_state[K_SCOPE_GEN] = st.session_state.get(K_SCOPE_GEN, 0) + 1
 
 
+def _scope_store_changed(widget_key: str):
+    """The Store list's own on_change: copy its value into the plain key BEFORE the rerun, so the Store button's label (drawn earlier
+    in the same run) already shows the new choice."""
+    st.session_state[K_STORE] = st.session_state[widget_key]
+
+
+def _unit_toggle(unit: str):
+    """Crore / Full amount: choosing the one already chosen goes back to the standard view."""
+    st.session_state[K_UNIT] = formatting.UNIT_AUTO if st.session_state.get(K_UNIT) == unit else unit
+
+
+def _unit_picker():
+    """"Amounts: [Crore] [Full amount]" under the Region | Cluster | Store buttons, above the line (2026-11-28). Neither chosen = every page
+    as it always was; Crore shows every displayed figure in crores; Full amount shows every displayed figure as full rupees. Exact
+    figures (tooltips, MISMATCH messages, exports) never change."""
+    current = st.session_state.get(K_UNIT, formatting.UNIT_AUTO)
+    with st.container(key="unit"):
+        st.markdown("<div class='mop-unit-label'>Amounts</div>", unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        for col, (unit, label) in zip((c1, c2), ((formatting.UNIT_CRORE, "Crore"), (formatting.UNIT_FULL, "Full amount"))):
+            col.button(label, key=f"unit_{unit}", width="stretch", type="primary" if current == unit else "secondary",
+                       on_click=_unit_toggle, args=(unit,),
+                       help="Click again to go back to the standard view" if current == unit else None)
+
+
 def _scope_picker(hierarchy, loaded: list):
-    """Region | Cluster | Store as three buttons in a row at the very top of the sidebar, above the line (2026-11-28), styled like the
-    Year / Month quick pickers. The chosen level shows its options underneath: Region and Cluster as a grid of buttons (the clusters
-    are the region's own when a region is chosen), Store as a searchable list (there are over two hundred codes). Every choice is
-    written through an `on_click` callback into the plain session keys, which Streamlit runs BEFORE the rerun - so no widget key is
-    ever written after its widget exists (widget-state trap 3) and the choice survives a page switch (trap 1)."""
+    """Region | Cluster | Store: three buttons in a row at the very top of the sidebar, above the line, and each button IS its filter
+    (2026-11-28). A button shows its name - or, once a choice is made, the choice ("Region: R1") in blue - and opens its own options
+    in a small popover: Region and Cluster as a grid of buttons (`All` first; the clusters are the chosen region's own), Store as a
+    searchable list (there are over two hundred codes). Every choice is written by an `on_click` / `on_change` callback into the plain
+    session keys, which Streamlit runs BEFORE the rerun - so no widget key is ever written after its widget exists (widget-state trap
+    3) and the choice survives a page switch (trap 1). Choosing a region clears cluster and store; choosing a cluster clears the
+    store; `K_SCOPE_GEN` gives the Store list a fresh widget whenever the scope changes (trap 2)."""
     region, cluster = st.session_state[K_REGION], st.session_state[K_CLUSTER]
     region_options = hierarchy.regions(loaded)
     if region != store_scope.ALL_REGIONS and region not in region_options:
@@ -667,40 +691,37 @@ def _scope_picker(hierarchy, loaded: list):
     store_options = hierarchy.stores(region, cluster, loaded)
     if st.session_state[K_STORE] != "All stores" and st.session_state[K_STORE] not in store_options:
         st.session_state[K_STORE] = "All stores"
-    level = st.session_state.setdefault(K_LEVEL, "region")
+    store = st.session_state[K_STORE]
+
+    def title(name, chosen, all_value):
+        return name if chosen == all_value else f"{name}: {chosen}"
+
+    def grid(options, current, all_value, on_pick, prefix):
+        items = [("All", all_value)] + [(o, o) for o in options]
+        for row_start in range(0, len(items), 3):
+            row = st.columns(3)
+            for col, (label, value) in zip(row, items[row_start:row_start + 3]):
+                col.button(label, key=f"{prefix}_{value}", width="stretch",
+                           type="primary" if current == value else "secondary", on_click=on_pick, args=(value,))
 
     with st.container(key="rcs"):
-        cols = st.columns(3)
-        for col, (key, label) in zip(cols, (("region", "Region"), ("cluster", "Cluster"), ("store", "Store"))):
-            col.button(label, key=f"rcs_level_{key}", width="stretch", type="primary" if level == key else "secondary",
-                       on_click=_scope_set_level, args=(key,))
-        crumb = " &rsaquo; ".join([
-            f"<b>{html.escape(region)}</b>" if region != store_scope.ALL_REGIONS else "all regions",
-            f"<b>{html.escape(cluster)}</b>" if cluster != store_scope.ALL_CLUSTERS else "all clusters",
-            f"<b>{html.escape(st.session_state[K_STORE])}</b>" if st.session_state[K_STORE] != "All stores" else "all stores"])
-        st.markdown(f"<div class='mop-rcs-crumb'>{crumb}</div>", unsafe_allow_html=True)
-
-        def grid(options, current, all_value, on_pick, prefix):
-            items = [("All", all_value)] + [(o, o) for o in options]
-            for row_start in range(0, len(items), 3):
-                row = st.columns(3)
-                for col, (label, value) in zip(row, items[row_start:row_start + 3]):
-                    col.button(label, key=f"{prefix}_{value}", width="stretch", help=None if label != "All" else "No filter at this level",
-                               type="primary" if current == value else "secondary", on_click=on_pick, args=(value,))
-
-        if level == "region":
+        c_region, c_cluster, c_store = st.columns(3)
+        with c_region.popover(title("Region", region, store_scope.ALL_REGIONS), width="stretch",
+                              type="primary" if region != store_scope.ALL_REGIONS else "secondary", key="rcs_region"):
             grid(region_options, region, store_scope.ALL_REGIONS, _scope_pick_region, "rcs_r")
-        elif level == "cluster":
-            if not cluster_options:
-                st.caption("No cluster in this region.")
-            else:
+        with c_cluster.popover(title("Cluster", cluster, store_scope.ALL_CLUSTERS), width="stretch",
+                               type="primary" if cluster != store_scope.ALL_CLUSTERS else "secondary", key="rcs_cluster"):
+            if cluster_options:
                 grid(cluster_options, cluster, store_scope.ALL_CLUSTERS, _scope_pick_cluster, "rcs_c")
-        else:
+            else:
+                st.caption("No cluster in this region.")
+        with c_store.popover(title("Store", store, "All stores"), width="stretch",
+                             type="primary" if store != "All stores" else "secondary", key="rcs_store"):
             options = ["All stores"] + store_options
             gen = st.session_state.get(K_SCOPE_GEN, 0)
-            st.session_state[K_STORE] = st.selectbox(
-                "Store", options, index=options.index(st.session_state[K_STORE]), key=f"w_flt_store_{gen}",
-                label_visibility="collapsed", placeholder="Type a store code")
+            st.selectbox("Store", options, index=options.index(store), key=f"w_flt_store_{gen}",
+                         label_visibility="collapsed", placeholder="Type a store code",
+                         on_change=_scope_store_changed, args=(f"w_flt_store_{gen}",))
 
 
 def sidebar(session, run, show_store: bool = True):
@@ -751,7 +772,6 @@ def sidebar(session, run, show_store: bool = True):
         st.session_state[K_STORE] = "All stores"
         st.session_state[K_REGION] = store_scope.ALL_REGIONS
         st.session_state[K_CLUSTER] = store_scope.ALL_CLUSTERS
-        st.session_state[K_LEVEL] = "region"
         st.session_state[K_SCOPE_GEN] = st.session_state.get(K_SCOPE_GEN, 0) + 1
 
     dates = loaded_dates(run.id) if run else []
@@ -764,6 +784,8 @@ def sidebar(session, run, show_store: bool = True):
         st.session_state.setdefault(K_CLUSTER, store_scope.ALL_CLUSTERS)
         if scope_picker_on:
             _scope_picker(hierarchy, loaded)         # above the line: Region | Cluster | Store
+        if dates:
+            _unit_picker()                           # above the line: Amounts - Crore | Full amount
         st.divider()
         if not dates:
             st.caption("No reconciled dates yet — filters appear after a run.")

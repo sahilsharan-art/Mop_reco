@@ -50,7 +50,7 @@ from mop_reco import refunds as rf
 from mop_reco import table_upload as tu
 from mop_reco.exceptions import bill_exception_key, txn_exception_key
 from mop_reco.export import ExportMeta, build_export
-from mop_reco.formatting import blank
+from mop_reco.formatting import blank, money_cell
 from mop_reco.formatting import blank as fmt_blank
 from mop_reco.formatting import count as fmt_count
 from mop_reco.formatting import display_date, money_short, money_table
@@ -91,7 +91,7 @@ def _parked_section():
                    "arrives, re-run: each is then matched or becomes a real open bill.")
         shown = frame.copy()
         shown["date"] = shown["date"].map(display_date)
-        shown["amount"] = shown["amount"].map(money_table)
+        shown["amount"] = shown["amount"].map(money_cell)
         st.dataframe(shown, hide_index=True, width="stretch", height=260)
         frame_export_button(frame, ExportMeta(run_id=run.id, run_timestamp=run.started_at, date_from=date_from,
                                               date_to=date_to, filters={"store": store}, value_column="amount",
@@ -196,7 +196,7 @@ def _format_exceptions(df):
     if df.empty:
         return df
     out = df.copy()
-    out["amount"] = out["amount"].map(money_table)
+    out["amount"] = out["amount"].map(money_cell)
     if "date" in out.columns:
         out["date"] = out["date"].map(display_date)
     return out
@@ -391,7 +391,7 @@ def _add_pairing(frame):
     _pool, _bills, assignment = _cached_assignment(_pairing_fp())
     out, cands = et.add_pairing(frame, assignment)
     for n in (1, 2):
-        out[f"Amount {n}"] = out[f"Amount {n}"].map(lambda v: money_table(v) if pd.notna(v) else "")
+        out[f"Amount {n}"] = out[f"Amount {n}"].map(lambda v: money_cell(v) if pd.notna(v) else "")
     return out, cands
 
 
@@ -909,7 +909,7 @@ def _bulk_accept_block():
         shown["date"] = shown["date"].map(display_date)
         shown["txn_date"] = shown["txn_date"].map(display_date)
         for col in ("amount", "Amount 1", "Amount 2"):
-            shown[col] = shown[col].map(lambda v: money_table(v) if pd.notna(v) else "")
+            shown[col] = shown[col].map(lambda v: money_cell(v) if pd.notna(v) else "")
         st.dataframe(shown, hide_index=True, width="stretch", height=320)
         frame_export_button(prev, ExportMeta(run_id=run.id, run_timestamp=run.started_at, date_from=date_from,
                                              date_to=date_to, filters={"bulk_accept": kind}, value_column="amount",
@@ -1000,7 +1000,7 @@ if status_view == "Open":
         _show2 = _second.copy()
         _show2["bill_date"] = _show2["bill_date"].map(display_date)
         _show2["second_date"] = _show2["second_date"].map(display_date)
-        _show2["amount"] = _show2["amount"].map(money_table)
+        _show2["amount"] = _show2["amount"].map(money_cell)
         st.dataframe(_show2, hide_index=True, width="stretch")
 
 st.divider()
@@ -1038,7 +1038,7 @@ def _matched_view(frame: pd.DataFrame, columns: list, what: str, money_cols=("am
         out["date"] = out["date"].map(display_date)
     for c in money_cols:
         if c in out.columns:
-            out[c] = out[c].map(lambda v: money_table(v) if pd.notna(v) and v != "" else "")
+            out[c] = out[c].map(lambda v: money_cell(v) if pd.notna(v) and v != "" else "")
     return out
 
 
@@ -1128,7 +1128,7 @@ else:
     cr_view["business_date"] = cr_view["business_date"].map(display_date)
     cr_view["refund_date"] = cr_view["refund_date"].map(display_date)
     cr_view["uploaded_at"] = pd.to_datetime(cr_view["uploaded_at"]).dt.strftime("%d/%m/%Y %H:%M")
-    cr_view["amount"] = cr_view["amount"].map(money_table)
+    cr_view["amount"] = cr_view["amount"].map(money_cell)
     for c in ("customer_name", "zoho_no"):
         cr_view[c] = cr_view[c].map(fmt_blank)
     ev3 = st.dataframe(
@@ -1160,7 +1160,7 @@ with st.expander("The register - every manual match and refund ever recorded, re
         view = reg.copy()
         view["Date"] = view["business_date"].map(display_date)
         view["When"] = pd.to_datetime(view["created_at"]).dt.strftime("%d/%m/%Y %H:%M")
-        view["Amount (Rs)"] = view["amount"].map(money_table)
+        view["Amount (Rs)"] = view["amount"].map(money_cell)
         view["lifecycle_note"] = view["lifecycle_note"].map(fmt_blank)
         st.dataframe(status_styler(view[["id", "Date", "store", "bill_no", "mop", "Amount (Rs)", "gateway",
                                          "transaction_id", "status", "operator", "When", "lifecycle",
@@ -1178,7 +1178,7 @@ with st.expander("The register - every manual match and refund ever recorded, re
         st.markdown("**Refund events**")
         ev_view = events.copy()
         ev_view["at"] = pd.to_datetime(ev_view["at"]).dt.strftime("%d/%m/%Y %H:%M")
-        ev_view["amount"] = ev_view["amount"].map(money_table)
+        ev_view["amount"] = ev_view["amount"].map(money_cell)
         ev_view["refund_date"] = ev_view["refund_date"].map(display_date)
         st.dataframe(ev_view, hide_index=True, width="stretch",
                      column_config={"transaction_id": st.column_config.TextColumn(width="medium")})
@@ -1235,7 +1235,7 @@ if matched_open:
             "Store": mb_df["store"],
             "Bill no": mb_df["bill_no"],
             "MOP": mb_df["mop"],
-            "Amount": mb_df["amount"].map(money_table),
+            "Amount": mb_df["amount"].map(money_cell),
             "Gateway": mb_df["gateway"],
             "Transaction id": mb_df["transaction_id"],
             "Txn date": mb_df["txn_date"].map(display_date),

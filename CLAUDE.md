@@ -4002,6 +4002,22 @@ which stays the truth until September is reconciled, then is extended to APR_SEP
 * **Deployed to 10.0.1.98 on 2026-11-27 / 28 in steps with a restart each (upload, filters, then the Closed rule)** (upload first, then the filters; backups in `D:\Citykart_Applications\backup_pre_store_master_upload` and `backup_pre_region_filters`). At the time of writing the
   upload had not yet been saved, so production's store master still carried no cluster / region and the sidebar showed only Store. **Not done:** region / cluster roll-up TABLES on Summary (filters were asked for, not tables).
 
+### 6.47 Amounts in Crore or Full amount - one switch for every displayed figure (2026-11-28)
+
+* **An "Amounts" row at the top of the sidebar, above the line: `Crore` and `Full amount`** (`dashboard_common._unit_picker`; plain session key `flt_unit`, values auto | crore | full). Neither chosen = **auto** = every page exactly as it always was
+  (the Summary matrix in crores, tables in full rupees, tiles in the best short unit); choosing the chosen button again returns to auto. `page()` applies the choice at the start of every run via `formatting.set_unit` - a `ContextVar`, and the
+  dashboard serves each session in its own thread, so one person's choice never reaches another.
+* **Only DISPLAY forms follow the unit** (`mop_reco/formatting.py`): `money_cr` (crores always; full rupees in Full), `money_short` (tiles and headers: crores in Crore, full in Full), the new `money_cell` (table cells: Crore gives crores to four
+  decimals - "0.0073 Cr" = Rs 73,000 - because a store-day is far below a crore and two decimals would flatten it to 0.00; Full and auto give the full figure) and the new `money_note` (the figure beside a count on a tile).
+  **Exact figures never change:** `money_table` / `indian_group` - tooltips, MISMATCH and control messages, button labels that identify a set, the export header - and the Excel / CSV exports (numeric cells), so a Rs 125 difference can never read
+  as "0.00 Cr". Call sites that fill a table column now use `money_cell`; f-strings that state an amount keep `money_table`. In Crore, small amounts show as "Rs 0.00 Cr" - Full amount is the exact view.
+* **Full amount makes every matrix figure about twenty characters** ("Rs 9,99,73,77,035.90"): the Summary matrix gets `mop-matrix--full` (one line, 12.5px, minimum width 1000px, the scroll wrapper takes over on a narrow window) instead of figures
+  overlapping at 1366px, which is what the first cut did.
+* **Proved in a browser** on the development database (run #29): Full amount - matrix Total sale Rs 9,99,73,77,035.90, cash position Rs 4,04,72,370.54; Crore - matrix Rs 999.74 Cr, cash position Rs 4.05 Cr / 477.88 Cr, Exceptions header
+  "Exception bills 1,538 - Rs 0.20 Cr | Exception transactions 112,680 - Rs 13.27 Cr" and tiles "Rs 0.20 Cr"; the choice survives a page switch; the only full-rupee figure left on Summary in Crore was a failed-control diagnostic (kept exact on purpose).
+  Tests: `test_formatting.py` (each unit, and that the exact forms never move), `test_scope_picker.py` (the toggle and that the unit is applied at page start, above the line). Deployed to 10.0.1.98 on 2026-11-28 with a restart
+  (backups in `D:\Citykart_Applications\backup_pre_unit_toggle`).
+
 ## 7. Acceptance numbers
 
 Every stage is proved against these. They come from the two workbooks already
